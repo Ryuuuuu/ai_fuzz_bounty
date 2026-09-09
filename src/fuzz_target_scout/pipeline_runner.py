@@ -798,8 +798,10 @@ class PipelineRunner:
         active_session_id = str(state.get("active_fuzz_session_id") or "")
         if active_session_id and artifact_path.is_file():
             cached_result = self._read_json(artifact_path)
-            cached_is_complete = int(cached_result.get("exit_code") or 0) == 0 or bool(
-                cached_result.get("crash_files")
+            cached_is_complete = (
+                int(cached_result.get("exit_code") or 0) == 0
+                or bool(cached_result.get("crash_files"))
+                or cached_result.get("status") == "resource_limit_restart"
             )
             if (
                 str(cached_result.get("session_id") or "") == active_session_id
@@ -825,10 +827,14 @@ class PipelineRunner:
             raise PipelineError("completed fuzz budget has no result artifact")
         allocation = allocation or self._resource_allocation(job)
         self._record_resource_allocation(job_dir, allocation, "libfuzzer")
-        checkpoint = int(
+        configured_checkpoint = int(
             getattr(self, "pipeline", {}).get("fuzz_checkpoint_seconds", remaining)
         )
-        session_budget = min(remaining, max(1, checkpoint))
+        adaptive_checkpoint = int(
+            progress.get("adaptive_checkpoint_seconds") or configured_checkpoint
+        )
+        checkpoint = min(configured_checkpoint, max(1, adaptive_checkpoint))
+        session_budget = min(remaining, checkpoint)
         session_id = f"fuzz-{time.time_ns()}"
         container_name = self._container_name(job_id, session_id)
         session_started = utc_now()
@@ -911,9 +917,13 @@ class PipelineRunner:
             raise PipelineError("fuzz result is missing its session ID")
         if str(progress.get("last_accounted_fuzz_session_id") or "") != session_id:
             requested = max(0.0, float(result.get("requested_seconds") or 0))
-            if requested <= 0:
-                raise PipelineError("fuzz result has an invalid requested duration")
-            session_budget = min(requested, max(0.0, budget - completed_seconds))
+            accounted = max(
+                0.0,
+                float(result.get("accounted_seconds") or requested),
+            )
+            if requested <= 0 or accounted <= 0:
+                raise PipelineError("fuzz result has an invalid session duration")
+            session_budget = min(accounted, max(0.0, budget - completed_seconds))
             completed_seconds += session_budget
             progress["completed_seconds"] = completed_seconds
             progress["last_accounted_fuzz_session_id"] = session_id
@@ -927,9 +937,24 @@ class PipelineRunner:
                     "engine": "libfuzzer",
                     "corpus_files": result.get("corpus_files"),
                     "executed_units": result.get("executed_units"),
-                    "status": "completed",
+                    "status": result.get("status") or "completed",
+                    "resource_limit": result.get("resource_limit"),
                 }
             )
+            if result.get("status") == "resource_limit_restart":
+                elapsed = max(1.0, float(result.get("elapsed_seconds") or 0))
+                current = int(
+                    progress.get("adaptive_checkpoint_seconds")
+                    or getattr(self, "pipeline", {}).get(
+                        "fuzz_checkpoint_seconds", requested
+                    )
+                )
+                progress["adaptive_checkpoint_seconds"] = max(
+                    300, min(current, int(elapsed * 0.5))
+                )
+                progress["resource_limit_events"] = (
+                    int(progress.get("resource_limit_events") or 0) + 1
+                )
         else:
             session_budget = 0.0
         previous_corpus = int(progress.get("last_corpus_files") or 0)
@@ -2426,7 +2451,7 @@ class PipelineRunner:
             command,
             log_path,
             timeout=seconds + 600,
-            allow_failure=label == "probe",
+            allow_failure=True,
         )
         elapsed = round(time.monotonic() - monotonic_start, 3)
         crashes = sorted(
@@ -2440,9 +2465,32 @@ class PipelineRunner:
             if not path.is_symlink() and path.is_file()
         )
         worker_stats = self._collect_worker_stats(runtime_out, job_dir / "logs", label)
+        summaries = self._sanitizer_summaries(log_path)
+        result_session_id = session_id or f"{label}-{time.time_ns()}"
+        resource_artifacts: list[str] = []
+        resource_limit_restart = _is_long_running_resource_oom(
+            crashes,
+            summaries,
+            elapsed_seconds=elapsed,
+            requested_seconds=seconds,
+        )
+        if resource_limit_restart:
+            resource_root = (
+                job_dir / "artifacts" / "resource-events" / result_session_id
+            )
+            resource_root.mkdir(parents=True, exist_ok=True)
+            for name in crashes:
+                source = crash_dir / name
+                destination = resource_root / name
+                shutil.move(str(source), destination)
+                resource_artifacts.append(destination.relative_to(job_dir).as_posix())
+            crashes = []
+            self.progress(
+                f"{job_dir.name}: restarting after a long-running libFuzzer RSS limit"
+            )
         result = {
             "schema_version": 1,
-            "session_id": session_id or f"{label}-{time.time_ns()}",
+            "session_id": result_session_id,
             "label": label,
             "started_at": started_at,
             "completed_at": utc_now(),
@@ -2456,11 +2504,20 @@ class PipelineRunner:
             "engine": "libfuzzer",
             "sanitizer": "address",
             "network": "none",
-            "status": "sanitizer_finding" if crashes else "passed",
+            "status": (
+                "resource_limit_restart"
+                if resource_limit_restart
+                else "sanitizer_finding" if crashes else "passed"
+            ),
             "exit_code": exit_code,
+            "accounted_seconds": elapsed if resource_limit_restart else seconds,
+            "resource_limit": (
+                "libfuzzer_rss" if resource_limit_restart else None
+            ),
+            "resource_artifacts": resource_artifacts,
             "corpus_files": corpus_files,
             "crash_files": crashes,
-            "sanitizer_summaries": self._sanitizer_summaries(log_path),
+            "sanitizer_summaries": summaries,
             "worker_stats": worker_stats,
             "executed_units": sum(
                 item.get("number_of_executed_units", 0) for item in worker_stats
@@ -2469,7 +2526,7 @@ class PipelineRunner:
             "runtime_output_directory": str(runtime_out),
         }
         self._write_json(job_dir / "artifacts" / f"{label}-run.json", result)
-        if exit_code != 0 and not crashes:
+        if exit_code != 0 and not crashes and not resource_limit_restart:
             raise PipelineError(
                 f"fuzzer exited with {exit_code} without a sanitizer artifact; see {log_path}"
             )
@@ -2795,6 +2852,22 @@ def _subprocess_environment() -> dict[str, str]:
     environment["GIT_TERMINAL_PROMPT"] = "0"
     environment["GIT_ALLOW_PROTOCOL"] = "https"
     return environment
+
+
+def _is_long_running_resource_oom(
+    crash_names: list[str],
+    sanitizer_summaries: list[str],
+    *,
+    elapsed_seconds: float,
+    requested_seconds: int,
+) -> bool:
+    if not crash_names or any("-oom-" not in name for name in crash_names):
+        return False
+    normalized = "\n".join(sanitizer_summaries).casefold()
+    if "libfuzzer: out-of-memory" not in normalized:
+        return False
+    minimum_runtime = max(300.0, float(requested_seconds) * 0.25)
+    return elapsed_seconds >= minimum_runtime
 
 
 def _select_smoke_target(fuzzers: list[str]) -> str:

@@ -369,6 +369,137 @@ class PipelineRunnerTests(unittest.TestCase):
                 command.index(corpus_mount),
             )
 
+    def test_long_running_libfuzzer_oom_is_archived_and_restartable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory) / "job"
+            artifacts = job / "artifacts"
+            output = job / "build-output" / "asan"
+            for candidate in (artifacts, output, job / "logs"):
+                candidate.mkdir(parents=True)
+            (output / "fuzz_parser").write_bytes(b"fuzzer")
+            (artifacts / "build-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "oss_fuzz_project": "parser",
+                        "fuzz_targets": ["fuzz_parser"],
+                        "output_directory": str(output),
+                    }
+                )
+            )
+            (artifacts / "smoke.json").write_text(
+                json.dumps({"fuzz_target": "fuzz_parser"})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps(
+                    {"review": {"selected_fuzz_target": "fuzz_parser"}}
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "container_memory_mb": 1024,
+                "fuzzer_rss_limit_mb": 512,
+                "input_timeout_seconds": 10,
+            }
+            runner.progress = lambda _message: None
+
+            def fake_run(_command, log_path, **_kwargs):
+                log_path.write_text(
+                    "==7== ERROR: libFuzzer: out-of-memory (used: 513Mb; limit: 512Mb)\n"
+                    "SUMMARY: libFuzzer: out-of-memory\n",
+                    encoding="utf-8",
+                )
+                runtime = job / "runtime-out" / "fuzz"
+                (runtime / "fuzz-0.log").write_text(
+                    "stat::number_of_executed_units: 1000\n"
+                    "stat::average_exec_per_sec: 10\n"
+                    "stat::peak_rss_mb: 513\n",
+                    encoding="utf-8",
+                )
+                crash = job / "crashes" / "fuzz_parser"
+                (crash / "fuzz_parser-oom-deadbeef").write_bytes(b"input")
+                return 1
+
+            with patch.object(
+                runner, "_run_streaming", side_effect=fake_run
+            ), patch(
+                "fuzz_target_scout.pipeline_runner.time.monotonic",
+                side_effect=[0.0, 1000.0],
+            ):
+                result = runner._fuzz_session(
+                    job,
+                    {},
+                    seconds=1200,
+                    workers=1,
+                    label="fuzz",
+                    session_id="fuzz-resource-limit",
+                )
+
+            self.assertEqual(result["status"], "resource_limit_restart")
+            self.assertEqual(result["resource_limit"], "libfuzzer_rss")
+            self.assertEqual(result["accounted_seconds"], 1000.0)
+            self.assertEqual(result["crash_files"], [])
+            self.assertEqual(len(result["resource_artifacts"]), 1)
+            self.assertFalse(
+                any((job / "crashes" / "fuzz_parser").iterdir())
+            )
+            self.assertTrue(
+                (
+                    job
+                    / "artifacts"
+                    / "resource-events"
+                    / "fuzz-resource-limit"
+                    / "fuzz_parser-oom-deadbeef"
+                ).is_file()
+            )
+
+    def test_resource_limit_result_shortens_checkpoint_and_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "job"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            state_path = job_dir / "state.json"
+            progress_path = artifacts / "fuzz-progress.json"
+            state = {"stage": "fuzzing", "status": "running", "attempts": {}}
+            progress = {"completed_seconds": 0, "sessions": []}
+            state_path.write_text(json.dumps(state))
+            progress_path.write_text(json.dumps(progress))
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "fuzz_checkpoint_seconds": 3600,
+                "coverage_stall_seconds": 14400,
+                "afl_cmplog_enabled": True,
+            }
+            result = {
+                "session_id": "fuzz-resource-limit",
+                "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "2026-01-01T00:16:40Z",
+                "requested_seconds": 3600,
+                "accounted_seconds": 1000,
+                "elapsed_seconds": 1000,
+                "status": "resource_limit_restart",
+                "resource_limit": "libfuzzer_rss",
+                "fuzz_target": "fuzz_parser",
+                "corpus_files": 10,
+                "executed_units": 100000,
+                "crash_files": [],
+            }
+
+            applied = runner._apply_fuzz_result(
+                job_dir,
+                {"budgets": {"fuzz_seconds": 5000}, "route": {"name": "native_generated"}},
+                state_path,
+                state,
+                progress_path,
+                progress,
+                result,
+            )
+
+            updated = json.loads(progress_path.read_text())
+            self.assertEqual(applied["state"]["status"], "ready")
+            self.assertEqual(updated["completed_seconds"], 1000)
+            self.assertEqual(updated["adaptive_checkpoint_seconds"], 500)
+            self.assertEqual(updated["resource_limit_events"], 1)
+
     def test_collects_worker_stats_and_copies_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
