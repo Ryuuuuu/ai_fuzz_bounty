@@ -467,6 +467,95 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(calls, ["policy"])
             self.assertEqual(result["state"]["stage"], "triage")
 
+    def test_full_run_resumes_only_remaining_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "budgets": {"fuzz_seconds": 10},
+                        "execution": {"parallel_workers": 1},
+                    }
+                )
+            )
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "running", "attempts": {}})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 7, "sessions": []})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.progress = lambda _message: None
+            observed = []
+            with patch.object(runner, "_recheck_policy"), patch.object(
+                runner,
+                "_fuzz_session",
+                side_effect=lambda *_args, **kwargs: (
+                    observed.append(kwargs["seconds"])
+                    or {"fuzz_target": "fuzz_parser", "elapsed_seconds": 3}
+                ),
+            ):
+                result = runner.fuzz(job_id)
+            self.assertEqual(observed, [3])
+            self.assertEqual(result["state"]["fuzz_completed_seconds"], 10)
+
+    def test_full_run_checkpoints_without_finishing_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "budgets": {"fuzz_seconds": 10},
+                        "execution": {"parallel_workers": 1},
+                    }
+                )
+            )
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "ready", "attempts": {}})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {
+                "fuzz_checkpoint_seconds": 3,
+                "coverage_stall_seconds": 6,
+            }
+            runner.progress = lambda _message: None
+            with patch.object(runner, "_recheck_policy"), patch.object(
+                runner,
+                "_fuzz_session",
+                return_value={
+                    "fuzz_target": "fuzz_parser",
+                    "elapsed_seconds": 3,
+                    "corpus_files": 5,
+                    "executed_units": 100,
+                },
+            ):
+                result = runner.fuzz(job_id)
+            self.assertEqual(result["state"]["stage"], "fuzzing")
+            self.assertEqual(result["state"]["status"], "ready")
+            self.assertEqual(result["state"]["fuzz_completed_seconds"], 3)
+
     def test_maps_oss_fuzz_binary_to_upstream_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

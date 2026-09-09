@@ -436,30 +436,108 @@ class PipelineRunner:
             )
         self.progress(f"{job_id}: rechecking bug-bounty authorization before fuzzing")
         self._recheck_policy(job_dir, job)
+        budget = int((job.get("budgets") or {})["fuzz_seconds"])
+        progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+        progress = (
+            self._read_json(progress_path)
+            if progress_path.is_file()
+            else {"schema_version": 1, "completed_seconds": 0.0, "sessions": []}
+        )
+        completed_seconds = float(progress.get("completed_seconds") or 0)
+        remaining = max(0, budget - int(completed_seconds))
+        if remaining == 0 and (job_dir / "artifacts" / "fuzz-run.json").is_file():
+            result = self._read_json(job_dir / "artifacts" / "fuzz-run.json")
+            return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+        checkpoint = int(
+            getattr(self, "pipeline", {}).get("fuzz_checkpoint_seconds", remaining)
+        )
+        session_budget = min(remaining, max(1, checkpoint))
         state["status"] = "running"
         state["updated_at"] = utc_now()
         state["fuzz_started_at"] = state.get("fuzz_started_at") or utc_now()
         self._write_json(state_path, state)
+        session_started = utc_now()
+        monotonic_started = time.monotonic()
         try:
             result = self._fuzz_session(
                 job_dir,
                 job,
-                seconds=int((job.get("budgets") or {})["fuzz_seconds"]),
+                seconds=session_budget,
                 workers=int((job.get("execution") or {})["parallel_workers"]),
                 label="fuzz",
             )
         except Exception as exc:
-            state["status"] = "failed"
+            elapsed = min(float(session_budget), time.monotonic() - monotonic_started)
+            completed_seconds += max(0.0, elapsed)
+            progress["completed_seconds"] = completed_seconds
+            progress.setdefault("sessions", []).append(
+                {
+                    "started_at": session_started,
+                    "completed_at": utc_now(),
+                    "requested_seconds": session_budget,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "status": "interrupted",
+                    "error": str(exc)[:1000],
+                }
+            )
+            self._write_json(progress_path, progress)
+            state["status"] = "interrupted"
             state["last_error"] = str(exc)[:2000]
+            state["fuzz_completed_seconds"] = round(completed_seconds, 3)
             state["updated_at"] = utc_now()
             self._write_json(state_path, state)
             if isinstance(exc, PipelineError):
                 raise
             raise PipelineError(f"fuzzing failed: {exc}") from exc
+        completed_seconds += float(session_budget)
+        progress["completed_seconds"] = completed_seconds
+        progress.setdefault("sessions", []).append(
+            {
+                "started_at": session_started,
+                "completed_at": utc_now(),
+                "requested_seconds": session_budget,
+                "elapsed_seconds": result.get("elapsed_seconds"),
+                "corpus_files": result.get("corpus_files"),
+                "executed_units": result.get("executed_units"),
+                "status": "completed",
+            }
+        )
+        previous_corpus = int(progress.get("last_corpus_files") or 0)
+        current_corpus = int(result.get("corpus_files") or 0)
+        progress["stalled_seconds"] = (
+            0
+            if current_corpus > previous_corpus
+            else int(progress.get("stalled_seconds") or 0) + session_budget
+        )
+        progress["last_corpus_files"] = max(previous_corpus, current_corpus)
+        stall_limit = int(
+            getattr(self, "pipeline", {}).get("coverage_stall_seconds", 14400)
+        )
+        progress["coverage_stalled"] = progress["stalled_seconds"] >= stall_limit
+        self._write_json(progress_path, progress)
+        if completed_seconds < budget:
+            state["status"] = "ready"
+            state["last_error"] = None
+            state["fuzz_completed_seconds"] = round(completed_seconds, 3)
+            state["coverage_stalled"] = bool(progress["coverage_stalled"])
+            state["updated_at"] = utc_now()
+            self._write_json(state_path, state)
+            result["state"] = state
+            return result
+        return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+
+    def _finish_fuzz_state(
+        self,
+        state_path: Path,
+        state: dict[str, Any],
+        result: dict[str, Any],
+        completed_seconds: float,
+    ) -> dict[str, Any]:
         state["status"] = "triage_pending"
         state["stage"] = "triage"
         state["last_error"] = None
         state["fuzz_completed_at"] = utc_now()
+        state["fuzz_completed_seconds"] = round(completed_seconds, 3)
         state["updated_at"] = utc_now()
         state.setdefault("attempts", {})["fuzzing"] = (
             int(state.setdefault("attempts", {}).get("fuzzing", 0)) + 1

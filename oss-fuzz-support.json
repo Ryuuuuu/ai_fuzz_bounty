@@ -1,0 +1,6212 @@
+{
+  "oss_fuzz_commit": "6f96dc4ca0805f56c1405e7c1606e8b73099f8b7",
+  "project_count": 1241,
+  "projects": [
+    {
+      "language": "c++",
+      "project": "abseil-cpp",
+      "repository": "abseil/abseil-cpp"
+    },
+    {
+      "language": "python",
+      "project": "abseil-py",
+      "repository": "abseil/abseil-py"
+    },
+    {
+      "language": "c++",
+      "project": "ada-url",
+      "repository": "ada-url/ada"
+    },
+    {
+      "language": "python",
+      "project": "adal",
+      "repository": "azuread/azure-activedirectory-library-for-python"
+    },
+    {
+      "language": "python",
+      "project": "aiohttp",
+      "repository": "aio-libs/aiohttp"
+    },
+    {
+      "language": "python",
+      "project": "airflow",
+      "repository": "apache/airflow"
+    },
+    {
+      "language": "c++",
+      "project": "alembic",
+      "repository": "alembic/alembic"
+    },
+    {
+      "language": "c++",
+      "project": "ampproject",
+      "repository": "ampproject/amphtml"
+    },
+    {
+      "language": "javascript",
+      "project": "angular",
+      "repository": "angular/angular"
+    },
+    {
+      "language": "jvm",
+      "project": "angus-mail",
+      "repository": "eclipse-ee4j/angus-mail"
+    },
+    {
+      "language": "rust",
+      "project": "anise",
+      "repository": "nyx-space/anise"
+    },
+    {
+      "language": "python",
+      "project": "ansible",
+      "repository": "ansible/ansible"
+    },
+    {
+      "language": "jvm",
+      "project": "antlr3-java",
+      "repository": "antlr/antlr3"
+    },
+    {
+      "language": "jvm",
+      "project": "antlr4-java",
+      "repository": "antlr/antlr4"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-axis2",
+      "repository": "apache/axis-axis2-java-core"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-bcel",
+      "repository": "apache/commons-bcel"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-beanutils",
+      "repository": "apache/commons-beanutils"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-cli",
+      "repository": "apache/commons-cli"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-collections",
+      "repository": "apache/commons-collections"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-compress",
+      "repository": "apache/commons-compress"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-csv",
+      "repository": "apache/commons-csv"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-fileupload",
+      "repository": "apache/commons-fileupload"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-geometry",
+      "repository": "apache/commons-geometry"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-imaging",
+      "repository": "apache/commons-imaging"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-jxpath",
+      "repository": "apache/commons-jxpath"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-lang",
+      "repository": "apache/commons-lang"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-math",
+      "repository": "apache/commons-math"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-net",
+      "repository": "apache/commons-net"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-text",
+      "repository": "apache/commons-text"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-commons-validator",
+      "repository": "apache/commons-validator"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-cxf",
+      "repository": "apache/cxf"
+    },
+    {
+      "language": "c++",
+      "project": "apache-doris",
+      "repository": "apache/doris"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-felix-dev",
+      "repository": "apache/felix-dev"
+    },
+    {
+      "language": "c",
+      "project": "apache-httpd",
+      "repository": "apache/httpd"
+    },
+    {
+      "language": "c++",
+      "project": "apache-logging-log4cxx",
+      "repository": "apache/logging-log4cxx"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-poi",
+      "repository": "apache/poi"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-shiro",
+      "repository": "apache/shiro"
+    },
+    {
+      "language": "jvm",
+      "project": "apache-tika",
+      "repository": "apache/tika"
+    },
+    {
+      "language": "rust",
+      "project": "aptos-core",
+      "repository": "aptos-labs/aptos-core"
+    },
+    {
+      "language": "jvm",
+      "project": "archaius-core",
+      "repository": "netflix/archaius"
+    },
+    {
+      "language": "c++",
+      "project": "arduinojson",
+      "repository": "bblanchon/arduinojson"
+    },
+    {
+      "language": "python",
+      "project": "argcomplete",
+      "repository": "kislyuk/argcomplete"
+    },
+    {
+      "language": "go",
+      "project": "argo",
+      "repository": "argoproj/argo-cd"
+    },
+    {
+      "language": "c++",
+      "project": "args",
+      "repository": "taywee/args"
+    },
+    {
+      "language": "jvm",
+      "project": "args4j",
+      "repository": "kohsuke/args4j"
+    },
+    {
+      "language": "c++",
+      "project": "arrow",
+      "repository": "apache/arrow"
+    },
+    {
+      "language": "jvm",
+      "project": "arrow-java",
+      "repository": "apache/arrow-java"
+    },
+    {
+      "language": "python",
+      "project": "arrow-py",
+      "repository": "arrow-py/arrow"
+    },
+    {
+      "language": "rust",
+      "project": "askama",
+      "repository": "askama-rs/askama"
+    },
+    {
+      "language": "python",
+      "project": "asn1crypto",
+      "repository": "wbond/asn1crypto"
+    },
+    {
+      "language": "jvm",
+      "project": "aspectj",
+      "repository": "eclipse/org.aspectj"
+    },
+    {
+      "language": "c++",
+      "project": "aspell",
+      "repository": "gnuaspell/aspell"
+    },
+    {
+      "language": "c++",
+      "project": "assimp",
+      "repository": "assimp/assimp"
+    },
+    {
+      "language": "c++",
+      "project": "astc-encoder",
+      "repository": "arm-software/astc-encoder"
+    },
+    {
+      "language": "python",
+      "project": "asteval",
+      "repository": "newville/asteval"
+    },
+    {
+      "language": "go",
+      "project": "astro-compiler",
+      "repository": "withastro/compiler"
+    },
+    {
+      "language": "python",
+      "project": "astroid",
+      "repository": "pylint-dev/astroid"
+    },
+    {
+      "language": "python",
+      "project": "asttokens",
+      "repository": "gristlabs/asttokens"
+    },
+    {
+      "language": "jvm",
+      "project": "async-http-client",
+      "repository": "asynchttpclient/async-http-client"
+    },
+    {
+      "language": "go",
+      "project": "atomic",
+      "repository": "uber-go/atomic"
+    },
+    {
+      "language": "python",
+      "project": "attrs",
+      "repository": "python-attrs/attrs"
+    },
+    {
+      "language": "c++",
+      "project": "augeas",
+      "repository": "hercules-team/augeas"
+    },
+    {
+      "language": "python",
+      "project": "autopep8",
+      "repository": "hhatto/autopep8"
+    },
+    {
+      "language": "c++",
+      "project": "avahi",
+      "repository": "avahi/avahi"
+    },
+    {
+      "language": "jvm",
+      "project": "avro",
+      "repository": "apache/avro"
+    },
+    {
+      "language": "python",
+      "project": "azure-sdk-for-python",
+      "repository": "azure/azure-sdk-for-python"
+    },
+    {
+      "language": "python",
+      "project": "babel",
+      "repository": "python-babel/babel"
+    },
+    {
+      "language": "c++",
+      "project": "bad_example",
+      "repository": "madler/zlib"
+    },
+    {
+      "language": "c++",
+      "project": "bazel-rules-fuzzing-test",
+      "repository": "bazelbuild/rules_fuzzing"
+    },
+    {
+      "language": "jvm",
+      "project": "bazel-rules-fuzzing-test-java",
+      "repository": "bazelbuild/rules_fuzzing"
+    },
+    {
+      "language": "c",
+      "project": "bc-gh",
+      "repository": "gavinhoward/bc"
+    },
+    {
+      "language": "jvm",
+      "project": "bc-java",
+      "repository": "bcgit/bc-java"
+    },
+    {
+      "language": "c++",
+      "project": "behaviortreecpp",
+      "repository": "behaviortree/behaviortree.cpp"
+    },
+    {
+      "language": "c++",
+      "project": "bignum-fuzzer",
+      "repository": "sjamaan/bignum-fuzzer"
+    },
+    {
+      "language": "c++",
+      "project": "bios-bmc-smm-error-logger",
+      "repository": "javanlacerda/bios-bmc-smm-error-logger"
+    },
+    {
+      "language": "c++",
+      "project": "bitcoin-core",
+      "repository": "bitcoin/bitcoin"
+    },
+    {
+      "language": "python",
+      "project": "black",
+      "repository": "psf/black"
+    },
+    {
+      "language": "go",
+      "project": "blackfriday",
+      "repository": "russross/blackfriday"
+    },
+    {
+      "language": "python",
+      "project": "bleach",
+      "repository": "mozilla/bleach"
+    },
+    {
+      "language": "c++",
+      "project": "bloaty",
+      "repository": "google/bloaty"
+    },
+    {
+      "language": "c++",
+      "project": "bls-signatures",
+      "repository": "supranational/blst"
+    },
+    {
+      "language": "c",
+      "project": "bluez",
+      "repository": "bluez/bluez"
+    },
+    {
+      "language": "c++",
+      "project": "bmcweb",
+      "repository": "openbmc/bmcweb"
+    },
+    {
+      "language": "c++",
+      "project": "boost",
+      "repository": "boostorg/boost"
+    },
+    {
+      "language": "c++",
+      "project": "boost-beast",
+      "repository": "boostorg/beast"
+    },
+    {
+      "language": "c++",
+      "project": "boost-json",
+      "repository": "boostorg/json"
+    },
+    {
+      "language": "c++",
+      "project": "botan",
+      "repository": "randombit/botan"
+    },
+    {
+      "language": "python",
+      "project": "botocore",
+      "repository": "boto/botocore"
+    },
+    {
+      "language": "python",
+      "project": "bottleneck",
+      "repository": "pydata/bottleneck"
+    },
+    {
+      "language": "c++",
+      "project": "brotli",
+      "repository": "google/brotli"
+    },
+    {
+      "language": "jvm",
+      "project": "brotli-java",
+      "repository": "google/brotli"
+    },
+    {
+      "language": "c++",
+      "project": "brpc",
+      "repository": "apache/incubator-brpc"
+    },
+    {
+      "language": "c++",
+      "project": "brunsli",
+      "repository": "google/brunsli"
+    },
+    {
+      "language": "rust",
+      "project": "bson-rust",
+      "repository": "mongodb/bson-rust"
+    },
+    {
+      "language": "go",
+      "project": "burntsushi-toml",
+      "repository": "burntsushi/toml"
+    },
+    {
+      "language": "python",
+      "project": "bz2file",
+      "repository": "nvawda/bz2file"
+    },
+    {
+      "language": "c++",
+      "project": "c-ares",
+      "repository": "c-ares/c-ares"
+    },
+    {
+      "language": "c++",
+      "project": "c-blosc",
+      "repository": "blosc/c-blosc"
+    },
+    {
+      "language": "c++",
+      "project": "c-blosc2",
+      "repository": "blosc/c-blosc2"
+    },
+    {
+      "language": "python",
+      "project": "cachetools",
+      "repository": "tkem/cachetools"
+    },
+    {
+      "language": "go",
+      "project": "caddy",
+      "repository": "caddyserver/caddy"
+    },
+    {
+      "language": "jvm",
+      "project": "caffeine",
+      "repository": "ben-manes/caffeine"
+    },
+    {
+      "language": "jvm",
+      "project": "calcite",
+      "repository": "apache/calcite"
+    },
+    {
+      "language": "jvm",
+      "project": "calcite-avatica",
+      "repository": "apache/calcite-avatica"
+    },
+    {
+      "language": "javascript",
+      "project": "canvg",
+      "repository": "canvg/canvg"
+    },
+    {
+      "language": "c++",
+      "project": "capnproto",
+      "repository": "capnproto/capnproto"
+    },
+    {
+      "language": "c++",
+      "project": "capstone",
+      "repository": "capstone-engine/capstone"
+    },
+    {
+      "language": "go",
+      "project": "cascadia",
+      "repository": "andybalholm/cascadia"
+    },
+    {
+      "language": "c++",
+      "project": "casync",
+      "repository": "systemd/casync"
+    },
+    {
+      "language": "",
+      "project": "catapult",
+      "repository": "nemtech/catapult-server"
+    },
+    {
+      "language": "python",
+      "project": "cbor2",
+      "repository": "agronholm/cbor2"
+    },
+    {
+      "language": "c++",
+      "project": "cctz",
+      "repository": "google/cctz"
+    },
+    {
+      "language": "c++",
+      "project": "cel-cpp",
+      "repository": "google/cel-cpp"
+    },
+    {
+      "language": "go",
+      "project": "cel-go",
+      "repository": "google/cel-go"
+    },
+    {
+      "language": "go",
+      "project": "cert-manager",
+      "repository": "cert-manager/cert-manager"
+    },
+    {
+      "language": "c++",
+      "project": "cfengine",
+      "repository": "cfengine/core"
+    },
+    {
+      "language": "c",
+      "project": "cgif",
+      "repository": "dloebl/cgif"
+    },
+    {
+      "language": "jvm",
+      "project": "cglib",
+      "repository": "cglib/cglib"
+    },
+    {
+      "language": "python",
+      "project": "chardet",
+      "repository": "erikrose/chardet"
+    },
+    {
+      "language": "python",
+      "project": "charset_normalizer",
+      "repository": "jawah/charset_normalizer"
+    },
+    {
+      "language": "jvm",
+      "project": "checkstyle",
+      "repository": "checkstyle/checkstyle"
+    },
+    {
+      "language": "rust",
+      "project": "chrono",
+      "repository": "chronotope/chrono"
+    },
+    {
+      "language": "c++",
+      "project": "cifuzz-example",
+      "repository": "jonathanmetzman/cifuzz-example"
+    },
+    {
+      "language": "go",
+      "project": "cilium",
+      "repository": "cilium/cilium"
+    },
+    {
+      "language": "c++",
+      "project": "circl",
+      "repository": "cloudflare/circl"
+    },
+    {
+      "language": "python",
+      "project": "cirq",
+      "repository": "quantumlib/cirq"
+    },
+    {
+      "language": "c",
+      "project": "civetweb",
+      "repository": "civetweb/civetweb"
+    },
+    {
+      "language": "c++",
+      "project": "cjson",
+      "repository": "davegamble/cjson"
+    },
+    {
+      "language": "c++",
+      "project": "clamav",
+      "repository": "cisco-talos/clamav-devel"
+    },
+    {
+      "language": "c",
+      "project": "clib",
+      "repository": "clibs/clib"
+    },
+    {
+      "language": "python",
+      "project": "click",
+      "repository": "pallets/click"
+    },
+    {
+      "language": "c++",
+      "project": "clickhouse",
+      "repository": "clickhouse/clickhouse"
+    },
+    {
+      "language": "go",
+      "project": "clock",
+      "repository": "benbjohnson/clock"
+    },
+    {
+      "language": "jvm",
+      "project": "closure-compiler",
+      "repository": "google/closure-compiler"
+    },
+    {
+      "language": "javascript",
+      "project": "closure-library",
+      "repository": "google/closure-library"
+    },
+    {
+      "language": "python",
+      "project": "cloud-custodian",
+      "repository": "cloud-custodian/cloud-custodian"
+    },
+    {
+      "language": "rust",
+      "project": "cloud-hypervisor",
+      "repository": "cloud-hypervisor/cloud-hypervisor"
+    },
+    {
+      "language": "c++",
+      "project": "cmark",
+      "repository": "commonmark/cmark"
+    },
+    {
+      "language": "go",
+      "project": "cockroachdb",
+      "repository": "cockroachdb/cockroach"
+    },
+    {
+      "language": "go",
+      "project": "compress",
+      "repository": "klauspost/compress"
+    },
+    {
+      "language": "go",
+      "project": "config-validator",
+      "repository": "googlecloudplatform/config-validator"
+    },
+    {
+      "language": "python",
+      "project": "configparser",
+      "repository": "jaraco/configparser"
+    },
+    {
+      "language": "c++",
+      "project": "connectedhomeip",
+      "repository": "project-chip/connectedhomeip"
+    },
+    {
+      "language": "python",
+      "project": "connexion",
+      "repository": "spec-first/connexion"
+    },
+    {
+      "language": "go",
+      "project": "containerd",
+      "repository": "containerd/containerd"
+    },
+    {
+      "language": "",
+      "project": "coreutils",
+      "repository": "coreutils/coreutils"
+    },
+    {
+      "language": "go",
+      "project": "cosign",
+      "repository": "sigstore/cosign"
+    },
+    {
+      "language": "go",
+      "project": "cosmos-sdk",
+      "repository": "cosmos/cosmos-sdk"
+    },
+    {
+      "language": "c",
+      "project": "coturn",
+      "repository": "coturn/coturn"
+    },
+    {
+      "language": "python",
+      "project": "coveragepy",
+      "repository": "nedbat/coveragepy"
+    },
+    {
+      "language": "c++",
+      "project": "cpp-httplib",
+      "repository": "yhirose/cpp-httplib"
+    },
+    {
+      "language": "c++",
+      "project": "cppcheck",
+      "repository": "cppcheck-opensource/cppcheck"
+    },
+    {
+      "language": "c++",
+      "project": "cppitertools",
+      "repository": "ryanhaining/cppitertools"
+    },
+    {
+      "language": "c",
+      "project": "cpuinfo",
+      "repository": "pytorch/cpuinfo"
+    },
+    {
+      "language": "c++",
+      "project": "cpython3",
+      "repository": "python/cpython"
+    },
+    {
+      "language": "go",
+      "project": "cri-o",
+      "repository": "cri-o/cri-o"
+    },
+    {
+      "language": "c",
+      "project": "croaring",
+      "repository": "roaringbitmap/croaring"
+    },
+    {
+      "language": "jvm",
+      "project": "cron-utils",
+      "repository": "jmrozanec/cron-utils"
+    },
+    {
+      "language": "python",
+      "project": "croniter",
+      "repository": "kiorky/croniter"
+    },
+    {
+      "language": "go",
+      "project": "crossplane",
+      "repository": "crossplane/crossplane"
+    },
+    {
+      "language": "c++",
+      "project": "crow",
+      "repository": "crowcpp/crow"
+    },
+    {
+      "language": "c++",
+      "project": "cryptofuzz",
+      "repository": "mozillasecurity/cryptofuzz"
+    },
+    {
+      "language": "python",
+      "project": "cryptography",
+      "repository": "pyca/cryptography"
+    },
+    {
+      "language": "python",
+      "project": "cssselect",
+      "repository": "scrapy/cssselect"
+    },
+    {
+      "language": "go",
+      "project": "cubefs",
+      "repository": "cubefs/cubefs"
+    },
+    {
+      "language": "c",
+      "project": "cups",
+      "repository": "openprinting/cups"
+    },
+    {
+      "language": "c++",
+      "project": "cups-filters",
+      "repository": "openprinting/cups-filters"
+    },
+    {
+      "language": "c++",
+      "project": "cura-engine",
+      "repository": "ultimaker/curaengine"
+    },
+    {
+      "language": "c++",
+      "project": "curl",
+      "repository": "curl/curl"
+    },
+    {
+      "language": "jvm",
+      "project": "curvesapi",
+      "repository": "virtuald/curvesapi"
+    },
+    {
+      "language": "c++",
+      "project": "cxxopts",
+      "repository": "jarro2783/cxxopts"
+    },
+    {
+      "language": "c",
+      "project": "cyclonedds",
+      "repository": "eclipse-cyclonedds/cyclonedds"
+    },
+    {
+      "language": "javascript",
+      "project": "d3",
+      "repository": "d3/d3"
+    },
+    {
+      "language": "go",
+      "project": "dapr",
+      "repository": "dapr/dapr"
+    },
+    {
+      "language": "c++",
+      "project": "dart",
+      "repository": "dart-lang/sdk"
+    },
+    {
+      "language": "python",
+      "project": "dask",
+      "repository": "dask/dask"
+    },
+    {
+      "language": "rust",
+      "project": "data-encoding",
+      "repository": "ia0/data-encoding"
+    },
+    {
+      "language": "c++",
+      "project": "date",
+      "repository": "howardhinnant/date"
+    },
+    {
+      "language": "python",
+      "project": "dateparser",
+      "repository": "scrapinghub/dateparser"
+    },
+    {
+      "language": "c",
+      "project": "dbus-broker",
+      "repository": "bus1/dbus-broker"
+    },
+    {
+      "language": "c++",
+      "project": "dbus-sensors",
+      "repository": "openbmc/dbus-sensors"
+    },
+    {
+      "language": "c++",
+      "project": "dcmtk",
+      "repository": "dcmtk/dcmtk"
+    },
+    {
+      "language": "python",
+      "project": "decorator",
+      "repository": "micheles/decorator"
+    },
+    {
+      "language": "python",
+      "project": "defusedxml",
+      "repository": "tiran/defusedxml"
+    },
+    {
+      "language": "go",
+      "project": "demangle",
+      "repository": "ianlancetaylor/demangle"
+    },
+    {
+      "language": "rust",
+      "project": "deno",
+      "repository": "denoland/deno"
+    },
+    {
+      "language": "go",
+      "project": "dgraph",
+      "repository": "dgraph-io/dgraph"
+    },
+    {
+      "language": "python",
+      "project": "digest",
+      "repository": "bmc/digest"
+    },
+    {
+      "language": "python",
+      "project": "dill",
+      "repository": "uqfoundation/dill"
+    },
+    {
+      "language": "python",
+      "project": "distlib",
+      "repository": "pypa/distlib"
+    },
+    {
+      "language": "go",
+      "project": "distribution",
+      "repository": "distribution/distribution"
+    },
+    {
+      "language": "python",
+      "project": "django",
+      "repository": "django/django"
+    },
+    {
+      "language": "python",
+      "project": "dnspython",
+      "repository": "rthalley/dnspython"
+    },
+    {
+      "language": "jvm",
+      "project": "docker-client",
+      "repository": "spotify/docker-client"
+    },
+    {
+      "language": "jvm",
+      "project": "dom4j",
+      "repository": "dom4j/dom4j"
+    },
+    {
+      "language": "c++",
+      "project": "double-conversion",
+      "repository": "google/double-conversion"
+    },
+    {
+      "language": "c",
+      "project": "dovecot",
+      "repository": "dovecot/core"
+    },
+    {
+      "language": "c++",
+      "project": "dpp",
+      "repository": "brainboxdotcc/dpp"
+    },
+    {
+      "language": "c++",
+      "project": "dr_libs",
+      "repository": "mackron/dr_libs"
+    },
+    {
+      "language": "c++",
+      "project": "draco",
+      "repository": "google/draco"
+    },
+    {
+      "language": "go",
+      "project": "dragonfly",
+      "repository": "dragonflyoss/dragonfly"
+    },
+    {
+      "language": "c++",
+      "project": "dropbear",
+      "repository": "mkj/dropbear"
+    },
+    {
+      "language": "jvm",
+      "project": "dropwizard",
+      "repository": "dropwizard/dropwizard"
+    },
+    {
+      "language": "c++",
+      "project": "duckdb",
+      "repository": "duckdb/duckdb"
+    },
+    {
+      "language": "python",
+      "project": "dulwich",
+      "repository": "jelmer/dulwich"
+    },
+    {
+      "language": "c",
+      "project": "e2fsprogs",
+      "repository": "tytso/e2fsprogs"
+    },
+    {
+      "language": "c++",
+      "project": "easywsclient",
+      "repository": "dhbaird/easywsclient"
+    },
+    {
+      "language": "c++",
+      "project": "ecc-diff-fuzzer",
+      "repository": "catenacyber/elliptic-curve-differential-fuzzer"
+    },
+    {
+      "language": "python",
+      "project": "ecdsa-python",
+      "repository": "starkbank/ecdsa-python"
+    },
+    {
+      "language": "jvm",
+      "project": "eclipse-equinox",
+      "repository": "eclipse-equinox/equinox"
+    },
+    {
+      "language": "c",
+      "project": "edk2",
+      "repository": "tianocore/edk2"
+    },
+    {
+      "language": "c++",
+      "project": "envoy",
+      "repository": "envoyproxy/envoy"
+    },
+    {
+      "language": "go",
+      "project": "erigon",
+      "repository": "erigontech/erigon"
+    },
+    {
+      "language": "c++",
+      "project": "esp-v2",
+      "repository": "googlecloudplatform/esp-v2"
+    },
+    {
+      "language": "c++",
+      "project": "espeak-ng",
+      "repository": "espeak-ng/espeak-ng"
+    },
+    {
+      "language": "c++",
+      "project": "estoraged",
+      "repository": "openbmc/estoraged"
+    },
+    {
+      "language": "python",
+      "project": "et-xmlfile",
+      "repository": "biydnd/et_xmlfile"
+    },
+    {
+      "language": "go",
+      "project": "etcd",
+      "repository": "etcd-io/etcd"
+    },
+    {
+      "language": "jvm",
+      "project": "evo-inflector",
+      "repository": "atteo/evo-inflector"
+    },
+    {
+      "language": "c++",
+      "project": "example",
+      "repository": "google/oss-fuzz"
+    },
+    {
+      "language": "c++",
+      "project": "exiv2",
+      "repository": "exiv2/exiv2"
+    },
+    {
+      "language": "jvm",
+      "project": "exp4j",
+      "repository": "fasseg/exp4j"
+    },
+    {
+      "language": "c++",
+      "project": "expat",
+      "repository": "libexpat/libexpat"
+    },
+    {
+      "language": "go",
+      "project": "expr",
+      "repository": "expr-lang/expr"
+    },
+    {
+      "language": "c++",
+      "project": "exprtk",
+      "repository": "arashpartow/exprtk"
+    },
+    {
+      "language": "c",
+      "project": "faad2",
+      "repository": "knik0/faad2"
+    },
+    {
+      "language": "go",
+      "project": "fabric",
+      "repository": "hyperledger/fabric"
+    },
+    {
+      "language": "python",
+      "project": "face",
+      "repository": "mahmoud/face"
+    },
+    {
+      "language": "c++",
+      "project": "fast-dds",
+      "repository": "eprosima/fast-dds"
+    },
+    {
+      "language": "javascript",
+      "project": "fast-xml-parser",
+      "repository": "naturalintelligence/fast-xml-parser"
+    },
+    {
+      "language": "c++",
+      "project": "fast_float",
+      "repository": "fastfloat/fast_float"
+    },
+    {
+      "language": "jvm",
+      "project": "fastcsv",
+      "repository": "osiegmar/fastcsv"
+    },
+    {
+      "language": "go",
+      "project": "fasthttp",
+      "repository": "valyala/fasthttp"
+    },
+    {
+      "language": "javascript",
+      "project": "fastify",
+      "repository": "fastify/fastify"
+    },
+    {
+      "language": "go",
+      "project": "fastjson",
+      "repository": "valyala/fastjson"
+    },
+    {
+      "language": "jvm",
+      "project": "fastjson2",
+      "repository": "alibaba/fastjson2"
+    },
+    {
+      "language": "jvm",
+      "project": "feign",
+      "repository": "openfeign/feign"
+    },
+    {
+      "language": "c++",
+      "project": "ffmpeg",
+      "repository": "ffmpeg/ffmpeg"
+    },
+    {
+      "language": "c++",
+      "project": "ffms2",
+      "repository": "ffms/ffms2"
+    },
+    {
+      "language": "c++",
+      "project": "fftw3",
+      "repository": "fftw/fftw3"
+    },
+    {
+      "language": "c++",
+      "project": "file",
+      "repository": "file/file"
+    },
+    {
+      "language": "python",
+      "project": "filelock",
+      "repository": "tox-dev/py-filelock"
+    },
+    {
+      "language": "python",
+      "project": "filesystem_spec",
+      "repository": "fsspec/filesystem_spec"
+    },
+    {
+      "language": "c++",
+      "project": "fio",
+      "repository": "axboe/fio"
+    },
+    {
+      "language": "rust",
+      "project": "fips203",
+      "repository": "integritychain/fips203"
+    },
+    {
+      "language": "c++",
+      "project": "firestore",
+      "repository": "firebase/firebase-ios-sdk"
+    },
+    {
+      "language": "c++",
+      "project": "flac",
+      "repository": "xiph/flac"
+    },
+    {
+      "language": "python",
+      "project": "flask",
+      "repository": "pallets/flask"
+    },
+    {
+      "language": "python",
+      "project": "flask-jwt-extended",
+      "repository": "vimalloc/flask-jwt-extended"
+    },
+    {
+      "language": "python",
+      "project": "flask-restx",
+      "repository": "python-restx/flask-restx"
+    },
+    {
+      "language": "python",
+      "project": "flask-wtf",
+      "repository": "wtforms/flask-wtf"
+    },
+    {
+      "language": "c++",
+      "project": "flatbuffers",
+      "repository": "google/flatbuffers"
+    },
+    {
+      "language": "rust",
+      "project": "flate2-rs",
+      "repository": "rust-lang/flate2-rs"
+    },
+    {
+      "language": "c",
+      "project": "flex",
+      "repository": "westes/flex"
+    },
+    {
+      "language": "c++",
+      "project": "fluent-bit",
+      "repository": "fluent/fluent-bit"
+    },
+    {
+      "language": "go",
+      "project": "fluxcd",
+      "repository": "fluxcd/flux2"
+    },
+    {
+      "language": "jvm",
+      "project": "flyway",
+      "repository": "flyway/flyway"
+    },
+    {
+      "language": "c++",
+      "project": "fmt",
+      "repository": "fmtlib/fmt"
+    },
+    {
+      "language": "rust",
+      "project": "fontations",
+      "repository": "googlefonts/fontations"
+    },
+    {
+      "language": "c++",
+      "project": "freeradius",
+      "repository": "freeradius/freeradius-server"
+    },
+    {
+      "language": "c",
+      "project": "freerdp",
+      "repository": "freerdp/freerdp"
+    },
+    {
+      "language": "c++",
+      "project": "freetype2",
+      "repository": "freetype/freetype2-testing"
+    },
+    {
+      "language": "c",
+      "project": "fribidi",
+      "repository": "fribidi/fribidi"
+    },
+    {
+      "language": "c++",
+      "project": "frr",
+      "repository": "frrouting/frr"
+    },
+    {
+      "language": "go",
+      "project": "fsnotify",
+      "repository": "fsnotify/fsnotify"
+    },
+    {
+      "language": "python",
+      "project": "ftfy",
+      "repository": "rspeer/python-ftfy"
+    },
+    {
+      "language": "c++",
+      "project": "fuzzing-puzzles",
+      "repository": "google/fuzzer-test-suite"
+    },
+    {
+      "language": "c++",
+      "project": "fuzztest-example",
+      "repository": "google/fuzztest"
+    },
+    {
+      "language": "c++",
+      "project": "fuzztest-raksha",
+      "repository": "google/fuzztest"
+    },
+    {
+      "language": "jvm",
+      "project": "fuzzywuzzy",
+      "repository": "xdrop/fuzzywuzzy"
+    },
+    {
+      "language": "c",
+      "project": "fwupd",
+      "repository": "fwupd/fwupd"
+    },
+    {
+      "language": "python",
+      "project": "g-api-auth-httplib2",
+      "repository": "googleapis/google-auth-library-python-httplib2"
+    },
+    {
+      "language": "python",
+      "project": "g-api-auth-library-python",
+      "repository": "googleapis/google-auth-library-python"
+    },
+    {
+      "language": "python",
+      "project": "g-api-pubsub",
+      "repository": "googleapis/python-pubsub"
+    },
+    {
+      "language": "python",
+      "project": "g-api-py-api-common-protos",
+      "repository": "googleapis/python-api-common-protos"
+    },
+    {
+      "language": "python",
+      "project": "g-api-py-oauthlib",
+      "repository": "googleapis/google-auth-library-python-oauthlib"
+    },
+    {
+      "language": "python",
+      "project": "g-api-python-bigquery-storage",
+      "repository": "googleapis/python-bigquery-storage"
+    },
+    {
+      "language": "python",
+      "project": "g-api-python-client",
+      "repository": "googleapis/google-api-python-client"
+    },
+    {
+      "language": "python",
+      "project": "g-api-python-cloud-core",
+      "repository": "googleapis/python-cloud-core"
+    },
+    {
+      "language": "python",
+      "project": "g-api-python-firestore",
+      "repository": "googleapis/python-firestore"
+    },
+    {
+      "language": "python",
+      "project": "g-api-python-tasks",
+      "repository": "googleapis/google-cloud-python"
+    },
+    {
+      "language": "python",
+      "project": "g-api-resource-manager",
+      "repository": "googleapis/google-cloud-python"
+    },
+    {
+      "language": "python",
+      "project": "g-api-resumable-media-python",
+      "repository": "googleapis/google-resumable-media-python"
+    },
+    {
+      "language": "python",
+      "project": "g-api-secret-manager",
+      "repository": "googleapis/python-secret-manager"
+    },
+    {
+      "language": "python",
+      "project": "g-apis-py-api-core",
+      "repository": "googleapis/python-api-core"
+    },
+    {
+      "language": "jvm",
+      "project": "g-auth-library-java",
+      "repository": "googleapis/google-auth-library-java"
+    },
+    {
+      "language": "python",
+      "project": "g-cloud-logging-py",
+      "repository": "googleapis/python-logging"
+    },
+    {
+      "language": "jvm",
+      "project": "g-http-java-client",
+      "repository": "googleapis/google-http-java-client"
+    },
+    {
+      "language": "jvm",
+      "project": "g-oauth-java-client",
+      "repository": "googleapis/google-oauth-java-client"
+    },
+    {
+      "language": "python",
+      "project": "g-py-bigquery",
+      "repository": "googleapis/python-bigquery"
+    },
+    {
+      "language": "python",
+      "project": "g-py-crc32c",
+      "repository": "googleapis/python-crc32c"
+    },
+    {
+      "language": "python",
+      "project": "gast",
+      "repository": "serge-sans-paille/gast"
+    },
+    {
+      "language": "go",
+      "project": "gateway",
+      "repository": "envoyproxy/gateway"
+    },
+    {
+      "language": "python",
+      "project": "gc-iam",
+      "repository": "googleapis/google-cloud-python"
+    },
+    {
+      "language": "python",
+      "project": "gcloud-error-py",
+      "repository": "googleapis/python-error-reporting"
+    },
+    {
+      "language": "go",
+      "project": "gcloud-go",
+      "repository": "googleapis/google-cloud-go"
+    },
+    {
+      "language": "python",
+      "project": "gcp-python-cloud-storage",
+      "repository": "googleapis/python-storage"
+    },
+    {
+      "language": "c++",
+      "project": "gdal",
+      "repository": "osgeo/gdal"
+    },
+    {
+      "language": "python",
+      "project": "genshi",
+      "repository": "edgewall/genshi"
+    },
+    {
+      "language": "c++",
+      "project": "gfwx",
+      "repository": "kalcutter/gfwx"
+    },
+    {
+      "language": "rust",
+      "project": "gimli",
+      "repository": "gimli-rs/gimli"
+    },
+    {
+      "language": "c++",
+      "project": "git",
+      "repository": "git/git"
+    },
+    {
+      "language": "python",
+      "project": "gitdb",
+      "repository": "gitpython-developers/gitdb"
+    },
+    {
+      "language": "go",
+      "project": "gitea",
+      "repository": "go-gitea/gitea"
+    },
+    {
+      "language": "python",
+      "project": "github_scarecrow",
+      "repository": "alan32liu/github-scarecrow"
+    },
+    {
+      "language": "rust",
+      "project": "gitoxide",
+      "repository": "gitoxidelabs/gitoxide"
+    },
+    {
+      "language": "python",
+      "project": "gitpython",
+      "repository": "gitpython-developers/gitpython"
+    },
+    {
+      "language": "c++",
+      "project": "glaze",
+      "repository": "stephenberry/glaze"
+    },
+    {
+      "language": "python",
+      "project": "globaleaks-whistleblowing-software",
+      "repository": "globaleaks/globaleaks-whistleblowing-software"
+    },
+    {
+      "language": "c++",
+      "project": "glog",
+      "repository": "google/glog"
+    },
+    {
+      "language": "python",
+      "project": "glom",
+      "repository": "mahmoud/glom"
+    },
+    {
+      "language": "c++",
+      "project": "glslang",
+      "repository": "khronosgroup/glslang"
+    },
+    {
+      "language": "go",
+      "project": "gluon",
+      "repository": "protonmail/gluon"
+    },
+    {
+      "language": "go",
+      "project": "go-attestation",
+      "repository": "google/go-attestation"
+    },
+    {
+      "language": "go",
+      "project": "go-cmp",
+      "repository": "google/go-cmp"
+    },
+    {
+      "language": "go",
+      "project": "go-coap",
+      "repository": "plgd-dev/go-coap"
+    },
+    {
+      "language": "go",
+      "project": "go-containerregistry",
+      "repository": "google/go-containerregistry"
+    },
+    {
+      "language": "go",
+      "project": "go-coredns",
+      "repository": "coredns/coredns"
+    },
+    {
+      "language": "go",
+      "project": "go-dhcp",
+      "repository": "insomniacslk/dhcp"
+    },
+    {
+      "language": "go",
+      "project": "go-dns",
+      "repository": "miekg/dns"
+    },
+    {
+      "language": "go",
+      "project": "go-ethereum",
+      "repository": "ethereum/go-ethereum"
+    },
+    {
+      "language": "go",
+      "project": "go-git",
+      "repository": "go-git/go-git"
+    },
+    {
+      "language": "go",
+      "project": "go-humanize",
+      "repository": "dustin/go-humanize"
+    },
+    {
+      "language": "go",
+      "project": "go-json-iterator",
+      "repository": "json-iterator/go"
+    },
+    {
+      "language": "go",
+      "project": "go-ldap",
+      "repository": "go-ldap/ldap"
+    },
+    {
+      "language": "go",
+      "project": "go-ole",
+      "repository": "go-ole/go-ole"
+    },
+    {
+      "language": "go",
+      "project": "go-pprof",
+      "repository": "google/pprof"
+    },
+    {
+      "language": "go",
+      "project": "go-readline",
+      "repository": "chzyer/readline"
+    },
+    {
+      "language": "go",
+      "project": "go-redis",
+      "repository": "redis/go-redis"
+    },
+    {
+      "language": "go",
+      "project": "go-sftp",
+      "repository": "pkg/sftp"
+    },
+    {
+      "language": "go",
+      "project": "go-shlex",
+      "repository": "google/shlex"
+    },
+    {
+      "language": "go",
+      "project": "go-snappy",
+      "repository": "golang/snappy"
+    },
+    {
+      "language": "go",
+      "project": "go-sqlite3",
+      "repository": "mattn/go-sqlite3"
+    },
+    {
+      "language": "go",
+      "project": "go-toml",
+      "repository": "pelletier/go-toml"
+    },
+    {
+      "language": "go",
+      "project": "go-yaml",
+      "repository": "go-yaml/yaml"
+    },
+    {
+      "language": "go",
+      "project": "gobgp",
+      "repository": "osrg/gobgp"
+    },
+    {
+      "language": "go",
+      "project": "gogo-protobuf",
+      "repository": "gogo/protobuf"
+    },
+    {
+      "language": "go",
+      "project": "goipp",
+      "repository": "openprinting/goipp"
+    },
+    {
+      "language": "go",
+      "project": "golang",
+      "repository": "golang/go"
+    },
+    {
+      "language": "go",
+      "project": "golang-appengine",
+      "repository": "golang/appengine"
+    },
+    {
+      "language": "go",
+      "project": "golang-protobuf",
+      "repository": "protocolbuffers/protobuf-go"
+    },
+    {
+      "language": "go",
+      "project": "gonids",
+      "repository": "google/gonids"
+    },
+    {
+      "language": "go",
+      "project": "gopacket",
+      "repository": "google/gopacket"
+    },
+    {
+      "language": "go",
+      "project": "gopsutil",
+      "repository": "shirou/gopsutil"
+    },
+    {
+      "language": "go",
+      "project": "gosnmp",
+      "repository": "gosnmp/gosnmp"
+    },
+    {
+      "language": "c",
+      "project": "gpac",
+      "repository": "gpac/gpac"
+    },
+    {
+      "language": "python",
+      "project": "gprof2dot",
+      "repository": "jrfonseca/gprof2dot"
+    },
+    {
+      "language": "jvm",
+      "project": "graphql-java",
+      "repository": "graphql-java/graphql-java"
+    },
+    {
+      "language": "jvm",
+      "project": "greenmail",
+      "repository": "greenmail-mail-test/greenmail"
+    },
+    {
+      "language": "c++",
+      "project": "grok",
+      "repository": "grokimagecompression/grok"
+    },
+    {
+      "language": "jvm",
+      "project": "groovy",
+      "repository": "apache/groovy"
+    },
+    {
+      "language": "go",
+      "project": "grpc-gateway",
+      "repository": "grpc-ecosystem/grpc-gateway"
+    },
+    {
+      "language": "go",
+      "project": "grpc-go",
+      "repository": "grpc/grpc-go"
+    },
+    {
+      "language": "c++",
+      "project": "grpc-httpjson-transcoding",
+      "repository": "grpc-ecosystem/grpc-httpjson-transcoding"
+    },
+    {
+      "language": "python",
+      "project": "grpc-py",
+      "repository": "grpc/grpc"
+    },
+    {
+      "language": "swift",
+      "project": "grpc-swift",
+      "repository": "grpc/grpc-swift"
+    },
+    {
+      "language": "jvm",
+      "project": "gson",
+      "repository": "google/gson"
+    },
+    {
+      "language": "c",
+      "project": "gss-ntlmssp",
+      "repository": "gssapi/gss-ntlmssp"
+    },
+    {
+      "language": "jvm",
+      "project": "guava",
+      "repository": "google/guava"
+    },
+    {
+      "language": "c++",
+      "project": "guetzli",
+      "repository": "google/guetzli"
+    },
+    {
+      "language": "jvm",
+      "project": "guice",
+      "repository": "google/guice"
+    },
+    {
+      "language": "python",
+      "project": "gunicorn",
+      "repository": "benoitc/gunicorn"
+    },
+    {
+      "language": "jvm",
+      "project": "gwt",
+      "repository": "gwtproject/gwt"
+    },
+    {
+      "language": "python",
+      "project": "h11",
+      "repository": "python-hyper/h11"
+    },
+    {
+      "language": "jvm",
+      "project": "h2database",
+      "repository": "h2database/h2database"
+    },
+    {
+      "language": "c++",
+      "project": "h2o",
+      "repository": "h2o/h2o"
+    },
+    {
+      "language": "c",
+      "project": "h3",
+      "repository": "uber/h3"
+    },
+    {
+      "language": "python",
+      "project": "h5py",
+      "repository": "h5py/h5py"
+    },
+    {
+      "language": "jvm",
+      "project": "hadoop",
+      "repository": "apache/hadoop"
+    },
+    {
+      "language": "c++",
+      "project": "halide",
+      "repository": "halide/halide"
+    },
+    {
+      "language": "jvm",
+      "project": "hamcrest",
+      "repository": "hamcrest/javahamcrest"
+    },
+    {
+      "language": "c++",
+      "project": "haproxy",
+      "repository": "haproxy/haproxy"
+    },
+    {
+      "language": "c++",
+      "project": "harfbuzz",
+      "repository": "harfbuzz/harfbuzz"
+    },
+    {
+      "language": "rust",
+      "project": "harfrust",
+      "repository": "harfbuzz/harfrust"
+    },
+    {
+      "language": "go",
+      "project": "hcl",
+      "repository": "hashicorp/hcl"
+    },
+    {
+      "language": "c",
+      "project": "hdf5",
+      "repository": "hdfgroup/hdf5"
+    },
+    {
+      "language": "jvm",
+      "project": "hdrhistogram",
+      "repository": "hdrhistogram/hdrhistogram"
+    },
+    {
+      "language": "go",
+      "project": "helm",
+      "repository": "helm/helm"
+    },
+    {
+      "language": "c++",
+      "project": "hermes",
+      "repository": "facebook/hermes"
+    },
+    {
+      "language": "jvm",
+      "project": "hibernate-orm",
+      "repository": "hibernate/hibernate-orm"
+    },
+    {
+      "language": "jvm",
+      "project": "hibernate-validator",
+      "repository": "hibernate/hibernate-validator"
+    },
+    {
+      "language": "c++",
+      "project": "highwayhash",
+      "repository": "google/highwayhash"
+    },
+    {
+      "language": "jvm",
+      "project": "hikaricp",
+      "repository": "brettwooldridge/hikaricp"
+    },
+    {
+      "language": "c",
+      "project": "hiredis",
+      "repository": "redis/hiredis"
+    },
+    {
+      "language": "python",
+      "project": "hiredis-py",
+      "repository": "redis/hiredis-py"
+    },
+    {
+      "language": "jvm",
+      "project": "hive",
+      "repository": "apache/hive"
+    },
+    {
+      "language": "c++",
+      "project": "hobbes",
+      "repository": "morganstanley/hobbes"
+    },
+    {
+      "language": "c++",
+      "project": "hoextdown",
+      "repository": "kjdev/hoextdown"
+    },
+    {
+      "language": "c++",
+      "project": "hpn-ssh",
+      "repository": "rapier1/hpn-ssh"
+    },
+    {
+      "language": "python",
+      "project": "html2text",
+      "repository": "alir3z4/html2text"
+    },
+    {
+      "language": "python",
+      "project": "html5lib-python",
+      "repository": "html5lib/html5lib-python"
+    },
+    {
+      "language": "jvm",
+      "project": "htmlunit",
+      "repository": "htmlunit/htmlunit"
+    },
+    {
+      "language": "c++",
+      "project": "htslib",
+      "repository": "samtools/htslib"
+    },
+    {
+      "language": "c++",
+      "project": "http-parser",
+      "repository": "nodejs/http-parser"
+    },
+    {
+      "language": "c++",
+      "project": "http-pattern-matcher",
+      "repository": "google/http_pattern_matcher"
+    },
+    {
+      "language": "rust",
+      "project": "httparse",
+      "repository": "seanmonstar/httparse"
+    },
+    {
+      "language": "jvm",
+      "project": "httpcomponents-client",
+      "repository": "apache/httpcomponents-client"
+    },
+    {
+      "language": "jvm",
+      "project": "httpcomponents-core",
+      "repository": "apache/httpcomponents-core"
+    },
+    {
+      "language": "python",
+      "project": "httpcore",
+      "repository": "encode/httpcore"
+    },
+    {
+      "language": "python",
+      "project": "httplib2",
+      "repository": "httplib2/httplib2"
+    },
+    {
+      "language": "python",
+      "project": "httpretty",
+      "repository": "gabrielfalcao/httpretty"
+    },
+    {
+      "language": "python",
+      "project": "httpx",
+      "repository": "encode/httpx"
+    },
+    {
+      "language": "c",
+      "project": "httrack",
+      "repository": "xroche/httrack"
+    },
+    {
+      "language": "go",
+      "project": "hugo",
+      "repository": "gohugoio/hugo"
+    },
+    {
+      "language": "c++",
+      "project": "hunspell",
+      "repository": "hunspell/hunspell"
+    },
+    {
+      "language": "c",
+      "project": "hwloc",
+      "repository": "open-mpi/hwloc"
+    },
+    {
+      "language": "rust",
+      "project": "hyperium",
+      "repository": "hyperium/http"
+    },
+    {
+      "language": "jvm",
+      "project": "ical4j",
+      "repository": "ical4j/ical4j"
+    },
+    {
+      "language": "python",
+      "project": "icalendar",
+      "repository": "collective/icalendar"
+    },
+    {
+      "language": "c++",
+      "project": "icu",
+      "repository": "unicode-org/icu"
+    },
+    {
+      "language": "python",
+      "project": "idna",
+      "repository": "kjd/idna"
+    },
+    {
+      "language": "c",
+      "project": "igraph",
+      "repository": "igraph/igraph"
+    },
+    {
+      "language": "python",
+      "project": "ijson",
+      "repository": "icrar/ijson"
+    },
+    {
+      "language": "rust",
+      "project": "image-png",
+      "repository": "image-rs/image-png"
+    },
+    {
+      "language": "rust",
+      "project": "image-rs",
+      "repository": "image-rs/image"
+    },
+    {
+      "language": "python",
+      "project": "imageio",
+      "repository": "imageio/imageio"
+    },
+    {
+      "language": "c++",
+      "project": "imagemagick",
+      "repository": "imagemagick/imagemagick"
+    },
+    {
+      "language": "c++",
+      "project": "immer",
+      "repository": "arximboldi/immer"
+    },
+    {
+      "language": "python",
+      "project": "importlib_metadata",
+      "repository": "python/importlib_metadata"
+    },
+    {
+      "language": "c",
+      "project": "inchi",
+      "repository": "iupac-inchi/inchi"
+    },
+    {
+      "language": "go",
+      "project": "influxdb",
+      "repository": "influxdata/influxdb"
+    },
+    {
+      "language": "python",
+      "project": "iniconfig",
+      "repository": "pytest-dev/iniconfig"
+    },
+    {
+      "language": "c",
+      "project": "inih",
+      "repository": "benhoyt/inih"
+    },
+    {
+      "language": "jvm",
+      "project": "ion-java",
+      "repository": "amazon-ion/ion-java"
+    },
+    {
+      "language": "python",
+      "project": "ipaddress",
+      "repository": "phihag/ipaddress"
+    },
+    {
+      "language": "c++",
+      "project": "iperf",
+      "repository": "esnet/iperf"
+    },
+    {
+      "language": "go",
+      "project": "ipfs",
+      "repository": "ipfs/go-datastore"
+    },
+    {
+      "language": "c++",
+      "project": "ipmi-fru-parser",
+      "repository": "openbmc/ipmi-fru-parser"
+    },
+    {
+      "language": "go",
+      "project": "ipp-usb",
+      "repository": "openprinting/ipp-usb"
+    },
+    {
+      "language": "python",
+      "project": "ipykernel",
+      "repository": "ipython/ipykernel"
+    },
+    {
+      "language": "python",
+      "project": "ipython",
+      "repository": "ipython/ipython"
+    },
+    {
+      "language": "c++",
+      "project": "iroha",
+      "repository": "hyperledger/iroha"
+    },
+    {
+      "language": "c++",
+      "project": "irssi",
+      "repository": "irssi/irssi"
+    },
+    {
+      "language": "python",
+      "project": "isodate",
+      "repository": "gweis/isodate"
+    },
+    {
+      "language": "go",
+      "project": "istio",
+      "repository": "istio/istio"
+    },
+    {
+      "language": "rust",
+      "project": "istio-ztunnel",
+      "repository": "istio/ztunnel"
+    },
+    {
+      "language": "jvm",
+      "project": "itext7",
+      "repository": "itext/itext7"
+    },
+    {
+      "language": "rust",
+      "project": "itoa",
+      "repository": "dtolnay/itoa"
+    },
+    {
+      "language": "python",
+      "project": "itsdangerous",
+      "repository": "pallets/itsdangerous"
+    },
+    {
+      "language": "c++",
+      "project": "iverilog",
+      "repository": "steveicarus/iverilog"
+    },
+    {
+      "language": "python",
+      "project": "ja3",
+      "repository": "salesforce/ja3"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-core",
+      "repository": "fasterxml/jackson-core"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-databind",
+      "repository": "fasterxml/jackson-databind"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-dataformat-xml",
+      "repository": "fasterxml/jackson-dataformat-xml"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-dataformats-binary",
+      "repository": "fasterxml/jackson-dataformats-binary"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-dataformats-text",
+      "repository": "fasterxml/jackson-dataformats-text"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-datatype-joda",
+      "repository": "fasterxml/jackson-datatype-joda"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-datatypes-collections",
+      "repository": "fasterxml/jackson-datatypes-collections"
+    },
+    {
+      "language": "jvm",
+      "project": "jackson-modules-java8",
+      "repository": "fasterxml/jackson-modules-java8"
+    },
+    {
+      "language": "jvm",
+      "project": "jakarta-mail-api",
+      "repository": "eclipse-ee4j/mail"
+    },
+    {
+      "language": "c++",
+      "project": "janet",
+      "repository": "janet-lang/janet"
+    },
+    {
+      "language": "jvm",
+      "project": "janino",
+      "repository": "janino-compiler/janino"
+    },
+    {
+      "language": "jvm",
+      "project": "jansi",
+      "repository": "fusesource/jansi"
+    },
+    {
+      "language": "c++",
+      "project": "jansson",
+      "repository": "akheron/jansson"
+    },
+    {
+      "language": "c++",
+      "project": "janus-gateway",
+      "repository": "meetecho/janus-gateway"
+    },
+    {
+      "language": "jvm",
+      "project": "java-diff-utils",
+      "repository": "java-diff-utils/java-diff-utils"
+    },
+    {
+      "language": "jvm",
+      "project": "java-example",
+      "repository": "codeintelligencetesting/jazzer"
+    },
+    {
+      "language": "jvm",
+      "project": "java-jwt",
+      "repository": "auth0/java-jwt"
+    },
+    {
+      "language": "jvm",
+      "project": "java-uuid-generator",
+      "repository": "cowtowncoder/java-uuid-generator"
+    },
+    {
+      "language": "jvm",
+      "project": "java-xmlbuilder",
+      "repository": "jmurty/java-xmlbuilder"
+    },
+    {
+      "language": "jvm",
+      "project": "javacpp",
+      "repository": "bytedeco/javacpp"
+    },
+    {
+      "language": "jvm",
+      "project": "javaparser",
+      "repository": "javaparser/javaparser"
+    },
+    {
+      "language": "jvm",
+      "project": "javapoet",
+      "repository": "square/javapoet"
+    },
+    {
+      "language": "javascript",
+      "project": "javascript-example",
+      "repository": "codeintelligencetesting/jazzer.js"
+    },
+    {
+      "language": "jvm",
+      "project": "javassist",
+      "repository": "jboss-javassist/javassist"
+    },
+    {
+      "language": "rust",
+      "project": "javy",
+      "repository": "bytecodealliance/javy"
+    },
+    {
+      "language": "jvm",
+      "project": "jaxb",
+      "repository": "eclipse-ee4j/jaxb-ri"
+    },
+    {
+      "language": "jvm",
+      "project": "jboss-logging",
+      "repository": "jboss-logging/jboss-logging"
+    },
+    {
+      "language": "python",
+      "project": "jc",
+      "repository": "kellyjonbrazil/jc"
+    },
+    {
+      "language": "jvm",
+      "project": "jdom",
+      "repository": "hunterhacker/jdom"
+    },
+    {
+      "language": "python",
+      "project": "jedi",
+      "repository": "davidhalter/jedi"
+    },
+    {
+      "language": "jvm",
+      "project": "jedis",
+      "repository": "redis/jedis"
+    },
+    {
+      "language": "c",
+      "project": "jerryscript",
+      "repository": "jerryscript-project/jerryscript"
+    },
+    {
+      "language": "jvm",
+      "project": "jersey",
+      "repository": "eclipse-ee4j/jersey"
+    },
+    {
+      "language": "jvm",
+      "project": "jettison",
+      "repository": "jettison-json/jettison"
+    },
+    {
+      "language": "jvm",
+      "project": "jetty",
+      "repository": "eclipse/jetty.project"
+    },
+    {
+      "language": "jvm",
+      "project": "jflex",
+      "repository": "jflex-de/jflex"
+    },
+    {
+      "language": "jvm",
+      "project": "jfreechart",
+      "repository": "jfree/jfreechart"
+    },
+    {
+      "language": "javascript",
+      "project": "jimp",
+      "repository": "jimp-dev/jimp"
+    },
+    {
+      "language": "python",
+      "project": "jinja2",
+      "repository": "pallets/jinja"
+    },
+    {
+      "language": "jvm",
+      "project": "jline3",
+      "repository": "jline/jline3"
+    },
+    {
+      "language": "python",
+      "project": "jmespathpy",
+      "repository": "jmespath/jmespath.py"
+    },
+    {
+      "language": "jvm",
+      "project": "jmh",
+      "repository": "openjdk/jmh"
+    },
+    {
+      "language": "python",
+      "project": "joblib",
+      "repository": "joblib/joblib"
+    },
+    {
+      "language": "jvm",
+      "project": "joda-convert",
+      "repository": "jodaorg/joda-convert"
+    },
+    {
+      "language": "jvm",
+      "project": "joda-time",
+      "repository": "jodaorg/joda-time"
+    },
+    {
+      "language": "jvm",
+      "project": "jolt",
+      "repository": "bazaarvoice/jolt"
+    },
+    {
+      "language": "jvm",
+      "project": "joni",
+      "repository": "jruby/joni"
+    },
+    {
+      "language": "jvm",
+      "project": "jooq",
+      "repository": "jooq/jooq"
+    },
+    {
+      "language": "jvm",
+      "project": "jopt-simple",
+      "repository": "jopt-simple/jopt-simple"
+    },
+    {
+      "language": "javascript",
+      "project": "jpeg-js",
+      "repository": "jpeg-js/jpeg-js"
+    },
+    {
+      "language": "c",
+      "project": "jpegoptim",
+      "repository": "tjko/jpegoptim"
+    },
+    {
+      "language": "c",
+      "project": "jq",
+      "repository": "jqlang/jq"
+    },
+    {
+      "language": "javascript",
+      "project": "js-yaml",
+      "repository": "nodeca/js-yaml"
+    },
+    {
+      "language": "c++",
+      "project": "jsc",
+      "repository": "webkit/webkit"
+    },
+    {
+      "language": "jvm",
+      "project": "jsch",
+      "repository": "mwiede/jsch"
+    },
+    {
+      "language": "jvm",
+      "project": "jsemver",
+      "repository": "zafarkhaja/jsemver"
+    },
+    {
+      "language": "jvm",
+      "project": "jsign",
+      "repository": "ebourg/jsign"
+    },
+    {
+      "language": "python",
+      "project": "jsmin",
+      "repository": "tikitu/jsmin"
+    },
+    {
+      "language": "c++",
+      "project": "json",
+      "repository": "nlohmann/json"
+    },
+    {
+      "language": "c++",
+      "project": "json-c",
+      "repository": "json-c/json-c"
+    },
+    {
+      "language": "jvm",
+      "project": "json-flattener",
+      "repository": "wnameless/json-flattener"
+    },
+    {
+      "language": "jvm",
+      "project": "json-java",
+      "repository": "stleary/json-java"
+    },
+    {
+      "language": "go",
+      "project": "json-patch",
+      "repository": "evanphx/json-patch"
+    },
+    {
+      "language": "jvm",
+      "project": "json-sanitizer",
+      "repository": "owasp/json-sanitizer"
+    },
+    {
+      "language": "jvm",
+      "project": "json-simple",
+      "repository": "fangyidong/json-simple"
+    },
+    {
+      "language": "jvm",
+      "project": "json-smart-v2",
+      "repository": "netplex/json-smart-v2"
+    },
+    {
+      "language": "jvm",
+      "project": "json2avro",
+      "repository": "allegro/json-avro-converter"
+    },
+    {
+      "language": "rust",
+      "project": "json5format",
+      "repository": "google/json5format"
+    },
+    {
+      "language": "c++",
+      "project": "jsoncons",
+      "repository": "danielaparker/jsoncons"
+    },
+    {
+      "language": "c++",
+      "project": "jsoncpp",
+      "repository": "open-source-parsers/jsoncpp"
+    },
+    {
+      "language": "c++",
+      "project": "jsonnet",
+      "repository": "google/jsonnet"
+    },
+    {
+      "language": "jvm",
+      "project": "jsonp-api",
+      "repository": "jakartaee/jsonp-api"
+    },
+    {
+      "language": "go",
+      "project": "jsonparser",
+      "repository": "buger/jsonparser"
+    },
+    {
+      "language": "jvm",
+      "project": "jsonpath",
+      "repository": "json-path/jsonpath"
+    },
+    {
+      "language": "python",
+      "project": "jsonpickle",
+      "repository": "jsonpickle/jsonpickle"
+    },
+    {
+      "language": "python",
+      "project": "jsonschema",
+      "repository": "julian/jsonschema"
+    },
+    {
+      "language": "jvm",
+      "project": "jsoup",
+      "repository": "jhy/jsoup"
+    },
+    {
+      "language": "jvm",
+      "project": "jsqlparser",
+      "repository": "jsqlparser/jsqlparser"
+    },
+    {
+      "language": "jvm",
+      "project": "jstl-api",
+      "repository": "eclipse-ee4j/jstl-api"
+    },
+    {
+      "language": "jvm",
+      "project": "jts",
+      "repository": "locationtech/jts"
+    },
+    {
+      "language": "go",
+      "project": "juju",
+      "repository": "juju/juju"
+    },
+    {
+      "language": "jvm",
+      "project": "jul-to-slf4j",
+      "repository": "qos-ch/slf4j"
+    },
+    {
+      "language": "jvm",
+      "project": "junrar",
+      "repository": "junrar/junrar"
+    },
+    {
+      "language": "python",
+      "project": "jupyter-nbconvert",
+      "repository": "jupyter/nbconvert"
+    },
+    {
+      "language": "python",
+      "project": "jupyter_server",
+      "repository": "jupyter-server/jupyter_server"
+    },
+    {
+      "language": "python",
+      "project": "jupytext",
+      "repository": "mwouts/jupytext"
+    },
+    {
+      "language": "c++",
+      "project": "jwt-verify-lib",
+      "repository": "google/jwt_verify_lib"
+    },
+    {
+      "language": "jvm",
+      "project": "jxls",
+      "repository": "jxlsteam/jxls"
+    },
+    {
+      "language": "python",
+      "project": "kafka",
+      "repository": "confluentinc/confluent-kafka-python"
+    },
+    {
+      "language": "c",
+      "project": "kamailio",
+      "repository": "kamailio/kamailio"
+    },
+    {
+      "language": "python",
+      "project": "keras",
+      "repository": "keras-team/keras"
+    },
+    {
+      "language": "jvm",
+      "project": "keycloak",
+      "repository": "keycloak/keycloak"
+    },
+    {
+      "language": "c++",
+      "project": "keystone",
+      "repository": "keystone-engine/keystone"
+    },
+    {
+      "language": "jvm",
+      "project": "kie-soup",
+      "repository": "kiegroup/kie-soup"
+    },
+    {
+      "language": "python",
+      "project": "kiwisolver",
+      "repository": "nucleic/kiwi"
+    },
+    {
+      "language": "go",
+      "project": "knative",
+      "repository": "knative/serving"
+    },
+    {
+      "language": "c",
+      "project": "krb5",
+      "repository": "krb5/krb5"
+    },
+    {
+      "language": "jvm",
+      "project": "kryo",
+      "repository": "esotericsoftware/kryo"
+    },
+    {
+      "language": "go",
+      "project": "kubearmor",
+      "repository": "kubearmor/kubearmor"
+    },
+    {
+      "language": "go",
+      "project": "kubeedge",
+      "repository": "kubeedge/kubeedge"
+    },
+    {
+      "language": "go",
+      "project": "kubeflow-katib",
+      "repository": "kubeflow/katib"
+    },
+    {
+      "language": "go",
+      "project": "kubeflow-model-registry",
+      "repository": "kubeflow/model-registry"
+    },
+    {
+      "language": "go",
+      "project": "kubeflow-pipelines",
+      "repository": "kubeflow/pipelines"
+    },
+    {
+      "language": "go",
+      "project": "kubeflow-spark-operator",
+      "repository": "kubeflow/spark-operator"
+    },
+    {
+      "language": "go",
+      "project": "kubernetes",
+      "repository": "kubernetes/kubernetes"
+    },
+    {
+      "language": "go",
+      "project": "kubernetes-cluster-api",
+      "repository": "kubernetes-sigs/cluster-api"
+    },
+    {
+      "language": "go",
+      "project": "kubevirt",
+      "repository": "kubevirt/kubevirt"
+    },
+    {
+      "language": "go",
+      "project": "kyverno",
+      "repository": "kyverno/kyverno"
+    },
+    {
+      "language": "python",
+      "project": "lark-parser",
+      "repository": "lark-parser/lark"
+    },
+    {
+      "language": "c++",
+      "project": "lcms",
+      "repository": "mm2/little-cms"
+    },
+    {
+      "language": "c++",
+      "project": "leptonica",
+      "repository": "danbloomberg/leptonica"
+    },
+    {
+      "language": "c++",
+      "project": "leveldb",
+      "repository": "google/leveldb"
+    },
+    {
+      "language": "c++",
+      "project": "libarchive",
+      "repository": "libarchive/libarchive"
+    },
+    {
+      "language": "c++",
+      "project": "libass",
+      "repository": "libass/libass"
+    },
+    {
+      "language": "c++",
+      "project": "libavc",
+      "repository": "ittiam-systems/libavc"
+    },
+    {
+      "language": "c++",
+      "project": "libavif",
+      "repository": "aomediacodec/libavif"
+    },
+    {
+      "language": "c",
+      "project": "libbpf",
+      "repository": "libbpf/libbpf"
+    },
+    {
+      "language": "c++",
+      "project": "libcbor",
+      "repository": "pjk/libcbor"
+    },
+    {
+      "language": "c",
+      "project": "libcoap",
+      "repository": "obgm/libcoap"
+    },
+    {
+      "language": "c",
+      "project": "libconfig",
+      "repository": "hyperrealm/libconfig"
+    },
+    {
+      "language": "python",
+      "project": "libcst",
+      "repository": "instagram/libcst"
+    },
+    {
+      "language": "c",
+      "project": "libcue",
+      "repository": "lipnitsk/libcue"
+    },
+    {
+      "language": "c++",
+      "project": "libcups",
+      "repository": "openprinting/libcups"
+    },
+    {
+      "language": "c",
+      "project": "libdwarf",
+      "repository": "davea42/libdwarf-code"
+    },
+    {
+      "language": "c++",
+      "project": "libecc",
+      "repository": "anssi-fr/libecc"
+    },
+    {
+      "language": "c++",
+      "project": "libevent",
+      "repository": "libevent/libevent"
+    },
+    {
+      "language": "c++",
+      "project": "libexif",
+      "repository": "libexif/libexif"
+    },
+    {
+      "language": "c++",
+      "project": "libfido2",
+      "repository": "yubico/libfido2"
+    },
+    {
+      "language": "c",
+      "project": "libfuse",
+      "repository": "libfuse/libfuse"
+    },
+    {
+      "language": "c++",
+      "project": "libgd",
+      "repository": "libgd/libgd"
+    },
+    {
+      "language": "c++",
+      "project": "libgit2",
+      "repository": "libgit2/libgit2"
+    },
+    {
+      "language": "c++",
+      "project": "libheif",
+      "repository": "strukturag/libheif"
+    },
+    {
+      "language": "c++",
+      "project": "libhevc",
+      "repository": "ittiam-systems/libhevc"
+    },
+    {
+      "language": "c",
+      "project": "libhtp",
+      "repository": "oisf/libhtp"
+    },
+    {
+      "language": "c++",
+      "project": "libical",
+      "repository": "libical/libical"
+    },
+    {
+      "language": "c",
+      "project": "libiec61850",
+      "repository": "mz-automation/libiec61850"
+    },
+    {
+      "language": "c++",
+      "project": "libigl",
+      "repository": "libigl/libigl"
+    },
+    {
+      "language": "c",
+      "project": "libjpeg-turbo",
+      "repository": "libjpeg-turbo/libjpeg-turbo"
+    },
+    {
+      "language": "c++",
+      "project": "libjxl",
+      "repository": "libjxl/libjxl"
+    },
+    {
+      "language": "c",
+      "project": "liblouis",
+      "repository": "liblouis/liblouis"
+    },
+    {
+      "language": "c",
+      "project": "libmodbus",
+      "repository": "stephane/libmodbus"
+    },
+    {
+      "language": "c++",
+      "project": "libmpeg2",
+      "repository": "ittiam-systems/libmpeg2"
+    },
+    {
+      "language": "c",
+      "project": "liboqs",
+      "repository": "open-quantum-safe/liboqs"
+    },
+    {
+      "language": "c++",
+      "project": "libpcap",
+      "repository": "the-tcpdump-group/libpcap"
+    },
+    {
+      "language": "c",
+      "project": "libpg_query",
+      "repository": "pganalyze/pg_query"
+    },
+    {
+      "language": "c++",
+      "project": "libphonenumber",
+      "repository": "google/libphonenumber"
+    },
+    {
+      "language": "c++",
+      "project": "libplist",
+      "repository": "libimobiledevice/libplist"
+    },
+    {
+      "language": "c++",
+      "project": "libpng",
+      "repository": "pnggroup/libpng"
+    },
+    {
+      "language": "c++",
+      "project": "libpng-proto",
+      "repository": "pnggroup/libpng"
+    },
+    {
+      "language": "c++",
+      "project": "libprotobuf-mutator",
+      "repository": "google/libprotobuf-mutator"
+    },
+    {
+      "language": "c",
+      "project": "libproxy",
+      "repository": "libproxy/libproxy"
+    },
+    {
+      "language": "c++",
+      "project": "libpsl",
+      "repository": "rockdaboot/libpsl"
+    },
+    {
+      "language": "rust",
+      "project": "libra",
+      "repository": "libra/libra"
+    },
+    {
+      "language": "c++",
+      "project": "libraw",
+      "repository": "libraw/libraw"
+    },
+    {
+      "language": "c++",
+      "project": "librawspeed",
+      "repository": "darktable-org/rawspeed"
+    },
+    {
+      "language": "c++",
+      "project": "librdkafka",
+      "repository": "edenhill/librdkafka"
+    },
+    {
+      "language": "c",
+      "project": "libredwg",
+      "repository": "libredwg/libredwg"
+    },
+    {
+      "language": "c++",
+      "project": "libressl",
+      "repository": "libressl/portable"
+    },
+    {
+      "language": "python",
+      "project": "librosa",
+      "repository": "librosa/librosa"
+    },
+    {
+      "language": "c++",
+      "project": "libsass",
+      "repository": "sass/libsass"
+    },
+    {
+      "language": "c",
+      "project": "libsndfile",
+      "repository": "libsndfile/libsndfile"
+    },
+    {
+      "language": "c++",
+      "project": "libsodium",
+      "repository": "jedisct1/libsodium"
+    },
+    {
+      "language": "c",
+      "project": "libspdm",
+      "repository": "dmtf/libspdm"
+    },
+    {
+      "language": "c++",
+      "project": "libspng",
+      "repository": "randy408/libspng"
+    },
+    {
+      "language": "c++",
+      "project": "libsrtp",
+      "repository": "cisco/libsrtp"
+    },
+    {
+      "language": "c++",
+      "project": "libssh2",
+      "repository": "libssh2/libssh2"
+    },
+    {
+      "language": "c++",
+      "project": "libtorrent",
+      "repository": "arvidn/libtorrent"
+    },
+    {
+      "language": "c++",
+      "project": "libtpms",
+      "repository": "stefanberger/libtpms"
+    },
+    {
+      "language": "c",
+      "project": "libucl",
+      "repository": "vstakhov/libucl"
+    },
+    {
+      "language": "c++",
+      "project": "libultrahdr",
+      "repository": "google/libultrahdr"
+    },
+    {
+      "language": "c",
+      "project": "libunwind",
+      "repository": "libunwind/libunwind"
+    },
+    {
+      "language": "c++",
+      "project": "libusb",
+      "repository": "libusb/libusb"
+    },
+    {
+      "language": "c++",
+      "project": "libvips",
+      "repository": "libvips/libvips"
+    },
+    {
+      "language": "c++",
+      "project": "libvnc",
+      "repository": "libvnc/libvncserver"
+    },
+    {
+      "language": "c++",
+      "project": "libxaac",
+      "repository": "ittiam-systems/libxaac"
+    },
+    {
+      "language": "c++",
+      "project": "libxls",
+      "repository": "libxls/libxls"
+    },
+    {
+      "language": "c",
+      "project": "libxlsxwriter",
+      "repository": "jmcnamara/libxlsxwriter"
+    },
+    {
+      "language": "c",
+      "project": "libyal",
+      "repository": "libyal/libfplist"
+    },
+    {
+      "language": "c++",
+      "project": "libyaml",
+      "repository": "yaml/libyaml"
+    },
+    {
+      "language": "c",
+      "project": "libyang",
+      "repository": "cesnet/libyang"
+    },
+    {
+      "language": "c++",
+      "project": "libzip",
+      "repository": "nih-at/libzip"
+    },
+    {
+      "language": "c++",
+      "project": "libzmq",
+      "repository": "zeromq/libzmq"
+    },
+    {
+      "language": "c",
+      "project": "lighttpd",
+      "repository": "lighttpd/lighttpd1.4"
+    },
+    {
+      "language": "go",
+      "project": "lima",
+      "repository": "lima-vm/lima"
+    },
+    {
+      "language": "go",
+      "project": "linkerd2",
+      "repository": "linkerd/linkerd2"
+    },
+    {
+      "language": "rust",
+      "project": "linkerd2-proxy",
+      "repository": "linkerd/linkerd2-proxy"
+    },
+    {
+      "language": "javascript",
+      "project": "lit",
+      "repository": "lit/lit"
+    },
+    {
+      "language": "go",
+      "project": "litmuschaos",
+      "repository": "litmuschaos/litmus"
+    },
+    {
+      "language": "c++",
+      "project": "llamacpp",
+      "repository": "ggerganov/llama.cpp"
+    },
+    {
+      "language": "c++",
+      "project": "lldb-eval",
+      "repository": "google/lldb-eval"
+    },
+    {
+      "language": "c",
+      "project": "lldpd",
+      "repository": "lldpd/lldpd"
+    },
+    {
+      "language": "c",
+      "project": "llhttp",
+      "repository": "nodejs/llhttp"
+    },
+    {
+      "language": "c++",
+      "project": "llvm",
+      "repository": "llvm/llvm-project"
+    },
+    {
+      "language": "c++",
+      "project": "llvm_libcxx",
+      "repository": "llvm/llvm-project"
+    },
+    {
+      "language": "c++",
+      "project": "llvm_libcxxabi",
+      "repository": "llvm/llvm-project"
+    },
+    {
+      "language": "javascript",
+      "project": "lodash",
+      "repository": "lodash/lodash"
+    },
+    {
+      "language": "c++",
+      "project": "lodepng",
+      "repository": "lvandeve/lodepng"
+    },
+    {
+      "language": "jvm",
+      "project": "log4j2",
+      "repository": "apache/logging-log4j2"
+    },
+    {
+      "language": "jvm",
+      "project": "logback",
+      "repository": "qos-ch/logback"
+    },
+    {
+      "language": "go",
+      "project": "loki",
+      "repository": "grafana/loki"
+    },
+    {
+      "language": "python",
+      "project": "looker-sdk",
+      "repository": "looker-open-source/sdk-codegen"
+    },
+    {
+      "language": "go",
+      "project": "lotus",
+      "repository": "filecoin-project/lotus"
+    },
+    {
+      "language": "c",
+      "project": "lua",
+      "repository": "lua/lua"
+    },
+    {
+      "language": "c",
+      "project": "lua-example",
+      "repository": "ligurio/luzer"
+    },
+    {
+      "language": "jvm",
+      "project": "lucene",
+      "repository": "apache/lucene"
+    },
+    {
+      "language": "c++",
+      "project": "lwan",
+      "repository": "lpereira/lwan"
+    },
+    {
+      "language": "c",
+      "project": "lxc",
+      "repository": "lxc/lxc"
+    },
+    {
+      "language": "python",
+      "project": "lxml",
+      "repository": "lxml/lxml"
+    },
+    {
+      "language": "c++",
+      "project": "lz4",
+      "repository": "lz4/lz4"
+    },
+    {
+      "language": "rust",
+      "project": "lz4_flex",
+      "repository": "pseitz/lz4_flex"
+    },
+    {
+      "language": "c++",
+      "project": "lzma",
+      "repository": "fancycode/lzma-fuzz"
+    },
+    {
+      "language": "c++",
+      "project": "magic-enum",
+      "repository": "neargye/magic_enum"
+    },
+    {
+      "language": "go",
+      "project": "magic-modules",
+      "repository": "googlecloudplatform/magic-modules"
+    },
+    {
+      "language": "python",
+      "project": "mako",
+      "repository": "sqlalchemy/mako"
+    },
+    {
+      "language": "",
+      "project": "mandelbulber",
+      "repository": "buddhi1980/mandelbulber2"
+    },
+    {
+      "language": "c++",
+      "project": "mapserver",
+      "repository": "mapserver/mapserver"
+    },
+    {
+      "language": "c++",
+      "project": "mariadb",
+      "repository": "mariadb/server"
+    },
+    {
+      "language": "jvm",
+      "project": "mariadb-connector-j",
+      "repository": "mariadb-corporation/mariadb-connector-j"
+    },
+    {
+      "language": "python",
+      "project": "markdown-it-py",
+      "repository": "executablebooks/markdown-it-py"
+    },
+    {
+      "language": "python",
+      "project": "markupsafe",
+      "repository": "pallets/markupsafe"
+    },
+    {
+      "language": "c++",
+      "project": "matio",
+      "repository": "tbeu/matio"
+    },
+    {
+      "language": "python",
+      "project": "matplotlib",
+      "repository": "matplotlib/matplotlib"
+    },
+    {
+      "language": "jvm",
+      "project": "maven",
+      "repository": "apache/maven"
+    },
+    {
+      "language": "jvm",
+      "project": "maven-model",
+      "repository": "apache/maven"
+    },
+    {
+      "language": "c++",
+      "project": "mbedtls",
+      "repository": "mbed-tls/mbedtls"
+    },
+    {
+      "language": "python",
+      "project": "mccabe",
+      "repository": "pycqa/mccabe"
+    },
+    {
+      "language": "c",
+      "project": "md4c",
+      "repository": "mity/md4c"
+    },
+    {
+      "language": "rust",
+      "project": "mdbook-i18n-helpers",
+      "repository": "google/mdbook-i18n-helpers"
+    },
+    {
+      "language": "c",
+      "project": "mdbtools",
+      "repository": "mdbtools/mdbtools"
+    },
+    {
+      "language": "python",
+      "project": "mdit-py-plugins",
+      "repository": "executablebooks/mdit-py-plugins"
+    },
+    {
+      "language": "python",
+      "project": "mdurl",
+      "repository": "executablebooks/mdurl"
+    },
+    {
+      "language": "c",
+      "project": "memcached",
+      "repository": "memcached/memcached"
+    },
+    {
+      "language": "c++",
+      "project": "meshoptimizer",
+      "repository": "zeux/meshoptimizer"
+    },
+    {
+      "language": "jvm",
+      "project": "metadata-extractor",
+      "repository": "drewnoakes/metadata-extractor"
+    },
+    {
+      "language": "go",
+      "project": "metallb",
+      "repository": "metallb/metallb"
+    },
+    {
+      "language": "c++",
+      "project": "mfcmapi",
+      "repository": "microsoft/mfcmapi"
+    },
+    {
+      "language": "jvm",
+      "project": "micronaut",
+      "repository": "micronaut-projects/micronaut-core"
+    },
+    {
+      "language": "rust",
+      "project": "migtd",
+      "repository": "intel/migtd"
+    },
+    {
+      "language": "go",
+      "project": "minify",
+      "repository": "tdewolff/minify"
+    },
+    {
+      "language": "c",
+      "project": "miniz",
+      "repository": "richgel999/miniz"
+    },
+    {
+      "language": "rust",
+      "project": "miniz_oxide",
+      "repository": "frommi/miniz_oxide"
+    },
+    {
+      "language": "c++",
+      "project": "minizip",
+      "repository": "zlib-ng/minizip-ng"
+    },
+    {
+      "language": "go",
+      "project": "moby",
+      "repository": "moby/moby"
+    },
+    {
+      "language": "c",
+      "project": "mod-auth-openidc",
+      "repository": "openidc/mod_auth_openidc"
+    },
+    {
+      "language": "python",
+      "project": "model-transparency",
+      "repository": "sigstore/model-transparency"
+    },
+    {
+      "language": "c++",
+      "project": "monero",
+      "repository": "monero-project/monero"
+    },
+    {
+      "language": "go",
+      "project": "mongo-go-driver",
+      "repository": "mongodb/mongo-go-driver"
+    },
+    {
+      "language": "c++",
+      "project": "mongoose",
+      "repository": "cesanta/mongoose"
+    },
+    {
+      "language": "python",
+      "project": "more-itertools",
+      "repository": "more-itertools/more-itertools"
+    },
+    {
+      "language": "c++",
+      "project": "mosh",
+      "repository": "mobile-shell/mosh"
+    },
+    {
+      "language": "c",
+      "project": "mosquitto",
+      "repository": "eclipse-mosquitto/mosquitto"
+    },
+    {
+      "language": "rust",
+      "project": "mp4parse-rust",
+      "repository": "mozilla/mp4parse-rust"
+    },
+    {
+      "language": "rust",
+      "project": "mp4san",
+      "repository": "signalapp/mp4san"
+    },
+    {
+      "language": "c++",
+      "project": "mpg123",
+      "repository": "dreamerc/mpg123"
+    },
+    {
+      "language": "c",
+      "project": "mpv",
+      "repository": "mpv-player/mpv"
+    },
+    {
+      "language": "python",
+      "project": "mrab-regex",
+      "repository": "mrabarnett/mrab-regex"
+    },
+    {
+      "language": "c++",
+      "project": "mruby",
+      "repository": "mruby/mruby"
+    },
+    {
+      "language": "c",
+      "project": "ms-tpm-20-ref",
+      "repository": "microsoft/ms-tpm-20-ref"
+    },
+    {
+      "language": "python",
+      "project": "msal",
+      "repository": "azuread/microsoft-authentication-library-for-python"
+    },
+    {
+      "language": "c++",
+      "project": "msgpack-c",
+      "repository": "msgpack/msgpack-c"
+    },
+    {
+      "language": "python",
+      "project": "msgpack-python",
+      "repository": "msgpack/msgpack-python"
+    },
+    {
+      "language": "c",
+      "project": "msquic",
+      "repository": "microsoft/msquic"
+    },
+    {
+      "language": "go",
+      "project": "mtail",
+      "repository": "google/mtail"
+    },
+    {
+      "language": "c++",
+      "project": "muduo",
+      "repository": "chenshuo/muduo"
+    },
+    {
+      "language": "python",
+      "project": "multidict",
+      "repository": "aio-libs/multidict"
+    },
+    {
+      "language": "go",
+      "project": "multierr",
+      "repository": "uber-go/multierr"
+    },
+    {
+      "language": "c++",
+      "project": "muparser",
+      "repository": "beltoforion/muparser"
+    },
+    {
+      "language": "c++",
+      "project": "mupdf",
+      "repository": "artifexsoftware/mupdf"
+    },
+    {
+      "language": "python",
+      "project": "mutagen",
+      "repository": "quodlibet/mutagen"
+    },
+    {
+      "language": "jvm",
+      "project": "mvel",
+      "repository": "mvel/mvel"
+    },
+    {
+      "language": "go",
+      "project": "mxj",
+      "repository": "clbanning/mxj"
+    },
+    {
+      "language": "c++",
+      "project": "myanmar-tools",
+      "repository": "google/myanmar-tools"
+    },
+    {
+      "language": "jvm",
+      "project": "mybatis-3",
+      "repository": "mybatis/mybatis-3"
+    },
+    {
+      "language": "jvm",
+      "project": "mysql-connector-j",
+      "repository": "mysql/mysql-connector-j"
+    },
+    {
+      "language": "c++",
+      "project": "mysql-server",
+      "repository": "mysql/mysql-server"
+    },
+    {
+      "language": "rust",
+      "project": "naga",
+      "repository": "gfx-rs/naga"
+    },
+    {
+      "language": "c++",
+      "project": "nanopb",
+      "repository": "nanopb/nanopb"
+    },
+    {
+      "language": "go",
+      "project": "nats",
+      "repository": "nats-io/nats-server"
+    },
+    {
+      "language": "python",
+      "project": "nbclassic",
+      "repository": "jupyter/nbclassic"
+    },
+    {
+      "language": "python",
+      "project": "nbformat",
+      "repository": "jupyter/nbformat"
+    },
+    {
+      "language": "c++",
+      "project": "nccl",
+      "repository": "nvidia/nccl"
+    },
+    {
+      "language": "c++",
+      "project": "ndpi",
+      "repository": "ntop/ndpi"
+    },
+    {
+      "language": "c++",
+      "project": "neomutt",
+      "repository": "neomutt/neomutt"
+    },
+    {
+      "language": "rust",
+      "project": "neqo",
+      "repository": "mozilla/neqo"
+    },
+    {
+      "language": "c++",
+      "project": "nestegg",
+      "repository": "kinetiknz/nestegg"
+    },
+    {
+      "language": "c++",
+      "project": "net-snmp",
+      "repository": "net-snmp/net-snmp"
+    },
+    {
+      "language": "python",
+      "project": "netaddr-py",
+      "repository": "netaddr/netaddr"
+    },
+    {
+      "language": "c++",
+      "project": "netcdf",
+      "repository": "unidata/netcdf-c"
+    },
+    {
+      "language": "",
+      "project": "netdata",
+      "repository": "netdata/netdata"
+    },
+    {
+      "language": "jvm",
+      "project": "netty",
+      "repository": "netty/netty"
+    },
+    {
+      "language": "jvm",
+      "project": "netty-tcnative",
+      "repository": "netty/netty-tcnative"
+    },
+    {
+      "language": "python",
+      "project": "networkx",
+      "repository": "networkx/networkx"
+    },
+    {
+      "language": "python",
+      "project": "nfstream",
+      "repository": "nfstream/nfstream"
+    },
+    {
+      "language": "c++",
+      "project": "nghttp2",
+      "repository": "nghttp2/nghttp2"
+    },
+    {
+      "language": "c",
+      "project": "nginx",
+      "repository": "nginx/nginx"
+    },
+    {
+      "language": "go",
+      "project": "ngolo-fuzzing",
+      "repository": "catenacyber/ngolo-fuzzing"
+    },
+    {
+      "language": "go",
+      "project": "ngolo-fuzzing-x",
+      "repository": "catenacyber/ngolo-fuzzing"
+    },
+    {
+      "language": "c++",
+      "project": "ninja",
+      "repository": "ninja-build/ninja"
+    },
+    {
+      "language": "c++",
+      "project": "njs",
+      "repository": "nginx/njs"
+    },
+    {
+      "language": "javascript",
+      "project": "node-xml2js",
+      "repository": "leonidas-from-xiv/node-xml2js"
+    },
+    {
+      "language": "c++",
+      "project": "nodejs",
+      "repository": "nodejs/node"
+    },
+    {
+      "language": "c",
+      "project": "nokogiri",
+      "repository": "sparklemotion/nokogiri"
+    },
+    {
+      "language": "rust",
+      "project": "nom",
+      "repository": "geal/nom"
+    },
+    {
+      "language": "go",
+      "project": "notary",
+      "repository": "notaryproject/notary"
+    },
+    {
+      "language": "python",
+      "project": "ntlm-auth",
+      "repository": "jborean93/ntlm-auth"
+    },
+    {
+      "language": "python",
+      "project": "ntlm2",
+      "repository": "dopstar/requests-ntlm2"
+    },
+    {
+      "language": "c++",
+      "project": "ntopng",
+      "repository": "ntop/ntopng"
+    },
+    {
+      "language": "c++",
+      "project": "ntp",
+      "repository": "ntp-project/ntp"
+    },
+    {
+      "language": "c++",
+      "project": "num-bigint",
+      "repository": "rust-num/num-bigint"
+    },
+    {
+      "language": "c",
+      "project": "numactl",
+      "repository": "numactl/numactl"
+    },
+    {
+      "language": "python",
+      "project": "numexpr",
+      "repository": "pydata/numexpr"
+    },
+    {
+      "language": "python",
+      "project": "numpy",
+      "repository": "numpy/numpy"
+    },
+    {
+      "language": "rust",
+      "project": "oak",
+      "repository": "project-oak/oak"
+    },
+    {
+      "language": "c++",
+      "project": "oatpp",
+      "repository": "oatpp/oatpp"
+    },
+    {
+      "language": "python",
+      "project": "oauth2",
+      "repository": "googleapis/oauth2client"
+    },
+    {
+      "language": "python",
+      "project": "oauthlib",
+      "repository": "oauthlib/oauthlib"
+    },
+    {
+      "language": "c++",
+      "project": "ogre",
+      "repository": "ogrecave/ogre"
+    },
+    {
+      "language": "jvm",
+      "project": "ohc",
+      "repository": "snazy/ohc"
+    },
+    {
+      "language": "jvm",
+      "project": "okhttp",
+      "repository": "square/okhttp"
+    },
+    {
+      "language": "python",
+      "project": "olefile",
+      "repository": "decalage2/olefile"
+    },
+    {
+      "language": "c++",
+      "project": "onednn",
+      "repository": "uxlfoundation/onednn"
+    },
+    {
+      "language": "python",
+      "project": "onnx",
+      "repository": "onnx/onnx"
+    },
+    {
+      "language": "jvm",
+      "project": "open-json",
+      "repository": "tdunning/open-json"
+    },
+    {
+      "language": "c",
+      "project": "open5gs",
+      "repository": "open5gs/open5gs"
+    },
+    {
+      "language": "c++",
+      "project": "open62541",
+      "repository": "open62541/open62541"
+    },
+    {
+      "language": "python",
+      "project": "openapi-schema-validator",
+      "repository": "p1c2u/openapi-schema-validator"
+    },
+    {
+      "language": "c++",
+      "project": "openbabel",
+      "repository": "openbabel/openbabel"
+    },
+    {
+      "language": "c++",
+      "project": "opencensus-cpp",
+      "repository": "census-instrumentation/opencensus-cpp"
+    },
+    {
+      "language": "go",
+      "project": "opencensus-go",
+      "repository": "census-instrumentation/opencensus-go"
+    },
+    {
+      "language": "jvm",
+      "project": "opencensus-java",
+      "repository": "census-instrumentation/opencensus-java"
+    },
+    {
+      "language": "python",
+      "project": "opencensus-python",
+      "repository": "census-instrumentation/opencensus-python"
+    },
+    {
+      "language": "c++",
+      "project": "opencv",
+      "repository": "opencv/opencv"
+    },
+    {
+      "language": "rust",
+      "project": "opendal",
+      "repository": "apache/opendal"
+    },
+    {
+      "language": "c",
+      "project": "opendds",
+      "repository": "objectcomputing/opendds"
+    },
+    {
+      "language": "c++",
+      "project": "opendnp3",
+      "repository": "dnp3/opendnp3"
+    },
+    {
+      "language": "c++",
+      "project": "openexr",
+      "repository": "academysoftwarefoundation/openexr"
+    },
+    {
+      "language": "go",
+      "project": "openfga",
+      "repository": "openfga/openfga"
+    },
+    {
+      "language": "c++",
+      "project": "openh264",
+      "repository": "cisco/openh264"
+    },
+    {
+      "language": "c++",
+      "project": "openjpeg",
+      "repository": "uclouvain/openjpeg"
+    },
+    {
+      "language": "c++",
+      "project": "openjph",
+      "repository": "aous72/openjph"
+    },
+    {
+      "language": "go",
+      "project": "openkruise",
+      "repository": "openkruise/kruise"
+    },
+    {
+      "language": "c++",
+      "project": "opennavsurf-bag",
+      "repository": "opennavigationsurface/bag"
+    },
+    {
+      "language": "c++",
+      "project": "opensc",
+      "repository": "opensc/opensc"
+    },
+    {
+      "language": "c",
+      "project": "opensips",
+      "repository": "opensips/opensips"
+    },
+    {
+      "language": "rust",
+      "project": "opensk",
+      "repository": "google/opensk"
+    },
+    {
+      "language": "c",
+      "project": "openslide",
+      "repository": "openslide/openslide"
+    },
+    {
+      "language": "c++",
+      "project": "openssh",
+      "repository": "openssh/openssh-portable"
+    },
+    {
+      "language": "c++",
+      "project": "openssl",
+      "repository": "openssl/openssl"
+    },
+    {
+      "language": "go",
+      "project": "opentelemetry",
+      "repository": "open-telemetry/community"
+    },
+    {
+      "language": "go",
+      "project": "opentelemetry-go",
+      "repository": "open-telemetry/opentelemetry-go"
+    },
+    {
+      "language": "go",
+      "project": "opentelemetry-go-contrib",
+      "repository": "open-telemetry/opentelemetry-go-contrib"
+    },
+    {
+      "language": "c++",
+      "project": "openthread",
+      "repository": "openthread/openthread"
+    },
+    {
+      "language": "c",
+      "project": "openvpn",
+      "repository": "openvpn/openvpn"
+    },
+    {
+      "language": "c++",
+      "project": "openvswitch",
+      "repository": "openvswitch/ovs"
+    },
+    {
+      "language": "c++",
+      "project": "openweave",
+      "repository": "openweave/openweave-core"
+    },
+    {
+      "language": "go",
+      "project": "openyurt",
+      "repository": "openyurtio/openyurt"
+    },
+    {
+      "language": "python",
+      "project": "opt_einsum",
+      "repository": "dgasmith/opt_einsum"
+    },
+    {
+      "language": "python",
+      "project": "oracle-py-cx",
+      "repository": "oracle/python-cx_oracle"
+    },
+    {
+      "language": "python",
+      "project": "orjson",
+      "repository": "ijl/orjson"
+    },
+    {
+      "language": "python",
+      "project": "oscrypto",
+      "repository": "wbond/oscrypto"
+    },
+    {
+      "language": "jvm",
+      "project": "osgi",
+      "repository": "osgi/osgi"
+    },
+    {
+      "language": "c++",
+      "project": "osquery",
+      "repository": "osquery/osquery"
+    },
+    {
+      "language": "c",
+      "project": "oss-fuzz-example",
+      "repository": "adalogics/oss-fuzz-example"
+    },
+    {
+      "language": "go",
+      "project": "ossf-scorecard",
+      "repository": "ossf/scorecard"
+    },
+    {
+      "language": "c",
+      "project": "ostree",
+      "repository": "ostreedev/ostree"
+    },
+    {
+      "language": "c++",
+      "project": "ots",
+      "repository": "khaledhosny/ots"
+    },
+    {
+      "language": "ruby",
+      "project": "ox-ruby",
+      "repository": "ohler55/ox"
+    },
+    {
+      "language": "go",
+      "project": "oxia",
+      "repository": "oxia-db/oxia"
+    },
+    {
+      "language": "c",
+      "project": "p11-kit",
+      "repository": "p11-glue/p11-kit"
+    },
+    {
+      "language": "go",
+      "project": "p9",
+      "repository": "hugelgupf/p9"
+    },
+    {
+      "language": "c",
+      "project": "pacemaker",
+      "repository": "clusterlabs/pacemaker"
+    },
+    {
+      "language": "python",
+      "project": "packaging",
+      "repository": "pypa/packaging"
+    },
+    {
+      "language": "javascript",
+      "project": "pako",
+      "repository": "nodeca/pako"
+    },
+    {
+      "language": "c",
+      "project": "pam-ipmi",
+      "repository": "openbmc/pam-ipmi"
+    },
+    {
+      "language": "python",
+      "project": "pandas",
+      "repository": "pandas-dev/pandas"
+    },
+    {
+      "language": "python",
+      "project": "paramiko",
+      "repository": "paramiko/paramiko"
+    },
+    {
+      "language": "python",
+      "project": "parse",
+      "repository": "r1chardj0n3s/parse"
+    },
+    {
+      "language": "python",
+      "project": "parsimonious",
+      "repository": "erikrose/parsimonious"
+    },
+    {
+      "language": "python",
+      "project": "parso",
+      "repository": "davidhalter/parso"
+    },
+    {
+      "language": "python",
+      "project": "pasta",
+      "repository": "google/pasta"
+    },
+    {
+      "language": "python",
+      "project": "pathlib2",
+      "repository": "jazzband/pathlib2"
+    },
+    {
+      "language": "go",
+      "project": "pborman-uuid",
+      "repository": "pborman/uuid"
+    },
+    {
+      "language": "c++",
+      "project": "pcapplusplus",
+      "repository": "seladb/pcapplusplus"
+    },
+    {
+      "language": "c++",
+      "project": "pcl",
+      "repository": "pointcloudlibrary/pcl"
+    },
+    {
+      "language": "c++",
+      "project": "pcre2",
+      "repository": "pcre2project/pcre2"
+    },
+    {
+      "language": "javascript",
+      "project": "pdf-js",
+      "repository": "mozilla/pdf.js"
+    },
+    {
+      "language": "jvm",
+      "project": "pdfbox",
+      "repository": "apache/pdfbox"
+    },
+    {
+      "language": "python",
+      "project": "pdfminersix",
+      "repository": "pdfminer/pdfminer.six"
+    },
+    {
+      "language": "python",
+      "project": "pdfplumber",
+      "repository": "jsvine/pdfplumber"
+    },
+    {
+      "language": "python",
+      "project": "pdoc",
+      "repository": "pdoc3/pdoc"
+    },
+    {
+      "language": "python",
+      "project": "pem",
+      "repository": "hynek/pem"
+    },
+    {
+      "language": "python",
+      "project": "pendulum",
+      "repository": "sdispater/pendulum"
+    },
+    {
+      "language": "rust",
+      "project": "pest",
+      "repository": "pest-parser/pest"
+    },
+    {
+      "language": "c++",
+      "project": "phmap",
+      "repository": "greg7mdp/parallel-hashmap"
+    },
+    {
+      "language": "c++",
+      "project": "phosphor-certificate-manager",
+      "repository": "openbmc/phosphor-certificate-manager"
+    },
+    {
+      "language": "c++",
+      "project": "phosphor-host-ipmid",
+      "repository": "openbmc/phosphor-host-ipmid"
+    },
+    {
+      "language": "c++",
+      "project": "phosphor-state-manager",
+      "repository": "openbmc/phosphor-state-manager"
+    },
+    {
+      "language": "c++",
+      "project": "php",
+      "repository": "php/php-src"
+    },
+    {
+      "language": "c++",
+      "project": "picotls",
+      "repository": "h2o/picotls"
+    },
+    {
+      "language": "c",
+      "project": "pidgin",
+      "repository": "pidgin/pidgin"
+    },
+    {
+      "language": "python",
+      "project": "pikepdf",
+      "repository": "pikepdf/pikepdf"
+    },
+    {
+      "language": "python",
+      "project": "pillow",
+      "repository": "python-pillow/pillow"
+    },
+    {
+      "language": "python",
+      "project": "pip",
+      "repository": "pypa/pip"
+    },
+    {
+      "language": "c++",
+      "project": "pistache",
+      "repository": "pistacheio/pistache"
+    },
+    {
+      "language": "c",
+      "project": "pjsip",
+      "repository": "pjsip/pjproject"
+    },
+    {
+      "language": "c",
+      "project": "plan9port",
+      "repository": "9fans/plan9port"
+    },
+    {
+      "language": "jvm",
+      "project": "plexus-utils",
+      "repository": "codehaus-plexus/plexus-utils"
+    },
+    {
+      "language": "python",
+      "project": "ply",
+      "repository": "dabeaz/ply"
+    },
+    {
+      "language": "c",
+      "project": "pngquant",
+      "repository": "kornelski/pngquant"
+    },
+    {
+      "language": "c++",
+      "project": "poco",
+      "repository": "pocoproject/poco"
+    },
+    {
+      "language": "javascript",
+      "project": "postcss",
+      "repository": "postcss/postcss"
+    },
+    {
+      "language": "c",
+      "project": "postfix",
+      "repository": "vdukhovni/postfix"
+    },
+    {
+      "language": "c",
+      "project": "postgresql",
+      "repository": "postgres/postgres"
+    },
+    {
+      "language": "c++",
+      "project": "powerdns",
+      "repository": "powerdns/pdns"
+    },
+    {
+      "language": "jvm",
+      "project": "powsybl-java",
+      "repository": "powsybl/powsybl-core"
+    },
+    {
+      "language": "python",
+      "project": "presidio",
+      "repository": "microsoft/presidio"
+    },
+    {
+      "language": "jvm",
+      "project": "presto",
+      "repository": "prestodb/presto"
+    },
+    {
+      "language": "c",
+      "project": "proftpd",
+      "repository": "proftpd/proftpd"
+    },
+    {
+      "language": "c++",
+      "project": "proj4",
+      "repository": "osgeo/proj"
+    },
+    {
+      "language": "go",
+      "project": "prometheus",
+      "repository": "prometheus/prometheus"
+    },
+    {
+      "language": "javascript",
+      "project": "promise-polyfill",
+      "repository": "taylorhakes/promise-polyfill"
+    },
+    {
+      "language": "rust",
+      "project": "prost",
+      "repository": "tokio-rs/prost"
+    },
+    {
+      "language": "python",
+      "project": "proto-plus-python",
+      "repository": "googleapis/proto-plus-python"
+    },
+    {
+      "language": "c",
+      "project": "protobuf-c",
+      "repository": "protobuf-c/protobuf-c"
+    },
+    {
+      "language": "jvm",
+      "project": "protobuf-java",
+      "repository": "protocolbuffers/protobuf"
+    },
+    {
+      "language": "javascript",
+      "project": "protobuf-js",
+      "repository": "protobufjs/protobuf.js"
+    },
+    {
+      "language": "python",
+      "project": "protobuf-python",
+      "repository": "protocolbuffers/protobuf"
+    },
+    {
+      "language": "go",
+      "project": "protoc-gen-validate",
+      "repository": "bufbuild/protoc-gen-validate"
+    },
+    {
+      "language": "go",
+      "project": "protocompile",
+      "repository": "bufbuild/protocompile"
+    },
+    {
+      "language": "go",
+      "project": "proton-bridge",
+      "repository": "protonmail/proton-bridge"
+    },
+    {
+      "language": "c++",
+      "project": "proxygen",
+      "repository": "facebook/proxygen"
+    },
+    {
+      "language": "python",
+      "project": "psqlparse",
+      "repository": "alculquicondor/psqlparse"
+    },
+    {
+      "language": "python",
+      "project": "psutil",
+      "repository": "giampaolo/psutil"
+    },
+    {
+      "language": "python",
+      "project": "psycopg2",
+      "repository": "psycopg/psycopg2"
+    },
+    {
+      "language": "go",
+      "project": "publicsuffix-list",
+      "repository": "publicsuffix/list"
+    },
+    {
+      "language": "c++",
+      "project": "pugixml",
+      "repository": "zeux/pugixml"
+    },
+    {
+      "language": "rust",
+      "project": "pulldown-cmark",
+      "repository": "pulldown-cmark/pulldown-cmark"
+    },
+    {
+      "language": "go",
+      "project": "pulumi",
+      "repository": "pulumi/pulumi"
+    },
+    {
+      "language": "c",
+      "project": "pupnp",
+      "repository": "pupnp/pupnp"
+    },
+    {
+      "language": "python",
+      "project": "py-serde",
+      "repository": "rossmacarthur/serde"
+    },
+    {
+      "language": "python",
+      "project": "pyasn1",
+      "repository": "etingof/pyasn1"
+    },
+    {
+      "language": "python",
+      "project": "pyasn1-modules",
+      "repository": "pyasn1/pyasn1-modules"
+    },
+    {
+      "language": "c++",
+      "project": "pybind11",
+      "repository": "pybind/pybind11"
+    },
+    {
+      "language": "python",
+      "project": "pycparser",
+      "repository": "eliben/pycparser"
+    },
+    {
+      "language": "python",
+      "project": "pycrypto",
+      "repository": "pycrypto/pycrypto"
+    },
+    {
+      "language": "c",
+      "project": "pycryptodome",
+      "repository": "legrandin/pycryptodome"
+    },
+    {
+      "language": "python",
+      "project": "pycups",
+      "repository": "openprinting/pycups"
+    },
+    {
+      "language": "python",
+      "project": "pydantic",
+      "repository": "pydantic/pydantic"
+    },
+    {
+      "language": "python",
+      "project": "pydateutil",
+      "repository": "dateutil/dateutil"
+    },
+    {
+      "language": "python",
+      "project": "pygments",
+      "repository": "pygments/pygments"
+    },
+    {
+      "language": "python",
+      "project": "pyjson5",
+      "repository": "dpranke/pyjson5"
+    },
+    {
+      "language": "python",
+      "project": "pyjwt",
+      "repository": "jpadilla/pyjwt"
+    },
+    {
+      "language": "python",
+      "project": "pymysql",
+      "repository": "pymysql/pymysql"
+    },
+    {
+      "language": "python",
+      "project": "pynacl",
+      "repository": "pyca/pynacl"
+    },
+    {
+      "language": "python",
+      "project": "pyodbc",
+      "repository": "mkleehammer/pyodbc"
+    },
+    {
+      "language": "python",
+      "project": "pyparsing",
+      "repository": "pyparsing/pyparsing"
+    },
+    {
+      "language": "c",
+      "project": "pypy3",
+      "repository": "pypy/pypy"
+    },
+    {
+      "language": "python",
+      "project": "pyrsistent",
+      "repository": "tobgu/pyrsistent"
+    },
+    {
+      "language": "python",
+      "project": "pytables",
+      "repository": "pytables/pytables"
+    },
+    {
+      "language": "python",
+      "project": "pytest-py",
+      "repository": "pytest-dev/py"
+    },
+    {
+      "language": "python",
+      "project": "python-ecdsa",
+      "repository": "tlsfuzzer/python-ecdsa"
+    },
+    {
+      "language": "python",
+      "project": "python-email-validator",
+      "repository": "joshdata/python-email-validator"
+    },
+    {
+      "language": "python",
+      "project": "python-fastjsonschema",
+      "repository": "horejsek/python-fastjsonschema"
+    },
+    {
+      "language": "python",
+      "project": "python-future",
+      "repository": "pythoncharmers/python-future"
+    },
+    {
+      "language": "python",
+      "project": "python-graphviz",
+      "repository": "xflr6/graphviz"
+    },
+    {
+      "language": "python",
+      "project": "python-hyperlink",
+      "repository": "python-hyper/hyperlink"
+    },
+    {
+      "language": "python",
+      "project": "python-jose",
+      "repository": "mpdavis/python-jose"
+    },
+    {
+      "language": "python",
+      "project": "python-lz4",
+      "repository": "lz4/lz4"
+    },
+    {
+      "language": "python",
+      "project": "python-markdown",
+      "repository": "python-markdown/markdown"
+    },
+    {
+      "language": "python",
+      "project": "python-markdownify",
+      "repository": "matthewwithanm/python-markdownify"
+    },
+    {
+      "language": "python",
+      "project": "python-multipart",
+      "repository": "kludex/python-multipart"
+    },
+    {
+      "language": "python",
+      "project": "python-nameparser",
+      "repository": "derek73/python-nameparser"
+    },
+    {
+      "language": "python",
+      "project": "python-nvd3",
+      "repository": "areski/python-nvd3"
+    },
+    {
+      "language": "python",
+      "project": "python-pathspec",
+      "repository": "cpburnz/python-pathspec"
+    },
+    {
+      "language": "python",
+      "project": "python-phonenumbers",
+      "repository": "daviddrysdale/python-phonenumbers"
+    },
+    {
+      "language": "python",
+      "project": "python-prompt-toolkit",
+      "repository": "prompt-toolkit/python-prompt-toolkit"
+    },
+    {
+      "language": "python",
+      "project": "python-pypdf",
+      "repository": "py-pdf/pypdf"
+    },
+    {
+      "language": "python",
+      "project": "python-rison",
+      "repository": "betodealmeida/python-rison"
+    },
+    {
+      "language": "python",
+      "project": "python-rsa",
+      "repository": "sybrenstuvel/python-rsa"
+    },
+    {
+      "language": "python",
+      "project": "python-tabulate",
+      "repository": "astanin/python-tabulate"
+    },
+    {
+      "language": "c",
+      "project": "python3-libraries",
+      "repository": "python/cpython"
+    },
+    {
+      "language": "python",
+      "project": "python3-openid",
+      "repository": "necaris/python3-openid"
+    },
+    {
+      "language": "python",
+      "project": "pytz",
+      "repository": "stub42/pytz"
+    },
+    {
+      "language": "python",
+      "project": "pyvex",
+      "repository": "angr/pyvex"
+    },
+    {
+      "language": "python",
+      "project": "pyxdg",
+      "repository": "takluyver/pyxdg"
+    },
+    {
+      "language": "python",
+      "project": "pyyaml",
+      "repository": "yaml/pyyaml"
+    },
+    {
+      "language": "python",
+      "project": "pyzmq",
+      "repository": "zeromq/pyzmq"
+    },
+    {
+      "language": "jvm",
+      "project": "qdox",
+      "repository": "paul-hammant/qdox"
+    },
+    {
+      "language": "c++",
+      "project": "qpdf",
+      "repository": "qpdf/qpdf"
+    },
+    {
+      "language": "c++",
+      "project": "qpid-proton",
+      "repository": "apache/qpid-proton"
+    },
+    {
+      "language": "c++",
+      "project": "qs",
+      "repository": "ljharb/qs"
+    },
+    {
+      "language": "c++",
+      "project": "quantlib",
+      "repository": "lballabio/quantlib"
+    },
+    {
+      "language": "jvm",
+      "project": "quartz",
+      "repository": "quartz-scheduler/quartz"
+    },
+    {
+      "language": "c++",
+      "project": "qubes-os",
+      "repository": "qubesos/qubes-app-linux-input-proxy"
+    },
+    {
+      "language": "go",
+      "project": "quic-go",
+      "repository": "quic-go/quic-go"
+    },
+    {
+      "language": "c++",
+      "project": "quiche",
+      "repository": "google/quiche"
+    },
+    {
+      "language": "rust",
+      "project": "quiche-cloudflare",
+      "repository": "cloudflare/quiche"
+    },
+    {
+      "language": "rust",
+      "project": "quick-xml",
+      "repository": "tafia/quick-xml"
+    },
+    {
+      "language": "c",
+      "project": "quickjs",
+      "repository": "bellard/quickjs"
+    },
+    {
+      "language": "c",
+      "project": "rabbitmq-c",
+      "repository": "alanxz/rabbitmq-c"
+    },
+    {
+      "language": "",
+      "project": "racket",
+      "repository": "racket/racket"
+    },
+    {
+      "language": "c++",
+      "project": "radare2",
+      "repository": "radareorg/radare2"
+    },
+    {
+      "language": "go",
+      "project": "radon",
+      "repository": "radondb/radon"
+    },
+    {
+      "language": "c",
+      "project": "radvd",
+      "repository": "radvd-project/radvd"
+    },
+    {
+      "language": "c++",
+      "project": "rapidjson",
+      "repository": "tencent/rapidjson"
+    },
+    {
+      "language": "c",
+      "project": "rauc",
+      "repository": "rauc/rauc"
+    },
+    {
+      "language": "jvm",
+      "project": "rdf4j",
+      "repository": "eclipse/rdf4j"
+    },
+    {
+      "language": "c++",
+      "project": "rdkit",
+      "repository": "rdkit/rdkit"
+    },
+    {
+      "language": "c++",
+      "project": "re2",
+      "repository": "google/re2"
+    },
+    {
+      "language": "c++",
+      "project": "readstat",
+      "repository": "wizardmac/readstat"
+    },
+    {
+      "language": "",
+      "project": "realm-core",
+      "repository": "realm/realm-core"
+    },
+    {
+      "language": "python",
+      "project": "redis-py",
+      "repository": "redis/redis-py"
+    },
+    {
+      "language": "rust",
+      "project": "redis-rs",
+      "repository": "redis-rs/redis-rs"
+    },
+    {
+      "language": "javascript",
+      "project": "redux",
+      "repository": "reduxjs/redux"
+    },
+    {
+      "language": "jvm",
+      "project": "reflections",
+      "repository": "ronmamo/reflections"
+    },
+    {
+      "language": "go",
+      "project": "rekor",
+      "repository": "sigstore/rekor"
+    },
+    {
+      "language": "c++",
+      "project": "relic",
+      "repository": "relic-toolkit/relic"
+    },
+    {
+      "language": "jvm",
+      "project": "reload4j",
+      "repository": "qos-ch/reload4j"
+    },
+    {
+      "language": "python",
+      "project": "requests",
+      "repository": "psf/requests"
+    },
+    {
+      "language": "c++",
+      "project": "resiprocate",
+      "repository": "resiprocate/resiprocate"
+    },
+    {
+      "language": "jvm",
+      "project": "retrofit",
+      "repository": "square/retrofit"
+    },
+    {
+      "language": "python",
+      "project": "retry",
+      "repository": "invl/retry"
+    },
+    {
+      "language": "python",
+      "project": "rfc3967",
+      "repository": "python-hyper/rfc3986"
+    },
+    {
+      "language": "rust",
+      "project": "rhai",
+      "repository": "rhaiscript/rhai"
+    },
+    {
+      "language": "jvm",
+      "project": "rhino",
+      "repository": "mozilla/rhino"
+    },
+    {
+      "language": "python",
+      "project": "rich",
+      "repository": "textualize/rich"
+    },
+    {
+      "language": "",
+      "project": "ring",
+      "repository": "briansmith/ring"
+    },
+    {
+      "language": "c++",
+      "project": "rnp",
+      "repository": "rnpgp/rnp"
+    },
+    {
+      "language": "jvm",
+      "project": "roaring-bitmap",
+      "repository": "roaringbitmap/roaringbitmap"
+    },
+    {
+      "language": "c++",
+      "project": "rocksdb",
+      "repository": "facebook/rocksdb"
+    },
+    {
+      "language": "jvm",
+      "project": "rome",
+      "repository": "rometools/rome"
+    },
+    {
+      "language": "rust",
+      "project": "ron",
+      "repository": "ron-rs/ron"
+    },
+    {
+      "language": "go",
+      "project": "roughtime",
+      "repository": "cloudflare/roughtime"
+    },
+    {
+      "language": "c",
+      "project": "rtpproxy",
+      "repository": "sippy/rtpproxy"
+    },
+    {
+      "language": "c++",
+      "project": "ruby",
+      "repository": "ruby/ruby"
+    },
+    {
+      "language": "go",
+      "project": "runc",
+      "repository": "opencontainers/runc"
+    },
+    {
+      "language": "rust",
+      "project": "rust-brotli",
+      "repository": "dropbox/rust-brotli"
+    },
+    {
+      "language": "rust",
+      "project": "rust-coreutils",
+      "repository": "uutils/coreutils"
+    },
+    {
+      "language": "rust",
+      "project": "rust-lexical",
+      "repository": "alexhuszagh/rust-lexical"
+    },
+    {
+      "language": "rust",
+      "project": "rust-regex",
+      "repository": "rust-lang/regex"
+    },
+    {
+      "language": "rust",
+      "project": "rust-semver-parser",
+      "repository": "steveklabnik/semver-parser"
+    },
+    {
+      "language": "rust",
+      "project": "rustls",
+      "repository": "rustls/rustls"
+    },
+    {
+      "language": "jvm",
+      "project": "rxjava",
+      "repository": "reactivex/rxjava"
+    },
+    {
+      "language": "rust",
+      "project": "ryu",
+      "repository": "dtolnay/ryu"
+    },
+    {
+      "language": "c++",
+      "project": "s2geometry",
+      "repository": "google/s2geometry"
+    },
+    {
+      "language": "python",
+      "project": "sacremoses",
+      "repository": "alvations/sacremoses"
+    },
+    {
+      "language": "python",
+      "project": "scapy",
+      "repository": "secdev/scapy"
+    },
+    {
+      "language": "python",
+      "project": "scikit-learn",
+      "repository": "scikit-learn/scikit-learn"
+    },
+    {
+      "language": "python",
+      "project": "scipy",
+      "repository": "scipy/scipy"
+    },
+    {
+      "language": "go",
+      "project": "scorecard-web",
+      "repository": "ossf/scorecard-webapp"
+    },
+    {
+      "language": "rust",
+      "project": "scrypt",
+      "repository": "rustcrypto/password-hashes"
+    },
+    {
+      "language": "c",
+      "project": "selinux",
+      "repository": "selinuxproject/selinux"
+    },
+    {
+      "language": "c++",
+      "project": "sentencepiece",
+      "repository": "google/sentencepiece"
+    },
+    {
+      "language": "rust",
+      "project": "serde-yaml",
+      "repository": "dtolnay/serde-yaml"
+    },
+    {
+      "language": "rust",
+      "project": "serde_json",
+      "repository": "serde-rs/json"
+    },
+    {
+      "language": "rust",
+      "project": "serde_urlencoded",
+      "repository": "nox/serde_urlencoded"
+    },
+    {
+      "language": "c++",
+      "project": "serenity",
+      "repository": "serenityos/serenity"
+    },
+    {
+      "language": "rust",
+      "project": "servo",
+      "repository": "servo/servo"
+    },
+    {
+      "language": "jvm",
+      "project": "servo-core",
+      "repository": "netflix/servo"
+    },
+    {
+      "language": "python",
+      "project": "setuptools",
+      "repository": "pypa/setuptools"
+    },
+    {
+      "language": "c++",
+      "project": "shaderc",
+      "repository": "google/shaderc"
+    },
+    {
+      "language": "javascript",
+      "project": "sharp",
+      "repository": "lovell/sharp"
+    },
+    {
+      "language": "go",
+      "project": "sigstore",
+      "repository": "sigstore/sigstore"
+    },
+    {
+      "language": "go",
+      "project": "sigstore-go",
+      "repository": "sigstore/sigstore"
+    },
+    {
+      "language": "jvm",
+      "project": "sigstore-java",
+      "repository": "sigstore/sigstore-java"
+    },
+    {
+      "language": "python",
+      "project": "sigstore-python",
+      "repository": "sigstore/sigstore-python"
+    },
+    {
+      "language": "c++",
+      "project": "simd",
+      "repository": "ermig1979/simd"
+    },
+    {
+      "language": "c++",
+      "project": "simdjson",
+      "repository": "simdjson/simdjson"
+    },
+    {
+      "language": "c++",
+      "project": "simdutf",
+      "repository": "simdutf/simdutf"
+    },
+    {
+      "language": "python",
+      "project": "simplejson",
+      "repository": "simplejson/simplejson"
+    },
+    {
+      "language": "python",
+      "project": "six",
+      "repository": "benjaminp/six"
+    },
+    {
+      "language": "jvm",
+      "project": "sketches-core",
+      "repository": "datasketches/sketches-core"
+    },
+    {
+      "language": "go",
+      "project": "skipper",
+      "repository": "zalando/skipper"
+    },
+    {
+      "language": "c++",
+      "project": "sleuthkit",
+      "repository": "sleuthkit/sleuthkit"
+    },
+    {
+      "language": "jvm",
+      "project": "slf4j-api",
+      "repository": "qos-ch/slf4j"
+    },
+    {
+      "language": "python",
+      "project": "smart_open",
+      "repository": "rare-technologies/smart_open"
+    },
+    {
+      "language": "go",
+      "project": "smt",
+      "repository": "celestiaorg/smt"
+    },
+    {
+      "language": "c++",
+      "project": "snappy",
+      "repository": "google/snappy"
+    },
+    {
+      "language": "jvm",
+      "project": "snappy-java",
+      "repository": "xerial/snappy-java"
+    },
+    {
+      "language": "c++",
+      "project": "snort3",
+      "repository": "snort3/snort3"
+    },
+    {
+      "language": "c++",
+      "project": "solidity",
+      "repository": "ethereum/solidity"
+    },
+    {
+      "language": "go",
+      "project": "sonic",
+      "repository": "bytedance/sonic"
+    },
+    {
+      "language": "c",
+      "project": "sound-open-firmware",
+      "repository": "thesofproject/sof"
+    },
+    {
+      "language": "python",
+      "project": "soupsieve",
+      "repository": "facelessuser/soupsieve"
+    },
+    {
+      "language": "jvm",
+      "project": "spatial4j",
+      "repository": "locationtech/spatial4j"
+    },
+    {
+      "language": "c",
+      "project": "spdk",
+      "repository": "spdk/spdk"
+    },
+    {
+      "language": "c++",
+      "project": "spdlog",
+      "repository": "gabime/spdlog"
+    },
+    {
+      "language": "rust",
+      "project": "spdm-rs",
+      "repository": "ccc-spdm-tools/spdm-rs"
+    },
+    {
+      "language": "c++",
+      "project": "spicy",
+      "repository": "zeek/spicy"
+    },
+    {
+      "language": "c++",
+      "project": "spirv-cross",
+      "repository": "khronosgroup/spirv-cross"
+    },
+    {
+      "language": "c++",
+      "project": "spirv-tools",
+      "repository": "khronosgroup/spirv-tools"
+    },
+    {
+      "language": "c++",
+      "project": "spotify-json",
+      "repository": "spotify/spotify-json"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-amqp",
+      "repository": "spring-projects/spring-amqp"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-boot",
+      "repository": "spring-projects/spring-boot"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-cloud-commons",
+      "repository": "spring-cloud/spring-cloud-commons"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-cloud-config",
+      "repository": "spring-cloud/spring-cloud-config"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-cloud-netflix",
+      "repository": "spring-cloud/spring-cloud-netflix"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-cloud-sleuth-brave",
+      "repository": "spring-cloud/spring-cloud-sleuth"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-cloud-stream",
+      "repository": "spring-projects/spring-data-mongodb"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-data-jpa",
+      "repository": "spring-projects/spring-data-jpa"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-data-keyvalue",
+      "repository": "spring-projects/spring-data-keyvalue"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-data-mongodb",
+      "repository": "spring-projects/spring-data-mongodb"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-data-redis",
+      "repository": "spring-projects/spring-boot"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-framework",
+      "repository": "spring-projects/spring-framework"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-integration",
+      "repository": "spring-projects/spring-integration"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-ldap",
+      "repository": "spring-projects/spring-ldap"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-retry",
+      "repository": "spring-projects/spring-retry"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-security",
+      "repository": "spring-projects/spring-security"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-shell",
+      "repository": "spring-projects/spring-shell"
+    },
+    {
+      "language": "jvm",
+      "project": "spring-webflow",
+      "repository": "spring-projects/spring-webflow"
+    },
+    {
+      "language": "c++",
+      "project": "sql-parser",
+      "repository": "hyrise/sql-parser"
+    },
+    {
+      "language": "python",
+      "project": "sqlalchemy",
+      "repository": "sqlalchemy/sqlalchemy"
+    },
+    {
+      "language": "python",
+      "project": "sqlalchemy-utils",
+      "repository": "kvesteri/sqlalchemy-utils"
+    },
+    {
+      "language": "python",
+      "project": "sqlalchemy_jsonfield",
+      "repository": "penguinolog/sqlalchemy_jsonfield"
+    },
+    {
+      "language": "jvm",
+      "project": "sqlite-jdbc",
+      "repository": "xerial/sqlite-jdbc"
+    },
+    {
+      "language": "c++",
+      "project": "sqlite3",
+      "repository": "sqlite/sqlite"
+    },
+    {
+      "language": "python",
+      "project": "sqlparse",
+      "repository": "andialbrecht/sqlparse"
+    },
+    {
+      "language": "python",
+      "project": "stack_data",
+      "repository": "alexmojaki/stack_data"
+    },
+    {
+      "language": "rust",
+      "project": "starlark-rust",
+      "repository": "facebookexperimental/starlark-rust"
+    },
+    {
+      "language": "jvm",
+      "project": "stax",
+      "repository": "openjdk/jdk"
+    },
+    {
+      "language": "c++",
+      "project": "stb",
+      "repository": "nothings/stb"
+    },
+    {
+      "language": "jvm",
+      "project": "stringtemplate4",
+      "repository": "antlr/stringtemplate4"
+    },
+    {
+      "language": "c++",
+      "project": "strongswan",
+      "repository": "strongswan/strongswan"
+    },
+    {
+      "language": "jvm",
+      "project": "struts",
+      "repository": "apache/struts"
+    },
+    {
+      "language": "c",
+      "project": "sudoers",
+      "repository": "sudo-project/sudo"
+    },
+    {
+      "language": "rust",
+      "project": "suricata",
+      "repository": "oisf/suricata"
+    },
+    {
+      "language": "rust",
+      "project": "surrealdb",
+      "repository": "surrealdb/surrealdb"
+    },
+    {
+      "language": "jvm",
+      "project": "swagger-core",
+      "repository": "swagger-api/swagger-core"
+    },
+    {
+      "language": "rust",
+      "project": "swc",
+      "repository": "swc-project/swc"
+    },
+    {
+      "language": "swift",
+      "project": "swift-nio",
+      "repository": "apple/swift-nio"
+    },
+    {
+      "language": "swift",
+      "project": "swift-protobuf",
+      "repository": "apple/swift-protobuf"
+    },
+    {
+      "language": "rust",
+      "project": "symphonia",
+      "repository": "pdeljanov/symphonia"
+    },
+    {
+      "language": "c++",
+      "project": "systemd",
+      "repository": "systemd/systemd"
+    },
+    {
+      "language": "go",
+      "project": "syzkaller",
+      "repository": "google/syzkaller"
+    },
+    {
+      "language": "jvm",
+      "project": "tablesaw",
+      "repository": "jtablesaw/tablesaw"
+    },
+    {
+      "language": "c++",
+      "project": "taglib",
+      "repository": "taglib/taglib"
+    },
+    {
+      "language": "go",
+      "project": "tailscale",
+      "repository": "tailscale/tailscale"
+    },
+    {
+      "language": "rust",
+      "project": "tar-rs",
+      "repository": "alexcrichton/tar-rs"
+    },
+    {
+      "language": "c",
+      "project": "tarantool",
+      "repository": "tarantool/tarantool"
+    },
+    {
+      "language": "c++",
+      "project": "tcmalloc",
+      "repository": "google/tcmalloc"
+    },
+    {
+      "language": "c",
+      "project": "tcpreplay",
+      "repository": "appneta/tcpreplay"
+    },
+    {
+      "language": "rust",
+      "project": "td-shim",
+      "repository": "confidential-containers/td-shim"
+    },
+    {
+      "language": "c",
+      "project": "tdengine",
+      "repository": "taosdata/tdengine"
+    },
+    {
+      "language": "go",
+      "project": "teleport",
+      "repository": "gravitational/teleport"
+    },
+    {
+      "language": "go",
+      "project": "tendermint",
+      "repository": "cometbft/cometbft"
+    },
+    {
+      "language": "c++",
+      "project": "tensorflow",
+      "repository": "tensorflow/tensorflow"
+    },
+    {
+      "language": "python",
+      "project": "tensorflow-addons",
+      "repository": "tensorflow/addons"
+    },
+    {
+      "language": "python",
+      "project": "tensorflow-py",
+      "repository": "tensorflow/tensorflow"
+    },
+    {
+      "language": "c++",
+      "project": "tensorflow-serving",
+      "repository": "tensorflow/serving"
+    },
+    {
+      "language": "c++",
+      "project": "tesseract-ocr",
+      "repository": "tesseract-ocr/tesseract"
+    },
+    {
+      "language": "python",
+      "project": "textdistance",
+      "repository": "life4/textdistance"
+    },
+    {
+      "language": "rust",
+      "project": "textwrap",
+      "repository": "mgeisler/textwrap"
+    },
+    {
+      "language": "jvm",
+      "project": "threetenbp",
+      "repository": "threeten/threetenbp"
+    },
+    {
+      "language": "c",
+      "project": "thrift-c_glib",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "c++",
+      "project": "thrift-cpp",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "go",
+      "project": "thrift-go",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "jvm",
+      "project": "thrift-java",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "javascript",
+      "project": "thrift-js",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "python",
+      "project": "thrift-py",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "ruby",
+      "project": "thrift-rb",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "rust",
+      "project": "thrift-rust",
+      "repository": "apache/thrift"
+    },
+    {
+      "language": "go",
+      "project": "tidb",
+      "repository": "pingcap/tidb"
+    },
+    {
+      "language": "c++",
+      "project": "tidy-html5",
+      "repository": "htacg/tidy-html5"
+    },
+    {
+      "language": "go",
+      "project": "time",
+      "repository": "facebook/time"
+    },
+    {
+      "language": "go",
+      "project": "timestamp-authority",
+      "repository": "sigstore/timestamp-authority"
+    },
+    {
+      "language": "c++",
+      "project": "tink-cc",
+      "repository": "google/tink"
+    },
+    {
+      "language": "python",
+      "project": "tinycss2",
+      "repository": "kozea/tinycss2"
+    },
+    {
+      "language": "c++",
+      "project": "tinygltf",
+      "repository": "syoyo/tinygltf"
+    },
+    {
+      "language": "c++",
+      "project": "tinyobjloader",
+      "repository": "tinyobjloader/tinyobjloader"
+    },
+    {
+      "language": "c++",
+      "project": "tinyusb",
+      "repository": "hathach/tinyusb"
+    },
+    {
+      "language": "c++",
+      "project": "tinyxml2",
+      "repository": "leethomason/tinyxml2"
+    },
+    {
+      "language": "c",
+      "project": "tmux",
+      "repository": "tmux/tmux"
+    },
+    {
+      "language": "rust",
+      "project": "tokio",
+      "repository": "tokio-rs/tokio"
+    },
+    {
+      "language": "jvm",
+      "project": "tomcat",
+      "repository": "apache/tomcat"
+    },
+    {
+      "language": "python",
+      "project": "toml",
+      "repository": "uiri/toml"
+    },
+    {
+      "language": "rust",
+      "project": "toml_edit",
+      "repository": "ordian/toml_edit"
+    },
+    {
+      "language": "python",
+      "project": "tomli",
+      "repository": "hukkinj1/tomli"
+    },
+    {
+      "language": "python",
+      "project": "tomlkit",
+      "repository": "sdispater/tomlkit"
+    },
+    {
+      "language": "c++",
+      "project": "tomlplusplus",
+      "repository": "marzer/tomlplusplus"
+    },
+    {
+      "language": "python",
+      "project": "toolbelt",
+      "repository": "requests/toolbelt"
+    },
+    {
+      "language": "python",
+      "project": "toolz",
+      "repository": "pytoolz/toolz"
+    },
+    {
+      "language": "c++",
+      "project": "tpm2-tss",
+      "repository": "tpm2-software/tpm2-tss"
+    },
+    {
+      "language": "python",
+      "project": "tqdm",
+      "repository": "tqdm/tqdm"
+    },
+    {
+      "language": "c++",
+      "project": "trafficserver",
+      "repository": "apache/trafficserver"
+    },
+    {
+      "language": "rust",
+      "project": "trust-dns",
+      "repository": "hickory-dns/hickory-dns"
+    },
+    {
+      "language": "javascript",
+      "project": "tslib",
+      "repository": "microsoft/tslib"
+    },
+    {
+      "language": "rust",
+      "project": "ttf-parser",
+      "repository": "razrfalcon/ttf-parser"
+    },
+    {
+      "language": "rust",
+      "project": "tungstenite-rs",
+      "repository": "snapview/tungstenite-rs"
+    },
+    {
+      "language": "javascript",
+      "project": "turf",
+      "repository": "turfjs/turf"
+    },
+    {
+      "language": "jvm",
+      "project": "twelve-monkeys",
+      "repository": "haraldk/twelvemonkeys"
+    },
+    {
+      "language": "jvm",
+      "project": "twitter4j",
+      "repository": "twitter4j/twitter4j"
+    },
+    {
+      "language": "javascript",
+      "project": "typescript",
+      "repository": "microsoft/typescript"
+    },
+    {
+      "language": "javascript",
+      "project": "typescript-example",
+      "repository": "codeintelligencetesting/jazzer.js"
+    },
+    {
+      "language": "python",
+      "project": "typing_extensions",
+      "repository": "python/typing_extensions"
+    },
+    {
+      "language": "rust",
+      "project": "typst",
+      "repository": "typst/typst"
+    },
+    {
+      "language": "jvm",
+      "project": "tyrus",
+      "repository": "eclipse-ee4j/tyrus"
+    },
+    {
+      "language": "c",
+      "project": "u-boot",
+      "repository": "u-boot/u-boot"
+    },
+    {
+      "language": "go",
+      "project": "u-root",
+      "repository": "u-root/u-root"
+    },
+    {
+      "language": "javascript",
+      "project": "ua-parser-js",
+      "repository": "faisalman/ua-parser-js"
+    },
+    {
+      "language": "go",
+      "project": "uint256",
+      "repository": "holiman/uint256"
+    },
+    {
+      "language": "python",
+      "project": "ujson",
+      "repository": "ultrajson/ultrajson"
+    },
+    {
+      "language": "python",
+      "project": "unblob",
+      "repository": "onekey-sec/unblob"
+    },
+    {
+      "language": "c",
+      "project": "unbound",
+      "repository": "nlnetlabs/unbound"
+    },
+    {
+      "language": "python",
+      "project": "underscore",
+      "repository": "doboy/underscore"
+    },
+    {
+      "language": "jvm",
+      "project": "undertow",
+      "repository": "undertow-io/undertow"
+    },
+    {
+      "language": "rust",
+      "project": "unicode-rs",
+      "repository": "unicode-rs/unicode-normalization"
+    },
+    {
+      "language": "c++",
+      "project": "unicorn",
+      "repository": "unicorn-engine/unicorn"
+    },
+    {
+      "language": "jvm",
+      "project": "unirest-java",
+      "repository": "mashape/unirest-java"
+    },
+    {
+      "language": "c",
+      "project": "unit",
+      "repository": "nginx/unit"
+    },
+    {
+      "language": "jvm",
+      "project": "univocity-parsers",
+      "repository": "univocity/univocity-parsers"
+    },
+    {
+      "language": "rust",
+      "project": "unsafe-libyaml",
+      "repository": "dtolnay/unsafe-libyaml"
+    },
+    {
+      "language": "c++",
+      "project": "upx",
+      "repository": "upx/upx"
+    },
+    {
+      "language": "c++",
+      "project": "uriparser",
+      "repository": "uriparser/uriparser"
+    },
+    {
+      "language": "python",
+      "project": "uritemplate",
+      "repository": "python-hyper/uritemplate"
+    },
+    {
+      "language": "python",
+      "project": "urlextract",
+      "repository": "lipoja/urlextract"
+    },
+    {
+      "language": "python",
+      "project": "urllib3",
+      "repository": "urllib3/urllib3"
+    },
+    {
+      "language": "c++",
+      "project": "usbguard",
+      "repository": "usbguard/usbguard"
+    },
+    {
+      "language": "c++",
+      "project": "userver",
+      "repository": "userver-framework/userver"
+    },
+    {
+      "language": "c++",
+      "project": "usrsctp",
+      "repository": "sctplab/usrsctp"
+    },
+    {
+      "language": "rust",
+      "project": "utf8parse",
+      "repository": "alacritty/vte"
+    },
+    {
+      "language": "c",
+      "project": "utf8proc",
+      "repository": "juliastrings/utf8proc"
+    },
+    {
+      "language": "c",
+      "project": "util-linux",
+      "repository": "util-linux/util-linux"
+    },
+    {
+      "language": "c++",
+      "project": "uwebsockets",
+      "repository": "unetworking/uwebsockets"
+    },
+    {
+      "language": "python",
+      "project": "validators",
+      "repository": "python-validators/validators"
+    },
+    {
+      "language": "c++",
+      "project": "valijson",
+      "repository": "tristanpenman/valijson"
+    },
+    {
+      "language": "c",
+      "project": "varnish",
+      "repository": "varnishcache/varnish-cache"
+    },
+    {
+      "language": "go",
+      "project": "vitess",
+      "repository": "vitessio/vitess"
+    },
+    {
+      "language": "c",
+      "project": "vlc",
+      "repository": "videolan/vlc"
+    },
+    {
+      "language": "go",
+      "project": "volcano",
+      "repository": "volcano-sh/volcano"
+    },
+    {
+      "language": "rust",
+      "project": "vtpm-td",
+      "repository": "intel/vtpm-td"
+    },
+    {
+      "language": "c",
+      "project": "vulkan-loader",
+      "repository": "khronosgroup/vulkan-loader"
+    },
+    {
+      "language": "c++",
+      "project": "vulnerable-project",
+      "repository": "google/oss-fuzz"
+    },
+    {
+      "language": "python",
+      "project": "w3lib",
+      "repository": "scrapy/w3lib"
+    },
+    {
+      "language": "c",
+      "project": "w3m",
+      "repository": "tats/w3m"
+    },
+    {
+      "language": "c++",
+      "project": "wabt",
+      "repository": "webassembly/wabt"
+    },
+    {
+      "language": "c",
+      "project": "wamr",
+      "repository": "bytecodealliance/wasm-micro-runtime"
+    },
+    {
+      "language": "c",
+      "project": "wasm3",
+      "repository": "wasm3/wasm3"
+    },
+    {
+      "language": "c++",
+      "project": "wasmedge",
+      "repository": "wasmedge/wasmedge"
+    },
+    {
+      "language": "rust",
+      "project": "wasmer",
+      "repository": "wasmerio/wasmer"
+    },
+    {
+      "language": "rust",
+      "project": "wasmi",
+      "repository": "wasmi-labs/wasmi"
+    },
+    {
+      "language": "rust",
+      "project": "wasmtime",
+      "repository": "bytecodealliance/wasmtime"
+    },
+    {
+      "language": "c++",
+      "project": "wavpack",
+      "repository": "dbry/wavpack"
+    },
+    {
+      "language": "c",
+      "project": "wazuh",
+      "repository": "wazuh/wazuh"
+    },
+    {
+      "language": "python",
+      "project": "websocket-client",
+      "repository": "websocket-client/websocket-client"
+    },
+    {
+      "language": "python",
+      "project": "websockets",
+      "repository": "aaugustin/websockets"
+    },
+    {
+      "language": "",
+      "project": "weechat",
+      "repository": "weechat/weechat"
+    },
+    {
+      "language": "python",
+      "project": "wheel",
+      "repository": "pypa/wheel"
+    },
+    {
+      "language": "c++",
+      "project": "woff2",
+      "repository": "google/woff2"
+    },
+    {
+      "language": "c++",
+      "project": "wolfboot",
+      "repository": "wolfssl/wolfboot"
+    },
+    {
+      "language": "c",
+      "project": "wolfmqtt",
+      "repository": "wolfssl/wolfmqtt"
+    },
+    {
+      "language": "c",
+      "project": "wolfssh",
+      "repository": "wolfssl/wolfssh"
+    },
+    {
+      "language": "c++",
+      "project": "wolfssl",
+      "repository": "wolfssl/wolfssl"
+    },
+    {
+      "language": "c",
+      "project": "wolftpm",
+      "repository": "wolfssl/wolftpm"
+    },
+    {
+      "language": "jvm",
+      "project": "woodstox",
+      "repository": "fasterxml/woodstox"
+    },
+    {
+      "language": "c++",
+      "project": "wpantund",
+      "repository": "openthread/wpantund"
+    },
+    {
+      "language": "c++",
+      "project": "wt",
+      "repository": "emweb/wt"
+    },
+    {
+      "language": "python",
+      "project": "wtforms",
+      "repository": "wtforms/wtforms"
+    },
+    {
+      "language": "c++",
+      "project": "wuffs",
+      "repository": "google/wuffs"
+    },
+    {
+      "language": "c++",
+      "project": "wxwidgets",
+      "repository": "wxwidgets/wxwidgets"
+    },
+    {
+      "language": "c",
+      "project": "xbps",
+      "repository": "void-linux/xbps"
+    },
+    {
+      "language": "python",
+      "project": "xlrd",
+      "repository": "python-excel/xlrd"
+    },
+    {
+      "language": "python",
+      "project": "xlsxwriter",
+      "repository": "jmcnamara/xlsxwriter"
+    },
+    {
+      "language": "jvm",
+      "project": "xmlbeans",
+      "repository": "apache/xmlbeans"
+    },
+    {
+      "language": "javascript",
+      "project": "xmldom",
+      "repository": "xmldom/xmldom"
+    },
+    {
+      "language": "jvm",
+      "project": "xmlpull",
+      "repository": "xmlpull-org/xmlpull-api-v1"
+    },
+    {
+      "language": "c++",
+      "project": "xmlsec",
+      "repository": "lsh123/xmlsec"
+    },
+    {
+      "language": "python",
+      "project": "xmltodict",
+      "repository": "martinblech/xmltodict"
+    },
+    {
+      "language": "jvm",
+      "project": "xmlunit",
+      "repository": "xmlunit/xmlunit"
+    },
+    {
+      "language": "jvm",
+      "project": "xnio-api",
+      "repository": "eclipse-ee4j/jax-rpc-ri"
+    },
+    {
+      "language": "c++",
+      "project": "xnnpack",
+      "repository": "google/xnnpack"
+    },
+    {
+      "language": "c",
+      "project": "xnu",
+      "repository": "googleprojectzero/sockfuzzer"
+    },
+    {
+      "language": "c",
+      "project": "xs",
+      "repository": "moddable-opensource/moddable"
+    },
+    {
+      "language": "jvm",
+      "project": "xstream",
+      "repository": "x-stream/xstream"
+    },
+    {
+      "language": "c++",
+      "project": "xz",
+      "repository": "tukaani-project/xz"
+    },
+    {
+      "language": "jvm",
+      "project": "xz-java",
+      "repository": "tukaani-project/xz-java"
+    },
+    {
+      "language": "c++",
+      "project": "yajl-ruby",
+      "repository": "brianmario/yajl-ruby"
+    },
+    {
+      "language": "c++",
+      "project": "yaml-cpp",
+      "repository": "jbeder/yaml-cpp"
+    },
+    {
+      "language": "jvm",
+      "project": "yamlbeans",
+      "repository": "esotericsoftware/yamlbeans"
+    },
+    {
+      "language": "c++",
+      "project": "yara",
+      "repository": "virustotal/yara"
+    },
+    {
+      "language": "python",
+      "project": "yarl",
+      "repository": "aio-libs/yarl"
+    },
+    {
+      "language": "go",
+      "project": "ygot",
+      "repository": "openconfig/ygot"
+    },
+    {
+      "language": "c++",
+      "project": "yoga",
+      "repository": "facebook/yoga"
+    },
+    {
+      "language": "c",
+      "project": "yyjson",
+      "repository": "ibireme/yyjson"
+    },
+    {
+      "language": "c++",
+      "project": "zeek",
+      "repository": "zeek/zeek"
+    },
+    {
+      "language": "rust",
+      "project": "zenoh",
+      "repository": "eclipse-zenoh/zenoh"
+    },
+    {
+      "language": "c",
+      "project": "zip",
+      "repository": "kuba--/zip"
+    },
+    {
+      "language": "rust",
+      "project": "zip-rs",
+      "repository": "zip-rs/zip"
+    },
+    {
+      "language": "jvm",
+      "project": "zip4j",
+      "repository": "srikanth-lingala/zip4j"
+    },
+    {
+      "language": "python",
+      "project": "zipp",
+      "repository": "jaraco/zipp"
+    },
+    {
+      "language": "c++",
+      "project": "zlib",
+      "repository": "madler/zlib"
+    },
+    {
+      "language": "c++",
+      "project": "zlib-ng",
+      "repository": "zlib-ng/zlib-ng"
+    },
+    {
+      "language": "c++",
+      "project": "znc",
+      "repository": "znc/znc"
+    },
+    {
+      "language": "jvm",
+      "project": "zookeeper",
+      "repository": "apache/zookeeper"
+    },
+    {
+      "language": "c++",
+      "project": "zopfli",
+      "repository": "google/zopfli"
+    },
+    {
+      "language": "c++",
+      "project": "zstd",
+      "repository": "facebook/zstd"
+    },
+    {
+      "language": "rust",
+      "project": "zstd-safe",
+      "repository": "gyscos/zstd-rs"
+    },
+    {
+      "language": "jvm",
+      "project": "zt-zip",
+      "repository": "zeroturnaround/zt-zip"
+    },
+    {
+      "language": "c",
+      "project": "zxc",
+      "repository": "hellobertrand/zxc"
+    },
+    {
+      "language": "jvm",
+      "project": "zxing",
+      "repository": "zxing/zxing"
+    },
+    {
+      "language": "c",
+      "project": "zydis",
+      "repository": "zyantific/zydis"
+    }
+  ],
+  "schema_version": 1
+}

@@ -8,16 +8,17 @@ from typing import Any
 
 from .pipeline import PipelineError, utc_now
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
+from .triage import TriageRunner
 
 
 MANUAL_STATUSES = {
     "quartet_review_required",
     "manual_review",
-    "triage_pending",
-    "running",
     "complete",
     "exhausted",
     "unsupported_integration",
+    "ready_for_human",
+    "triage_review_required",
 }
 
 
@@ -37,6 +38,7 @@ class PipelineWorker:
         self.runs_root = Path(self.pipeline["runs_path"])
         self.progress = progress or (lambda _: None)
         self.runner = PipelineRunner(config, progress=self.progress)
+        self.triage_runner = TriageRunner(config, progress=self.progress)
 
     def run(self, max_jobs: int, *, setup_only: bool = False) -> list[WorkerResult]:
         if max_jobs < 0:
@@ -68,7 +70,7 @@ class PipelineWorker:
             job_id = str(state.get("job_id") or state_path.parent.name)
             status = str(state.get("status") or "")
             stage = str(state.get("stage") or "")
-            if job_id in attempted or status in MANUAL_STATUSES or stage == "triage":
+            if job_id in attempted or status in MANUAL_STATUSES or stage == "complete":
                 continue
             created = str(state.get("created_at") or "")
             candidates.append((created, job_id))
@@ -78,7 +80,7 @@ class PipelineWorker:
     def _advance(self, job_id: str, *, setup_only: bool) -> WorkerResult:
         action = "none"
         try:
-            for _ in range(30):
+            for _ in range(100):
                 state = self._state(job_id)
                 stage = str(state.get("stage") or "")
                 status = str(state.get("status") or "")
@@ -114,7 +116,7 @@ class PipelineWorker:
                             )
                         action = "generate"
                         self.runner.generate(job_id)
-                    elif status == "ready":
+                    elif status in {"ready", "running", "interrupted", "worker_failed"}:
                         if setup_only:
                             return WorkerResult(job_id, status, stage, "ready")
                         action = "fuzz"
@@ -122,7 +124,15 @@ class PipelineWorker:
                     else:
                         return WorkerResult(job_id, status, stage, "needs_attention")
                 elif stage == "triage":
-                    return WorkerResult(job_id, status, stage, "triage_pending")
+                    action = "triage"
+                    result = self.triage_runner.triage(job_id)
+                    final_state = result["state"]
+                    return WorkerResult(
+                        job_id,
+                        str(final_state["status"]),
+                        str(final_state["stage"]),
+                        action,
+                    )
                 else:
                     raise PipelineError(f"worker does not understand stage: {stage}")
             raise PipelineError("worker exceeded the state transition limit")
@@ -154,7 +164,8 @@ class PipelineWorker:
         path = self.runs_root / job_id / "state.json"
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
-            state["status"] = "worker_failed"
+            if state.get("status") != "interrupted":
+                state["status"] = "worker_failed"
             state["last_error"] = str(exc)[:2000]
             state["updated_at"] = utc_now()
             temporary = path.with_suffix(".json.tmp")

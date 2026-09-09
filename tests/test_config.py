@@ -15,6 +15,7 @@ class ConfigTests(unittest.TestCase):
         pairs = [
             (root / "catalog.json", package / "catalog.json"),
             (root / "toolchain.lock.json", package / "toolchain.lock.json"),
+            (root / "oss-fuzz-support.json", package / "oss-fuzz-support.json"),
         ]
         pairs.extend(
             (path, package / "schemas" / path.name)
@@ -35,8 +36,10 @@ class ConfigTests(unittest.TestCase):
             ("policy", "catalog_path"),
             ("ai", "schema_path"),
             ("pipeline", "toolchain_lock_path"),
+            ("pipeline", "oss_fuzz_index_path"),
             ("pipeline", "coverage_schema_path"),
             ("pipeline", "quartet_schema_path"),
+            ("pipeline", "triage_schema_path"),
         ):
             path = Path(config[section][key])
             self.assertTrue(path.is_file(), path)

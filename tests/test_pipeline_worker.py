@@ -55,7 +55,7 @@ class PipelineWorkerTests(unittest.TestCase):
             self.assertEqual(results[0].job_id, "old-job")
             self.assertEqual(results[0].action, "ready")
 
-    def test_queue_skips_jobs_waiting_for_human_or_triage(self):
+    def test_queue_runs_triage_but_skips_jobs_waiting_for_human(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)
             self._job(
@@ -81,7 +81,8 @@ class PipelineWorkerTests(unittest.TestCase):
             )
             worker = object.__new__(PipelineWorker)
             worker.runs_root = runs
-            self.assertEqual(worker._next_job(set()), "ready-job")
+            self.assertEqual(worker._next_job(set()), "triage-job")
+            self.assertEqual(worker._next_job({"triage-job"}), "ready-job")
 
 
 if __name__ == "__main__":

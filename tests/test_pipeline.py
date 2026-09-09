@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fuzz_target_scout.pipeline import prepare_jobs
+from fuzz_target_scout.pipeline import (
+    PipelineError,
+    job_status,
+    load_oss_fuzz_support_index,
+    prepare_jobs,
+)
 
 
 LOCK = {
@@ -62,6 +67,38 @@ def candidate(status="verified", language="C++", commit="b" * 40):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_job_status_reports_checkpoint_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_jobs(
+                [candidate()],
+                directory,
+                CONFIG,
+                LOCK,
+                {"org/parser": {"project": "parser", "language": "c++"}},
+            )
+            job_dir = next(Path(directory).glob("org-parser-*"))
+            (job_dir / "artifacts" / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 43200, "coverage_stalled": True})
+            )
+            value = job_status(directory, job_dir.name)
+            self.assertEqual(value["fuzz_percent"], 50.0)
+            self.assertTrue(value["coverage_stalled"])
+
+    def test_support_index_must_match_toolchain_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "support.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "oss_fuzz_commit": "b" * 40,
+                        "projects": [],
+                    }
+                )
+            )
+            with self.assertRaises(PipelineError):
+                load_oss_fuzz_support_index(path, LOCK)
+
     def test_only_verified_enabled_candidates_become_pinned_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             summary = prepare_jobs(
@@ -100,6 +137,26 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(first.created, 1)
             self.assertEqual(second.existing, 1)
             self.assertEqual(second.created, 0)
+
+    def test_support_index_filters_before_work_order_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unsupported = prepare_jobs(
+                [candidate()], directory, CONFIG, LOCK, {}
+            )
+            self.assertEqual(unsupported.created, 0)
+            self.assertEqual(
+                unsupported.skip_reasons, {"no_pinned_oss_fuzz_project": 1}
+            )
+            supported = prepare_jobs(
+                [candidate()],
+                directory,
+                CONFIG,
+                LOCK,
+                {"org/parser": {"project": "parser", "language": "c++"}},
+            )
+            self.assertEqual(supported.created, 1)
+            job = json.loads(next(Path(directory).glob("*/job.json")).read_text())
+            self.assertEqual(job["compatibility"]["oss_fuzz_project"], "parser")
 
 
 if __name__ == "__main__":

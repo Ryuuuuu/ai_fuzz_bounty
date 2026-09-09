@@ -57,10 +57,11 @@ queued
    커밋의 파일에 대조한다. 직접 바이트 입력이 가능한 후보가 있을 때만 시그니처와
    수치를 한 번의 Codex 호출에 보내 기존 하네스 실행, 확장, 새 하네스 생성 중
    하나를 고른다. 후보가 모두 상태 의존적이면 규칙 기반 게이트가 호출을 생략한다.
-7. **fuzzing**: ASan/libFuzzer를 기본 6개 worker로 86,400초 실행한다. 4시간 동안
-   커버리지가 늘지 않고 입력 형태가 맞을 때만 AFL++ CmpLog를 추가한다.
+7. **fuzzing**: ASan/libFuzzer를 자동 계산된 worker 수로 총 86,400초 실행한다.
+   기본 한 시간 체크포인트마다 corpus 성장과 실행량을 기록하고, 4시간 동안 corpus가
+   늘지 않으면 정체 상태를 표시한다.
 8. **triage**: 입력 최소화, 깨끗한 컨테이너에서 3/3 재현, 심볼화, 스택 기준 중복 제거,
-   UBSan 교차 확인을 거친다.
+   UBSan 교차 확인과 검증 인계 자료 생성을 거친다.
 
 준비는 최대 90분, 마지막 triage는 최대 60분이다. 준비 실패 시간을 24시간 퍼징
 예산으로 계산하지 않는다.
@@ -109,7 +110,10 @@ logs/             빌드와 실행 로그
 ## 현재 구현된 경계
 
 `fuzz-pipeline plan`은 정책·커밋·언어 게이트를 다시 검사하고 위 계약의 작업 폴더를
-멱등적으로 만든다. `fuzz-pipeline prepare --job-id <id>`는 현재 정책을 다시
+멱등적으로 만든다. 계획 시점에 `oss-fuzz-support.json`을 사용해 고정 OSS-Fuzz
+커밋의 프로젝트 정의가 없는 C/C++ 후보는 `no_pinned_oss_fuzz_project`로 제외한다.
+인덱스는 `scripts/build_oss_fuzz_index.py`로 같은 도구 커밋에서 재생성하며, 커밋이
+다르면 계획을 거부한다. `fuzz-pipeline prepare --job-id <id>`는 현재 정책을 다시
 확인하고, 고정 커밋만 checkout하고, 작업 주문에 기록된 공식 도구 커밋을 동기화한
 뒤 `integration` 단계에서 멈춘다. 이 준비 단계는 내려받은 코드를 실행하지 않는다.
 기존 OSS-Fuzz 프로젝트가 있으면 다음 단계도 실행할 수 있다.
@@ -124,6 +128,7 @@ fuzz-pipeline analyze --job-id <id>
 # analyze 결과가 extend_existing 또는 generate_new_harness일 때만
 fuzz-pipeline generate --job-id <id>
 fuzz-pipeline run --job-id <id>
+fuzz-pipeline triage --job-id <id>
 ```
 
 원본 checkout은 증거용으로 깨끗하게 유지하고 별도 Git worktree에서만 빌드한다.
@@ -155,11 +160,22 @@ smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으�
 실행한다. 각 작업의 24시간 예산이 끝나 `triage_pending`이 되면 다음 작업을 선택한다.
 하네스 생성은 작업당 최대 두 사이클로 제한하며, 그 이상은 사람 검토 대상으로 남긴다.
 worker 시작은 파일 잠금으로 직렬화하고, 전체 퍼징 직전 버그바운티 정책을 다시 확인한다.
+`fuzz-progress.json`에 정상 완료 및 중단 세션을 누적한다. 재부팅 뒤 `running` 또는
+`interrupted` 작업을 다시 선택하고 이미 완료한 실행 시간을 제외한 예산만 요청한다.
+기본 체크포인트는 3,600초이며 `fuzz_checkpoint_seconds`로 조정할 수 있다.
 
 후속 검증 에이전트를 위해 각 `job.json`에는 `validation_handoff` 계약이 들어간다.
 최소화 입력과 SHA-256, 심볼화 스택, 소스·도구 커밋, 깨끗한 환경의 3/3 재현 자료가
 모두 있어야 넘길 수 있다. 후속 출력은 비무기화 PoC, 재현 순서, 트리거 조건,
 근거 기반 영향도, 중복 조사 기록과 사람 검토용 보고서 초안이다.
+
+`triage`는 ASan 결과를 최대 20개까지 읽고 원본 SHA-256을 기준으로 별도 검증 폴더를
+만든다. 네트워크가 차단된 read-only 컨테이너에서 최소화를 시도한 뒤 같은 입력을
+세 번 실행한다. 세 sanitizer 지문이 모두 같을 때만 검증 그룹으로 인정하며, 주소를
+정규화한 스택 지문으로 중복 입력을 묶는다. 검증된 그룹은 별도 UBSan 빌드에서도 한 번
+교차 실행한다. 검증된 그룹만 `validation-handoff.json`에
+포함한다. Codex에는 입력 바이트나 전체 소스를 보내지 않고 지문, 프레임, 크기와
+고정 커밋만 한 번에 전달한다.
 
 Ubuntu 사용자가 Docker 소켓을 사용할 수 없으면 한 번만 다음을 실행하고 로그아웃한
 뒤 다시 로그인한다.

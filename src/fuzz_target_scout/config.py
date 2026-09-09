@@ -48,12 +48,14 @@ DEFAULTS: dict[str, Any] = {
         "runs_path": "data/runs",
         "tools_path": ".tools",
         "toolchain_lock_path": "toolchain.lock.json",
+        "oss_fuzz_index_path": "oss-fuzz-support.json",
         "languages": ["C", "C++"],
         "ai_model": "gpt-daybreak-blue-latest",
         "ai_reasoning_effort": "high",
         "ai_executable": "codex",
         "coverage_schema_path": "schemas/coverage-review.schema.json",
         "quartet_schema_path": "schemas/quartet-review.schema.json",
+        "triage_schema_path": "schemas/triage-report.schema.json",
         "coverage_ai_timeout_seconds": 180,
         "quartet_ai_timeout_seconds": 180,
         "generation_ai_timeout_seconds": 240,
@@ -66,7 +68,11 @@ DEFAULTS: dict[str, Any] = {
         "setup_timeout_seconds": 5400,
         "smoke_seconds": 300,
         "fuzz_seconds": 86400,
+        "fuzz_checkpoint_seconds": 3600,
         "triage_timeout_seconds": 3600,
+        "triage_reproduction_attempts": 3,
+        "triage_max_crashes": 20,
+        "triage_ubsan_enabled": True,
         "coverage_stall_seconds": 14400,
         "parallel_workers": 0,
         "probe_seconds": 60,
@@ -82,8 +88,10 @@ _PACKAGED_INPUTS = {
     ("policy", "catalog_path"): "catalog.json",
     ("ai", "schema_path"): "schemas/candidate-assessment.schema.json",
     ("pipeline", "toolchain_lock_path"): "toolchain.lock.json",
+    ("pipeline", "oss_fuzz_index_path"): "oss-fuzz-support.json",
     ("pipeline", "coverage_schema_path"): "schemas/coverage-review.schema.json",
     ("pipeline", "quartet_schema_path"): "schemas/quartet-review.schema.json",
+    ("pipeline", "triage_schema_path"): "schemas/triage-report.schema.json",
 }
 
 
@@ -127,8 +135,10 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("pipeline", "runs_path"),
         ("pipeline", "tools_path"),
         ("pipeline", "toolchain_lock_path"),
+        ("pipeline", "oss_fuzz_index_path"),
         ("pipeline", "coverage_schema_path"),
         ("pipeline", "quartet_schema_path"),
+        ("pipeline", "triage_schema_path"),
     )
     for section, key in path_settings:
         value = Path(config[section][key]).expanduser()

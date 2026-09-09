@@ -58,6 +58,7 @@ def prepare_jobs(
     runs_root: str | Path,
     pipeline_config: dict[str, Any],
     toolchain_lock: dict[str, Any],
+    support_index: dict[str, dict[str, str]] | None = None,
     limit: int | None = None,
 ) -> PlanSummary:
     root = Path(runs_root)
@@ -70,7 +71,9 @@ def prepare_jobs(
     for candidate in candidates:
         if limit is not None and created + existing >= limit:
             break
-        work_order, reason = make_work_order(candidate, pipeline_config, toolchain_lock)
+        work_order, reason = make_work_order(
+            candidate, pipeline_config, toolchain_lock, support_index
+        )
         if work_order is None:
             reasons[reason] += 1
             continue
@@ -118,6 +121,7 @@ def make_work_order(
     candidate: dict[str, Any],
     pipeline_config: dict[str, Any],
     toolchain_lock: dict[str, Any],
+    support_index: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     policy = candidate.get("policy") or {}
     if policy.get("status") != "verified":
@@ -143,6 +147,11 @@ def make_work_order(
     )
     if route is None:
         return None, route_reason
+    support = None
+    if language.casefold() in CPP_LANGUAGES and support_index is not None:
+        support = support_index.get(repository.casefold())
+        if support is None:
+            return None, "no_pinned_oss_fuzz_project"
 
     job_id = f"{_slug(repository)}-{commit[:12].lower()}"
     created_at = utc_now()
@@ -173,6 +182,11 @@ def make_work_order(
                 "reason": route_reason,
                 "required_tools": tools,
                 "optional_tools": optional_tools,
+            },
+            "compatibility": {
+                "checked": support_index is not None,
+                "oss_fuzz_project": (support or {}).get("project"),
+                "oss_fuzz_language": (support or {}).get("language"),
             },
             "ai": {
                 "provider": "codex_cli",
@@ -276,6 +290,52 @@ def list_jobs(runs_root: str | Path) -> list[dict[str, Any]]:
     return jobs
 
 
+def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,160}", job_id):
+        raise PipelineError(f"invalid job id: {job_id}")
+    root = Path(runs_root).resolve()
+    job_dir = (root / job_id).resolve()
+    if job_dir.parent != root or not job_dir.is_dir() or job_dir.is_symlink():
+        raise PipelineError(f"job directory was not found: {job_dir}")
+    job = _read_object(job_dir / "job.json")
+    state = _read_object(job_dir / "state.json")
+    progress = _read_optional_object(job_dir / "artifacts" / "fuzz-progress.json")
+    fuzz_run = _read_optional_object(job_dir / "artifacts" / "fuzz-run.json")
+    triage = _read_optional_object(job_dir / "artifacts" / "triage-summary.json")
+    budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
+    completed = float(progress.get("completed_seconds") or 0)
+    return {
+        "job_id": job_id,
+        "repository": (job.get("source") or {}).get("repository"),
+        "commit": (job.get("source") or {}).get("commit"),
+        "status": state.get("status"),
+        "stage": state.get("stage"),
+        "fuzz_budget_seconds": budget,
+        "fuzz_completed_seconds": completed,
+        "fuzz_percent": round(min(100.0, completed * 100 / budget), 2) if budget else 0,
+        "coverage_stalled": bool(progress.get("coverage_stalled")),
+        "corpus_files": int(fuzz_run.get("corpus_files") or 0),
+        "crash_files": len(fuzz_run.get("crash_files") or []),
+        "validated_groups": int(triage.get("validated_group_count") or 0),
+        "last_error": state.get("last_error"),
+        "updated_at": state.get("updated_at"),
+    }
+
+
+def _read_optional_object(path: Path) -> dict[str, Any]:
+    return _read_object(path) if path.is_file() else {}
+
+
+def _read_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineError(f"could not read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PipelineError(f"expected an object in {path}")
+    return value
+
+
 def load_toolchain_lock(path: str | Path) -> dict[str, Any]:
     lock_path = Path(path)
     if not lock_path.is_file():
@@ -287,6 +347,31 @@ def load_toolchain_lock(path: str | Path) -> dict[str, Any]:
     if value.get("schema_version") != 1 or not isinstance(value.get("tools"), dict):
         raise PipelineError("unsupported toolchain lock schema")
     return value
+
+
+def load_oss_fuzz_support_index(
+    path: str | Path, toolchain_lock: dict[str, Any]
+) -> dict[str, dict[str, str]]:
+    index_path = Path(path)
+    if not index_path.is_file():
+        raise PipelineError(f"OSS-Fuzz support index was not found: {index_path}")
+    try:
+        value = json.loads(index_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PipelineError(f"invalid OSS-Fuzz support index: {exc.msg}") from exc
+    expected = str((toolchain_lock.get("tools") or {}).get("oss-fuzz", {}).get("commit") or "")
+    if value.get("schema_version") != 1 or value.get("oss_fuzz_commit") != expected:
+        raise PipelineError("OSS-Fuzz support index does not match the pinned tool commit")
+    result: dict[str, dict[str, str]] = {}
+    for item in value.get("projects") or []:
+        repository = str(item.get("repository") or "").casefold()
+        project = str(item.get("project") or "")
+        if repository and project:
+            result[repository] = {
+                "project": project,
+                "language": str(item.get("language") or ""),
+            }
+    return result
 
 
 def _route(

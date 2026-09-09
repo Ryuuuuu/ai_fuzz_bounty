@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import shutil
 import subprocess
@@ -10,12 +11,15 @@ from .config import load_config
 from .pipeline import (
     PipelineError,
     list_jobs,
+    job_status,
     load_jsonl,
+    load_oss_fuzz_support_index,
     load_toolchain_lock,
     prepare_jobs,
 )
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .pipeline_worker import PipelineWorker
+from .triage import TriageRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--limit", type=int)
     listing = commands.add_parser("list", help="List prepared work orders")
     listing.add_argument("--runs-root")
+    status = commands.add_parser("status", help="Show one work order's progress")
+    status.add_argument("--job-id", required=True)
+    status.add_argument("--json", action="store_true")
     prepare = commands.add_parser(
         "prepare", help="Recheck policy, checkout source and sync pinned tools"
     )
@@ -60,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--job-id", required=True)
     run = commands.add_parser("run", help="Run the full work-order fuzzing budget")
     run.add_argument("--job-id", required=True)
+    triage = commands.add_parser(
+        "triage", help="Minimize, reproduce and deduplicate sanitizer crashes"
+    )
+    triage.add_argument("--job-id", required=True)
+    triage.add_argument("--no-ai", action="store_true")
     worker = commands.add_parser(
         "worker", help="Advance queued jobs through their 24-hour fuzz budget"
     )
@@ -72,13 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     config, _ = load_config(args.config)
-    if args.command not in {"doctor", "list", "plan"} and platform.system() != "Linux":
+    if args.command not in {"doctor", "list", "status", "plan"} and platform.system() != "Linux":
         raise SystemExit("fuzz execution requires Linux (Ubuntu or WSL2)")
     try:
         if args.command == "plan":
             _plan(config, args)
         elif args.command == "list":
             _list(config, args)
+        elif args.command == "status":
+            _status(config, args)
         elif args.command == "prepare":
             _prepare(config, args)
         elif args.command == "integrate":
@@ -97,6 +111,8 @@ def main(argv: list[str] | None = None) -> None:
             _generate(config, args)
         elif args.command == "run":
             _run(config, args)
+        elif args.command == "triage":
+            _triage(config, args)
         elif args.command == "worker":
             _worker(config, args)
         elif args.command == "doctor":
@@ -110,8 +126,16 @@ def _plan(config: dict, args: argparse.Namespace) -> None:
     input_path = args.input or pipeline["input_path"]
     runs_root = args.runs_root or pipeline["runs_path"]
     lock = load_toolchain_lock(pipeline["toolchain_lock_path"])
+    support_index = load_oss_fuzz_support_index(
+        pipeline["oss_fuzz_index_path"], lock
+    )
     summary = prepare_jobs(
-        load_jsonl(input_path), runs_root, pipeline, lock, limit=args.limit
+        load_jsonl(input_path),
+        runs_root,
+        pipeline,
+        lock,
+        support_index,
+        limit=args.limit,
     )
     print(
         f"plan complete: created={summary.created} existing={summary.existing} "
@@ -134,6 +158,24 @@ def _list(config: dict, args: argparse.Namespace) -> None:
             f"{job['status']:12} {job['stage']:24} {job['route']:20} "
             f"{job['repository']}  {job['job_id']}"
         )
+
+
+def _status(config: dict, args: argparse.Namespace) -> None:
+    value = job_status(config["pipeline"]["runs_path"], args.job_id)
+    if args.json:
+        print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    print(f"repository         {value['repository']}@{value['commit']}")
+    print(f"state              {value['status']} / {value['stage']}")
+    print(
+        f"fuzz progress      {value['fuzz_completed_seconds']:.0f}/"
+        f"{value['fuzz_budget_seconds']}s ({value['fuzz_percent']:.2f}%)"
+    )
+    print(f"coverage stalled   {str(value['coverage_stalled']).lower()}")
+    print(f"corpus / crashes   {value['corpus_files']} / {value['crash_files']}")
+    print(f"validated groups   {value['validated_groups']}")
+    if value["last_error"]:
+        print(f"last error         {value['last_error']}")
 
 
 def _prepare(config: dict, args: argparse.Namespace) -> None:
@@ -212,6 +254,16 @@ def _run(config: dict, args: argparse.Namespace) -> None:
     )
 
 
+def _triage(config: dict, args: argparse.Namespace) -> None:
+    runner = TriageRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.triage(args.job_id, use_ai=not args.no_ai)
+    print(
+        f"triage complete: inputs={result['input_crash_count']} "
+        f"validated_groups={result['validated_group_count']} "
+        f"status={result['state']['status']}"
+    )
+
+
 def _doctor(config: dict) -> None:
     pipeline = config["pipeline"]
     checks = [
@@ -223,6 +275,10 @@ def _doctor(config: dict) -> None:
         (
             "toolchain lock",
             "ok" if Path(pipeline["toolchain_lock_path"]).is_file() else "missing",
+        ),
+        (
+            "OSS-Fuzz index",
+            "ok" if Path(pipeline["oss_fuzz_index_path"]).is_file() else "missing",
         ),
         ("runs root", str(Path(pipeline["runs_path"]))),
         ("tools root", str(Path(pipeline["tools_path"]))),

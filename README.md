@@ -16,6 +16,8 @@ Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상
 5. 정적 점수를 통과한 verified 후보 중 상위 몇 개만 AI가 재평가합니다.
 6. 기본 export는 verified만 JSONL로 내보냅니다. needs_review, rejected,
    초대제인 conditional은 자동 파이프라인에서 제외됩니다.
+7. 작업 생성 시 고정된 OSS-Fuzz 커밋의 1,241개 프로젝트 인덱스와 대조해,
+   실제 자동 빌드 경로가 있는 C/C++ 후보만 큐에 넣습니다.
 
 AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECURITY.md의 명시적
 문구와 catalog.json에 기록된 공식 정책 근거만 사용합니다. 카탈로그 항목은
@@ -89,14 +91,23 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
     # analyze가 새 하네스를 요구할 때만 실행
     fuzz-pipeline generate --job-id <job-id>
     fuzz-pipeline run --job-id <job-id>
+    # run이 끝난 뒤 자동 worker가 수행하며, 수동 실행도 가능
+    fuzz-pipeline triage --job-id <job-id>
 
 준비된 작업을 오래된 순서대로 24시간 실행하고 다음 작업으로 넘기려면:
 
     fuzz-pipeline worker --max-jobs 0
 
+현재 진행률, corpus, crash와 정체 상태 확인:
+
+    fuzz-pipeline status --job-id <job-id>
+
 `--max-jobs 0`은 실행 가능한 큐가 빌 때까지 계속 처리한다. 빌드와 검증까지만 미리
 진행하려면 `--setup-only`를 사용한다. 동시에 두 worker가 실행되지 않도록 잠금 파일을
-사용한다.
+사용한다. 크래시가 생기면 worker가 입력 최소화, 격리 환경 3회 재현, sanitizer
+스택 지문 중복 제거를 수행하고 사람 검토용 보고서 초안을 한 번의 Codex 호출로 만든다.
+실행 세션별 완료 시간을 기록하므로 worker나 호스트가 중단돼도 남은 퍼징 예산만
+재개한다. 결과를 외부 버그바운티 서비스에 자동 제출하지 않는다.
 
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
 그룹에 추가한 뒤 다시 로그인해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
