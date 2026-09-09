@@ -194,6 +194,11 @@ def _status(config: dict, args: argparse.Namespace) -> None:
             f"new_corpus={value['afl_cmplog_new_corpus']} / "
             f"crashes={value['afl_cmplog_crashes']}"
         )
+    if value["finding_source"]:
+        print(
+            f"finding route     {value['finding_source']} -> "
+            f"{value['triage_artifact']}"
+        )
     print(f"validated groups   {value['validated_groups']}")
     if value["last_error"]:
         print(f"last error         {value['last_error']}")

@@ -36,7 +36,11 @@ class TriageRunner:
         if state.get("stage") != "triage":
             raise PipelineError(f"job {job_id} is at {state.get('stage')}, expected triage")
         triage_artifact = str(state.get("triage_artifact") or "fuzz-run.json")
-        if triage_artifact not in {"fuzz-run.json", "afl-cmplog-run.json"}:
+        if triage_artifact not in {
+            "probe-run.json",
+            "fuzz-run.json",
+            "afl-cmplog-run.json",
+        }:
             raise PipelineError("state references an unsupported triage artifact")
         fuzz_run = _read_json(job_dir / "artifacts" / triage_artifact)
         fuzzer = str(fuzz_run.get("fuzz_target") or "")

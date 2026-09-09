@@ -56,7 +56,8 @@ queued
    평가하고 이전 증거를 `artifacts/target-history/`에 보존한다.
 5. **quartet_gate**: P1–P4와 입력 도달 여부를 검사한다. 하네스 자체 오류나 probe의
    sanitizer 발견은 여기서 장기 실행을 차단한다. 700줄을 넘는 하네스는 원문 줄 번호를
-   유지한 핵심 구간만 AI에 전달한다.
+   유지한 핵심 구간만 AI에 전달한다. 하네스가 통과하고 probe 발견이 남아 있으면
+   coverage 분석과 장기 실행을 생략하고 즉시 triage한다.
 6. **coverage_analysis**: 60초 probe 결과와 공개 Fuzz Introspector 후보를 고정
    커밋의 파일에 대조한다. 직접 바이트 입력이 가능한 후보가 있을 때만 시그니처와
    수치를 한 번의 Codex 호출에 보내 기존 하네스 실행, 확장, 새 하네스 생성 중
@@ -66,7 +67,8 @@ queued
    늘지 않으면 고정 OSS-Fuzz가 제공하는 AFL++ CmpLog를 기본 3,600초 한 번 실행한다.
    AFL queue는 SHA-256으로 중복 제거해 libFuzzer corpus로 환류한다. AFL에서 나온
    crash는 원래 ASan/libFuzzer 빌드로 triage한다. 보조 빌드나 실행이 실패하면 오류
-   산출물을 남기고 libFuzzer 실행을 계속한다.
+   산출물을 남기고 libFuzzer 실행을 계속한다. 본 퍼징 체크포인트에서 crash가 나오면
+   남은 예산을 소모하지 않고 즉시 triage한다.
 8. **triage**: 입력 최소화, 깨끗한 컨테이너에서 3/3 재현, 심볼화, 스택 기준 중복 제거,
    UBSan 교차 확인과 검증 인계 자료 생성을 거친다.
 
@@ -171,7 +173,8 @@ smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으�
 worker 시작은 파일 잠금으로 직렬화하고, 전체 퍼징 직전 버그바운티 정책을 다시 확인한다.
 `fuzz-progress.json`에 정상 완료 및 중단 세션을 누적한다. 재부팅 뒤 `running` 또는
 `interrupted` 작업을 다시 선택하고 이미 완료한 실행 시간을 제외한 예산만 요청한다.
-기본 체크포인트는 3,600초이며 `fuzz_checkpoint_seconds`로 조정할 수 있다.
+각 체크포인트는 고유 실행 ID로 결과와 진행률을 연결해 상태 기록 직전 중단에도 한 번만
+합산한다. 기본 체크포인트는 3,600초이며 `fuzz_checkpoint_seconds`로 조정할 수 있다.
 CmpLog 보조 실행은 `afl_cmplog_enabled`로 끌 수 있고 `afl_cmplog_seconds`로 실행 시간을
 정한다. 빌드 산출물에는 OSS-Fuzz Dockerfile이 선언한 AFL++ 커밋, 실제 `afl-fuzz`와
 대상 바이너리의 SHA-256, 프로젝트 builder 이미지 ID를 기록한다.

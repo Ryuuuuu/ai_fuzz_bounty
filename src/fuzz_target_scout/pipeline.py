@@ -342,6 +342,8 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "afl_cmplog_status": afl_run.get("status"),
         "afl_cmplog_new_corpus": int(afl_run.get("new_corpus_files") or 0),
         "afl_cmplog_crashes": len(afl_run.get("crash_files") or []),
+        "finding_source": state.get("finding_source"),
+        "triage_artifact": state.get("triage_artifact"),
         "validated_groups": int(triage.get("validated_group_count") or 0),
         "last_error": state.get("last_error"),
         "updated_at": state.get("updated_at"),

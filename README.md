@@ -123,7 +123,8 @@ Quartet 검토를 최대 `max_fuzz_target_attempts`개까지 순서대로 수행
 작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. OSS-Fuzz와
 OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게이트로
 적용합니다. AFL++ CmpLog는 4시간 동안 corpus가 늘지 않을 때 한 번 실행하고 새 입력을
-기존 corpus로 되돌립니다. VistaFuzz는 Python API 경로를
+기존 corpus로 되돌립니다. probe나 본 퍼징 체크포인트의 crash는 남은 시간을 소모하지
+않고 즉시 triage로 넘깁니다. VistaFuzz는 Python API 경로를
 활성화했을 때만 사용합니다. 전체 방법론과 단계별 산출물은
 [`docs/FUZZ_PIPELINE.md`](docs/FUZZ_PIPELINE.md)에 정리되어 있습니다.
 

@@ -224,7 +224,14 @@ class PipelineRunner:
         next_target = ""
         if not ready:
             next_target = self._retry_alternate_fuzz_target(job_dir, state, record)
-        if ready and (job_dir / "artifacts" / "coverage-plan.json").is_file():
+        probe_path = job_dir / "artifacts" / "probe-run.json"
+        probe = self._read_json(probe_path) if probe_path.is_file() else {}
+        if ready and probe.get("crash_files"):
+            state["stage"] = "triage"
+            state["status"] = "triage_pending"
+            state["triage_artifact"] = "probe-run.json"
+            state["finding_source"] = "probe"
+        elif ready and (job_dir / "artifacts" / "coverage-plan.json").is_file():
             state["stage"] = "fuzzing"
             state["status"] = "ready"
         elif ready:
@@ -586,19 +593,45 @@ class PipelineRunner:
             else {"schema_version": 1, "completed_seconds": 0.0, "sessions": []}
         )
         completed_seconds = float(progress.get("completed_seconds") or 0)
+        artifact_path = job_dir / "artifacts" / "fuzz-run.json"
+        active_session_id = str(state.get("active_fuzz_session_id") or "")
+        if active_session_id and artifact_path.is_file():
+            cached_result = self._read_json(artifact_path)
+            cached_is_complete = int(cached_result.get("exit_code") or 0) == 0 or bool(
+                cached_result.get("crash_files")
+            )
+            if (
+                str(cached_result.get("session_id") or "") == active_session_id
+                and cached_is_complete
+            ):
+                return self._apply_fuzz_result(
+                    job_dir,
+                    job,
+                    state_path,
+                    state,
+                    progress_path,
+                    progress,
+                    cached_result,
+                )
         remaining = max(0, budget - int(completed_seconds))
-        if remaining == 0 and (job_dir / "artifacts" / "fuzz-run.json").is_file():
-            result = self._read_json(job_dir / "artifacts" / "fuzz-run.json")
+        if remaining == 0 and artifact_path.is_file():
+            result = self._read_json(artifact_path)
             return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+        if remaining == 0:
+            raise PipelineError("completed fuzz budget has no result artifact")
         checkpoint = int(
             getattr(self, "pipeline", {}).get("fuzz_checkpoint_seconds", remaining)
         )
         session_budget = min(remaining, max(1, checkpoint))
-        state["status"] = "running"
-        state["updated_at"] = utc_now()
-        state["fuzz_started_at"] = state.get("fuzz_started_at") or utc_now()
-        self._write_json(state_path, state)
+        session_id = f"fuzz-{time.time_ns()}"
         session_started = utc_now()
+        state["status"] = "running"
+        state["updated_at"] = session_started
+        state["fuzz_started_at"] = state.get("fuzz_started_at") or session_started
+        state["active_fuzz_session_id"] = session_id
+        state["active_fuzz_session_started_at"] = session_started
+        state["active_fuzz_session_seconds"] = session_budget
+        self._write_json(state_path, state)
         monotonic_started = time.monotonic()
         try:
             result = self._fuzz_session(
@@ -607,6 +640,7 @@ class PipelineRunner:
                 seconds=session_budget,
                 workers=int((job.get("execution") or {})["parallel_workers"]),
                 label="fuzz",
+                session_id=session_id,
             )
         except Exception as exc:
             elapsed = min(float(session_budget), time.monotonic() - monotonic_started)
@@ -618,6 +652,8 @@ class PipelineRunner:
                     "completed_at": utc_now(),
                     "requested_seconds": session_budget,
                     "elapsed_seconds": round(elapsed, 3),
+                    "session_id": session_id,
+                    "engine": "libfuzzer",
                     "status": "interrupted",
                     "error": str(exc)[:1000],
                 }
@@ -627,51 +663,108 @@ class PipelineRunner:
             state["last_error"] = str(exc)[:2000]
             state["fuzz_completed_seconds"] = round(completed_seconds, 3)
             state["updated_at"] = utc_now()
+            self._clear_active_fuzz_session(state)
             self._write_json(state_path, state)
             if isinstance(exc, PipelineError):
                 raise
             raise PipelineError(f"fuzzing failed: {exc}") from exc
-        completed_seconds += float(session_budget)
-        progress["completed_seconds"] = completed_seconds
-        progress.setdefault("sessions", []).append(
-            {
-                "started_at": session_started,
-                "completed_at": utc_now(),
-                "requested_seconds": session_budget,
-                "elapsed_seconds": result.get("elapsed_seconds"),
-                "corpus_files": result.get("corpus_files"),
-                "executed_units": result.get("executed_units"),
-                "status": "completed",
-            }
+        result.setdefault("session_id", session_id)
+        result.setdefault("started_at", session_started)
+        result.setdefault("completed_at", utc_now())
+        result.setdefault("requested_seconds", session_budget)
+        return self._apply_fuzz_result(
+            job_dir,
+            job,
+            state_path,
+            state,
+            progress_path,
+            progress,
+            result,
         )
+
+    def _apply_fuzz_result(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        state_path: Path,
+        state: dict[str, Any],
+        progress_path: Path,
+        progress: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        budget = int((job.get("budgets") or {})["fuzz_seconds"])
+        session_id = str(result.get("session_id") or "")
+        completed_seconds = float(progress.get("completed_seconds") or 0)
+        if not session_id:
+            raise PipelineError("fuzz result is missing its session ID")
+        if str(progress.get("last_accounted_fuzz_session_id") or "") != session_id:
+            requested = max(0.0, float(result.get("requested_seconds") or 0))
+            if requested <= 0:
+                raise PipelineError("fuzz result has an invalid requested duration")
+            session_budget = min(requested, max(0.0, budget - completed_seconds))
+            completed_seconds += session_budget
+            progress["completed_seconds"] = completed_seconds
+            progress["last_accounted_fuzz_session_id"] = session_id
+            progress.setdefault("sessions", []).append(
+                {
+                    "started_at": result.get("started_at"),
+                    "completed_at": result.get("completed_at"),
+                    "requested_seconds": result.get("requested_seconds"),
+                    "elapsed_seconds": result.get("elapsed_seconds"),
+                    "session_id": session_id,
+                    "engine": "libfuzzer",
+                    "corpus_files": result.get("corpus_files"),
+                    "executed_units": result.get("executed_units"),
+                    "status": "completed",
+                }
+            )
+        else:
+            session_budget = 0.0
         previous_corpus = int(progress.get("last_corpus_files") or 0)
         current_corpus = int(result.get("corpus_files") or 0)
-        progress["stalled_seconds"] = (
-            0
-            if current_corpus > previous_corpus
-            else int(progress.get("stalled_seconds") or 0) + session_budget
-        )
-        progress["last_corpus_files"] = max(previous_corpus, current_corpus)
-        stall_limit = int(
-            getattr(self, "pipeline", {}).get("coverage_stall_seconds", 14400)
-        )
-        progress["coverage_stalled"] = progress["stalled_seconds"] >= stall_limit
-        self._write_json(progress_path, progress)
+        if session_budget:
+            progress["stalled_seconds"] = (
+                0
+                if current_corpus > previous_corpus
+                else int(progress.get("stalled_seconds") or 0) + int(session_budget)
+            )
+            progress["last_corpus_files"] = max(previous_corpus, current_corpus)
+            stall_limit = int(
+                getattr(self, "pipeline", {}).get("coverage_stall_seconds", 14400)
+            )
+            progress["coverage_stalled"] = progress["stalled_seconds"] >= stall_limit
+            self._write_json(progress_path, progress)
+        self._clear_active_fuzz_session(state)
+        if result.get("crash_files"):
+            state["triage_artifact"] = "fuzz-run.json"
+            state["finding_source"] = "fuzz_checkpoint"
+            return self._finish_fuzz_state(
+                state_path, state, result, completed_seconds
+            )
         if completed_seconds < budget:
             should_run_afl = (
-                bool(progress["coverage_stalled"])
+                bool(progress.get("coverage_stalled"))
                 and bool(getattr(self, "pipeline", {}).get("afl_cmplog_enabled", True))
                 and not (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
             )
             state["status"] = "afl_cmplog_pending" if should_run_afl else "ready"
             state["last_error"] = None
             state["fuzz_completed_seconds"] = round(completed_seconds, 3)
-            state["coverage_stalled"] = bool(progress["coverage_stalled"])
+            state["coverage_stalled"] = bool(progress.get("coverage_stalled"))
             state["updated_at"] = utc_now()
             self._write_json(state_path, state)
             result["state"] = state
             return result
         return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+
+    @staticmethod
+    def _clear_active_fuzz_session(state: dict[str, Any]) -> None:
+        for key in (
+            "active_fuzz_session_id",
+            "active_fuzz_session_started_at",
+            "active_fuzz_session_seconds",
+        ):
+            state.pop(key, None)
 
     def afl_cmplog(self, job_id: str) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
@@ -1507,7 +1600,8 @@ class PipelineRunner:
         fuzzers = sorted(
             path.name
             for path in out_dir.iterdir()
-            if path.is_file()
+            if not path.is_symlink()
+            and path.is_file()
             and os.access(path, os.X_OK)
             and path.name != "llvm-symbolizer"
             and not path.name.endswith((".zip", ".dict", ".options"))
@@ -1518,7 +1612,7 @@ class PipelineRunner:
         snapshot_root.mkdir(exist_ok=True)
         snapshot = snapshot_root / "asan"
         temporary_snapshot = snapshot_root / f"asan.tmp-{time.time_ns()}"
-        shutil.copytree(out_dir, temporary_snapshot)
+        shutil.copytree(out_dir, temporary_snapshot, symlinks=True)
         if snapshot.exists():
             shutil.rmtree(snapshot)
         temporary_snapshot.replace(snapshot)
@@ -1560,6 +1654,7 @@ class PipelineRunner:
         seconds: int,
         workers: int,
         label: str,
+        session_id: str = "",
     ) -> dict[str, Any]:
         if seconds < 1 or workers < 1:
             raise PipelineError("fuzz duration and worker count must be positive")
@@ -1575,7 +1670,7 @@ class PipelineRunner:
         runtime_out = job_dir / "runtime-out" / label
         if not runtime_out.exists():
             runtime_out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(out_dir, runtime_out)
+            shutil.copytree(out_dir, runtime_out, symlinks=True)
         corpus_dir = job_dir / "corpus" / fuzzer
         crash_dir = job_dir / "crashes" / fuzzer
         corpus_dir.mkdir(parents=True, exist_ok=True)
@@ -1644,11 +1739,20 @@ class PipelineRunner:
             allow_failure=label == "probe",
         )
         elapsed = round(time.monotonic() - monotonic_start, 3)
-        crashes = sorted(path.name for path in crash_dir.iterdir() if path.is_file())
-        corpus_files = sum(1 for path in corpus_dir.iterdir() if path.is_file())
+        crashes = sorted(
+            path.name
+            for path in crash_dir.iterdir()
+            if not path.is_symlink() and path.is_file()
+        )
+        corpus_files = sum(
+            1
+            for path in corpus_dir.iterdir()
+            if not path.is_symlink() and path.is_file()
+        )
         worker_stats = self._collect_worker_stats(runtime_out, job_dir / "logs", label)
         result = {
             "schema_version": 1,
+            "session_id": session_id or f"{label}-{time.time_ns()}",
             "label": label,
             "started_at": started_at,
             "completed_at": utc_now(),
@@ -1692,16 +1796,31 @@ class PipelineRunner:
         if any(corpus_dir.iterdir()):
             return
         archive = out_dir / f"{fuzzer}_seed_corpus.zip"
-        if not archive.is_file():
+        if archive.is_symlink() or not archive.is_file():
             return
+        examined_bytes = 0
+        examined_files = 0
         with zipfile.ZipFile(archive) as bundle:
             for member in bundle.infolist():
                 name = Path(member.filename)
                 if member.is_dir() or name.is_absolute() or ".." in name.parts:
                     continue
+                if member.file_size > 16 * 1024 * 1024:
+                    continue
+                if examined_files >= 10_000:
+                    break
+                if examined_bytes + member.file_size > 256 * 1024 * 1024:
+                    break
+                examined_files += 1
+                examined_bytes += member.file_size
                 content = bundle.read(member)
                 destination = corpus_dir / hashlib.sha256(content).hexdigest()
-                destination.write_bytes(content)
+                if destination.is_symlink() or (
+                    destination.exists() and not destination.is_file()
+                ):
+                    continue
+                if not destination.is_file():
+                    destination.write_bytes(content)
 
     @staticmethod
     def _collect_worker_stats(
@@ -1710,6 +1829,8 @@ class PipelineRunner:
         records: list[dict[str, int | str]] = []
         pattern = re.compile(r"^stat::([a-z_]+):\s+(\d+)", re.MULTILINE)
         for index, source in enumerate(sorted(runtime_out.rglob("fuzz-*.log"))):
+            if source.is_symlink() or not source.is_file():
+                continue
             text = source.read_text(encoding="utf-8", errors="replace")
             destination = logs_dir / f"{label}-worker-{index}.log"
             shutil.copy2(source, destination)

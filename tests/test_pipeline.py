@@ -89,11 +89,18 @@ class PipelineTests(unittest.TestCase):
                     }
                 )
             )
+            state_path = job_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            state["finding_source"] = "probe"
+            state["triage_artifact"] = "probe-run.json"
+            state_path.write_text(json.dumps(state))
             value = job_status(directory, job_dir.name)
             self.assertEqual(value["fuzz_percent"], 50.0)
             self.assertTrue(value["coverage_stalled"])
             self.assertEqual(value["preflight_target"], "fuzz_parser")
             self.assertEqual(value["preflight_findings"], 1)
+            self.assertEqual(value["finding_source"], "probe")
+            self.assertEqual(value["triage_artifact"], "probe-run.json")
 
     def test_support_index_must_match_toolchain_commit(self):
         with tempfile.TemporaryDirectory() as directory:

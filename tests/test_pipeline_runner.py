@@ -289,10 +289,13 @@ class PipelineRunnerTests(unittest.TestCase):
                 "stat::peak_rss_mb: 42\n",
                 encoding="utf-8",
             )
+            (runtime / "fuzz-secret.log").symlink_to("/etc/passwd")
             records = PipelineRunner._collect_worker_stats(runtime, logs, "probe")
+            self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["number_of_executed_units"], 120)
             self.assertEqual(records[0]["peak_rss_mb"], 42)
             self.assertTrue((logs / "probe-worker-0.log").is_file())
+            self.assertFalse((logs / "probe-worker-1.log").exists())
 
     def test_sanitizer_summaries_are_bounded_and_addresses_normalized(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -598,6 +601,79 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(observed, [3])
             self.assertEqual(result["state"]["fuzz_completed_seconds"], 10)
 
+    def test_cached_fuzz_checkpoint_is_not_counted_twice_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "b" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "budgets": {"fuzz_seconds": 100},
+                        "execution": {"parallel_workers": 1},
+                    }
+                )
+            )
+            state_path = job_dir / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "stage": "fuzzing",
+                        "status": "running",
+                        "attempts": {},
+                        "active_fuzz_session_id": "fuzz-recovered",
+                    }
+                )
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 10, "sessions": []})
+            )
+            (artifacts / "fuzz-run.json").write_text(
+                json.dumps(
+                    {
+                        "session_id": "fuzz-recovered",
+                        "started_at": "2026-01-01T00:00:00Z",
+                        "completed_at": "2026-01-01T00:00:05Z",
+                        "requested_seconds": 5,
+                        "elapsed_seconds": 5,
+                        "exit_code": 0,
+                        "corpus_files": 2,
+                        "executed_units": 100,
+                        "crash_files": [],
+                    }
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {
+                "coverage_stall_seconds": 20,
+                "afl_cmplog_enabled": True,
+            }
+            runner.progress = lambda _message: None
+
+            with patch.object(runner, "_recheck_policy"):
+                first = runner.fuzz(job_id)
+            self.assertEqual(first["state"]["fuzz_completed_seconds"], 15)
+            recovered_state = json.loads(state_path.read_text())
+            recovered_state["status"] = "running"
+            recovered_state["active_fuzz_session_id"] = "fuzz-recovered"
+            state_path.write_text(json.dumps(recovered_state))
+            with patch.object(runner, "_recheck_policy"):
+                second = runner.fuzz(job_id)
+
+            self.assertEqual(second["state"]["fuzz_completed_seconds"], 15)
+            progress = json.loads((artifacts / "fuzz-progress.json").read_text())
+            self.assertEqual(progress["completed_seconds"], 15)
+            self.assertEqual(len(progress["sessions"]), 1)
+
     def test_full_run_checkpoints_without_finishing_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -643,6 +719,56 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(result["state"]["stage"], "fuzzing")
             self.assertEqual(result["state"]["status"], "ready")
             self.assertEqual(result["state"]["fuzz_completed_seconds"], 3)
+
+    def test_full_run_stops_at_first_checkpoint_with_a_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "c" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "budgets": {"fuzz_seconds": 10},
+                        "execution": {"parallel_workers": 1},
+                    }
+                )
+            )
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "ready", "attempts": {}})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {
+                "fuzz_checkpoint_seconds": 3,
+                "coverage_stall_seconds": 6,
+            }
+            runner.progress = lambda _message: None
+            with patch.object(runner, "_recheck_policy"), patch.object(
+                runner,
+                "_fuzz_session",
+                return_value={
+                    "fuzz_target": "fuzz_parser",
+                    "elapsed_seconds": 3,
+                    "corpus_files": 2,
+                    "executed_units": 100,
+                    "crash_files": ["fuzz_parser-deadbeef"],
+                },
+            ):
+                result = runner.fuzz(job_id)
+
+            self.assertEqual(result["state"]["stage"], "triage")
+            self.assertEqual(result["state"]["status"], "triage_pending")
+            self.assertEqual(result["state"]["fuzz_completed_seconds"], 3)
+            self.assertEqual(result["state"]["triage_artifact"], "fuzz-run.json")
+            self.assertEqual(result["state"]["finding_source"], "fuzz_checkpoint")
 
     def test_coverage_stall_schedules_one_afl_cmplog_lane(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -984,6 +1110,30 @@ class PipelineRunnerTests(unittest.TestCase):
             runner.runs_root = root
             result = runner.quartet(job_id)
             self.assertEqual(result["state"]["status"], "quartet_review_required")
+
+    def test_approved_probe_finding_skips_long_run_and_enters_triage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_dir = root / "probe-finding-job"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            state_path = job_dir / "state.json"
+            state = {"stage": "quartet_gate", "status": "quartet_pending"}
+            state_path.write_text(json.dumps(state))
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"crash_files": ["fuzz_parser-deadbeef"]})
+            )
+            record = {"review": {"execution_ready": True}}
+            runner = object.__new__(PipelineRunner)
+
+            result = runner._apply_quartet_state(
+                job_dir, state_path, state, record, count_attempt=True
+            )
+
+            self.assertEqual(result["state"]["stage"], "triage")
+            self.assertEqual(result["state"]["status"], "triage_pending")
+            self.assertEqual(result["state"]["triage_artifact"], "probe-run.json")
+            self.assertEqual(result["state"]["finding_source"], "probe")
 
     def test_failed_quartet_review_selects_and_archives_alternate_target(self):
         with tempfile.TemporaryDirectory() as directory:

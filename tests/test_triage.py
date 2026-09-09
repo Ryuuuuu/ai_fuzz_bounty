@@ -74,6 +74,23 @@ class TriageTests(unittest.TestCase):
                 3,
             )
 
+    def test_probe_finding_uses_the_same_reproduction_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_id, job_dir = self._fixture(Path(directory), crash=True)
+            state_path = job_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            state["triage_artifact"] = "probe-run.json"
+            state_path.write_text(json.dumps(state))
+            artifacts = job_dir / "artifacts"
+            (artifacts / "fuzz-run.json").replace(artifacts / "probe-run.json")
+            with patch.object(runner, "_minimize", return_value=None), patch.object(
+                runner, "_reproduce", return_value=(1, ASAN_LOG)
+            ):
+                result = runner.triage(job_id, use_ai=False)
+
+            self.assertEqual(result["validated_group_count"], 1)
+            self.assertEqual(result["state"]["status"], "ready_for_human")
+
     @staticmethod
     def _fixture(root: Path, *, crash: bool):
         job_id = "org-parser-" + "a" * 12
