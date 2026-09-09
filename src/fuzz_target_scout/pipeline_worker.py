@@ -9,6 +9,8 @@ from typing import Any
 from .pipeline import PipelineError, utc_now
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .triage import TriageRunner
+from .operations import Housekeeper
+from .validation_agent import ValidationAgentRunner
 
 
 MANUAL_STATUSES = {
@@ -19,6 +21,8 @@ MANUAL_STATUSES = {
     "unsupported_integration",
     "ready_for_human",
     "triage_review_required",
+    "resource_limit_required",
+    "validation_review_required",
 }
 
 
@@ -39,6 +43,8 @@ class PipelineWorker:
         self.progress = progress or (lambda _: None)
         self.runner = PipelineRunner(config, progress=self.progress)
         self.triage_runner = TriageRunner(config, progress=self.progress)
+        self.validation_runner = ValidationAgentRunner(config, progress=self.progress)
+        self.housekeeper = Housekeeper(config)
 
     def run(self, max_jobs: int, *, setup_only: bool = False) -> list[WorkerResult]:
         if max_jobs < 0:
@@ -52,12 +58,17 @@ class PipelineWorker:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise PipelineError("another fuzz pipeline worker is already running") from exc
+            housekeeper = getattr(self, "housekeeper", None)
+            if housekeeper is not None:
+                housekeeper.run()
             while max_jobs == 0 or len(results) < max_jobs:
                 job_id = self._next_job(attempted)
                 if not job_id:
                     break
                 attempted.add(job_id)
                 results.append(self._advance(job_id, setup_only=setup_only))
+                if housekeeper is not None:
+                    housekeeper.run(job_id)
         return results
 
     def _next_job(self, attempted: set[str]) -> str:
@@ -132,7 +143,10 @@ class PipelineWorker:
                         return WorkerResult(job_id, status, stage, "needs_attention")
                 elif stage == "triage":
                     action = "triage"
-                    result = self.triage_runner.triage(job_id)
+                    self.triage_runner.triage(job_id, use_ai=False)
+                elif stage == "validation":
+                    action = "validate"
+                    result = self.validation_runner.validate(job_id)
                     final_state = result["state"]
                     return WorkerResult(
                         job_id,
@@ -173,6 +187,11 @@ class PipelineWorker:
             state = json.loads(path.read_text(encoding="utf-8"))
             if state.get("status") != "interrupted":
                 state["status"] = "worker_failed"
+            attempts = state.setdefault("attempts", {})
+            attempts["worker_failures"] = int(attempts.get("worker_failures", 0)) + 1
+            maximum = int(getattr(self, "pipeline", {}).get("max_stage_failures", 3))
+            if attempts["worker_failures"] >= maximum:
+                state["status"] = "manual_review"
             state["last_error"] = str(exc)[:2000]
             state["updated_at"] = utc_now()
             temporary = path.with_suffix(".json.tmp")

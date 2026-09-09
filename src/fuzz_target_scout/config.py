@@ -56,6 +56,7 @@ DEFAULTS: dict[str, Any] = {
         "coverage_schema_path": "schemas/coverage-review.schema.json",
         "quartet_schema_path": "schemas/quartet-review.schema.json",
         "triage_schema_path": "schemas/triage-report.schema.json",
+        "validation_schema_path": "schemas/validation-agent.schema.json",
         "coverage_ai_timeout_seconds": 180,
         "quartet_ai_timeout_seconds": 180,
         "generation_ai_timeout_seconds": 240,
@@ -82,6 +83,17 @@ DEFAULTS: dict[str, Any] = {
         "container_memory_mb": 0,
         "fuzzer_rss_limit_mb": 1024,
         "input_timeout_seconds": 10,
+        "job_disk_limit_mb": 20480,
+        "corpus_limit_mb": 4096,
+        "corpus_max_files": 100000,
+        "log_max_files": 200,
+        "runtime_retention_hours": 24,
+        "max_stage_failures": 3,
+        "dashboard_interval_seconds": 10,
+        "allow_generic_integrations": True,
+        "generic_integration_ai_timeout_seconds": 300,
+        "vistafuzz_enabled": False,
+        "vistafuzz_seconds": 3600,
     },
     "daemon": {"interval_seconds": 21600},
 }
@@ -95,6 +107,7 @@ _PACKAGED_INPUTS = {
     ("pipeline", "coverage_schema_path"): "schemas/coverage-review.schema.json",
     ("pipeline", "quartet_schema_path"): "schemas/quartet-review.schema.json",
     ("pipeline", "triage_schema_path"): "schemas/triage-report.schema.json",
+    ("pipeline", "validation_schema_path"): "schemas/validation-agent.schema.json",
 }
 
 
@@ -142,6 +155,7 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("pipeline", "coverage_schema_path"),
         ("pipeline", "quartet_schema_path"),
         ("pipeline", "triage_schema_path"),
+        ("pipeline", "validation_schema_path"),
     )
     for section, key in path_settings:
         value = Path(config[section][key]).expanduser()

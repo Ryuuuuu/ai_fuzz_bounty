@@ -16,7 +16,7 @@
 | [QuartetFuzz](https://github.com/OwenSanzas/QuartetFuzz) | P1 논리 정확성, P2 API 규약, P3 공개 보안 경계, P4 진입점 적절성 검사 | 하네스 빌드 전후의 필수 게이트 |
 | [Fuzz Introspector](https://github.com/ossf/fuzz-introspector) | 도달 함수, 미도달 코드, 하네스별 커버리지 차이 측정 | 진입점 선택과 4시간 정체 시점 |
 | [AFL++](https://github.com/AFLplusplus/AFLplusplus) | CmpLog로 매직 값과 복잡한 비교를 넘기는 보조 실행 | 파일/CLI 입력이며 커버리지가 4시간 정체할 때만 |
-| [VistaFuzz](https://github.com/beanduan22/VistaFuzz) | 문서에서 타입·shape·인자 관계를 한 번 추출하고 유효한 Python API 입력 생성 | Python 경로를 나중에 활성화할 때만 |
+| [VistaFuzz](https://github.com/beanduan22/VistaFuzz) | OpenCV-Python 전용 문서 제약 퍼징 아티팩트의 고정 버전 점검과 별도 스모크 | 일반 후보와 분리된 연구 보조 경로 |
 
 각 버전은 `toolchain.lock.json`의 커밋으로 고정한다. OSS-Fuzz-Gen과
 QuartetFuzz가 기본적으로 API 모델을 기대하는 부분은 로컬 `codex exec` 어댑터로
@@ -27,8 +27,10 @@ OSS-Fuzz-Gen에는 설치 후 생성되는 `oss-fuzz-gen-codex` 실행 파일을
 `--ai-binary`로 전달한다. 이 어댑터는 OSS-Fuzz-Gen의 인자와 `.rawoutput` 계약을
 그대로 구현하며 ChatGPT로 로그인된 로컬 Codex를 사용한다. 기본 sample cap은 1이다.
 
-VistaFuzz는 일반 C/C++ 파일 파서에 넣지 않는다. 문서 제약이 중요한 Python API일
-때만 `pipeline.languages`에 `Python`을 추가해 별도 경로를 활성화한다.
+VistaFuzz는 일반 Python 라이브러리용 도구가 아니다. 공식 구현이 자체 OpenCV 환경을
+빌드하므로 그 결과를 임의의 후보 커밋에 대한 버그바운티 증거로 사용하지 않는다.
+`fuzz-pipeline vistafuzz`는 고정 커밋과 API 데이터 해시를 점검하고,
+`vistafuzz_enabled=true`일 때만 `--smoke-seconds`로 격리된 연구 스모크를 실행한다.
 
 ## 작업 상태
 
@@ -44,6 +46,7 @@ queued
   → fuzzing_asan_24h
       ↳ corpus 4시간 정체 시 afl_cmplog 1회 → fuzzing_asan_24h
   → triage
+  → validation
   → ready_for_human | exhausted | failed
 ```
 
@@ -71,6 +74,8 @@ queued
    남은 예산을 소모하지 않고 즉시 triage한다.
 8. **triage**: 입력 최소화, 깨끗한 컨테이너에서 3/3 재현, 심볼화, 스택 기준 중복 제거,
    UBSan 교차 확인과 검증 인계 자료 생성을 거친다.
+9. **validation**: 별도 Codex 에이전트가 검증된 그룹만 읽어 로컬 전용 PoC, 트리거
+   경로, 영향 근거와 사람 검토용 보고서 초안을 만든다. 외부 제출은 하지 않는다.
 
 준비는 최대 90분, 마지막 triage는 최대 60분이다. 준비 실패 시간을 24시간 퍼징
 예산으로 계산하지 않는다.
@@ -120,7 +125,10 @@ logs/             빌드와 실행 로그
 
 `fuzz-pipeline plan`은 정책·커밋·언어 게이트를 다시 검사하고 위 계약의 작업 폴더를
 멱등적으로 만든다. 계획 시점에 `oss-fuzz-support.json`을 사용해 고정 OSS-Fuzz
-커밋의 프로젝트 정의가 없는 C/C++ 후보는 `no_pinned_oss_fuzz_project`로 제외한다.
+프로젝트 정의가 있는 후보를 먼저 배치한다. 정의가 없는 후보는
+`allow_generic_integrations=true`일 때 CMake, Meson, Autotools, Cargo 템플릿과
+Codex/OSS-Fuzz-Gen 초기 하네스로 작업별 비공개 프로젝트 정의를 만든다. 탐색 단계에서
+지원 빌드 파일 신호가 없는 후보는 checkout 전에 제외한다.
 인덱스는 `scripts/build_oss_fuzz_index.py`로 같은 도구 커밋에서 재생성하며, 커밋이
 다르면 계획을 거부한다. `fuzz-pipeline prepare --job-id <id>`는 현재 정책을 다시
 확인하고, 고정 커밋만 checkout하고, 작업 주문에 기록된 공식 도구 커밋을 동기화한
@@ -140,14 +148,20 @@ fuzz-pipeline run --job-id <id>
 # 기록된 coverage 정체 작업에만 실행 가능하며 worker는 자동 호출한다.
 fuzz-pipeline afl-cmplog --job-id <id>
 fuzz-pipeline triage --job-id <id>
+fuzz-pipeline validate --job-id <id>
+fuzz-pipeline dashboard --watch
+fuzz-pipeline housekeep
 ```
 
 원본 checkout은 증거용으로 깨끗하게 유지하고 별도 Git worktree에서만 빌드한다.
 OSS-Fuzz 저장소와 프로젝트 정의도 작업마다 별도 worktree로 고정한다. 따라서 서로
 다른 프로그램의 Dockerfile, 하네스 수정과 `build/out`이 겹치지 않는다.
-빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 현재 자동
-실행 경계는 고정된 OSS-Fuzz 버전에 프로젝트 정의가 존재하는 C/C++ 저장소다. 정의가
-없는 저장소는 임의의 빌드 스크립트를 실행하지 않고 지원되지 않는 통합으로 중단한다.
+빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 생성 통합은
+지원하는 빌드 시스템을 먼저 확인하고, 공개 함수 시그니처와 제한된 소스 문맥만 AI에
+전달한다. 생성된 하네스는 프로세스·네트워크 호출을 정적으로 거부하고 공식 OSS-Fuzz
+빌드와 이후의 probe·Quartet 게이트를 동일하게 통과해야 한다.
+범용 CMake 통합 자체는 `python scripts/verify_generic_integration.py`로 작은 정적
+라이브러리를 공식 OSS-Fuzz helper에서 실제 빌드해 확인할 수 있다.
 `probe`는 격리 구성과 처리량을 60초 확인한다. `quartet`은 고정된
 QuartetFuzz 매뉴얼의 P1–P4 기준으로 하네스를 한 번 구조화 검토하고 기존 ASan 빌드,
 smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으면 P4 함수 도달은
@@ -189,8 +203,19 @@ CmpLog 보조 실행은 `afl_cmplog_enabled`로 끌 수 있고 `afl_cmplog_secon
 세 번 실행한다. 세 sanitizer 지문이 모두 같을 때만 검증 그룹으로 인정하며, 주소를
 정규화한 스택 지문으로 중복 입력을 묶는다. 검증된 그룹은 별도 UBSan 빌드에서도 한 번
 교차 실행한다. 검증된 그룹만 `validation-handoff.json`에
-포함한다. Codex에는 입력 바이트나 전체 소스를 보내지 않고 지문, 프레임, 크기와
-고정 커밋만 한 번에 전달한다.
+포함한다. 재현되지 않은 그룹은 sanitizer 미검출과 불안정한 지문을 구분해 이유를
+기록한다. 다음 `validation` 단계의 Codex에는 입력 바이트나 전체 소스를 보내지 않고
+지문, 프레임, 제한된 소스 구간, 크기와 고정 커밋만 한 번에 전달한다. 생성된 PoC는
+네트워크가 없는 OSS-Fuzz 재현 컨테이너만 실행한다.
+
+4시간 정체 뒤 AFL++에서도 새 corpus가 없으면 현재 고정 소스와 하네스의 문자열을
+제한적으로 추출해 libFuzzer dictionary를 만든다. dictionary 적용 뒤 다시 정체되면
+기존 coverage 분석에서 확인한 후보 하나를 선택해 OSS-Fuzz-Gen 빌드 수정 루프로
+넘긴다.
+
+운영 중에는 `dashboard`, `housekeep`, `migrate` 명령을 사용한다. 디스크 제한,
+corpus·로그 정리, 고아 컨테이너 제거, 실패 횟수 제한과 상태 스키마 백업 절차는
+`OPERATIONS.md`와 `MIGRATIONS.md`에 정리되어 있다.
 
 Ubuntu 사용자가 Docker 소켓을 사용할 수 없으면 한 번만 다음을 실행하고 로그아웃한
 뒤 다시 로그인한다.

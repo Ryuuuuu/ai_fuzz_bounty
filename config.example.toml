@@ -49,6 +49,7 @@ ai_executable = "codex"
 coverage_schema_path = "schemas/coverage-review.schema.json"
 quartet_schema_path = "schemas/quartet-review.schema.json"
 triage_schema_path = "schemas/triage-report.schema.json"
+validation_schema_path = "schemas/validation-agent.schema.json"
 coverage_ai_timeout_seconds = 180
 quartet_ai_timeout_seconds = 180
 generation_ai_timeout_seconds = 240
@@ -77,6 +78,19 @@ probe_seconds = 60
 container_memory_mb = 0
 fuzzer_rss_limit_mb = 1024
 input_timeout_seconds = 10
+job_disk_limit_mb = 20480
+corpus_limit_mb = 4096
+corpus_max_files = 100000
+log_max_files = 200
+runtime_retention_hours = 24
+max_stage_failures = 3
+dashboard_interval_seconds = 10
+# OSS-Fuzz 정의가 없는 C/C++ 프로젝트에 로컬 통합 생성을 허용합니다.
+allow_generic_integrations = true
+generic_integration_ai_timeout_seconds = 300
+# VistaFuzz는 OpenCV-Python 계열 API 작업을 명시적으로 선택할 때만 켭니다.
+vistafuzz_enabled = false
+vistafuzz_seconds = 3600
 
 [daemon]
 interval_seconds = 21600

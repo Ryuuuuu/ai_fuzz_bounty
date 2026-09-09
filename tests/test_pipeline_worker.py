@@ -8,6 +8,44 @@ from fuzz_target_scout.pipeline_worker import PipelineWorker
 
 
 class PipelineWorkerTests(unittest.TestCase):
+    def test_validation_stage_dispatches_to_separate_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs, "validation-job", created="2026-01-01T00:00:00Z",
+                stage="validation", status="validation_pending",
+            )
+
+            class StubValidation:
+                def validate(self, _job_id):
+                    return {"state": {"status": "ready_for_human", "stage": "complete"}}
+
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_generation_cycles": 2}
+            worker.progress = lambda _message: None
+            worker.validation_runner = StubValidation()
+            result = worker._advance("validation-job", setup_only=False)
+            self.assertEqual(result.action, "validate")
+            self.assertEqual(result.status, "ready_for_human")
+
+    def test_repeated_worker_failure_stops_at_configured_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs, "failure-job", created="2026-01-01T00:00:00Z",
+                stage="build", status="worker_failed",
+            )
+            job = runs / "failure-job"
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_stage_failures": 2}
+            worker._record_worker_error("failure-job", RuntimeError("failed"))
+            worker._record_worker_error("failure-job", RuntimeError("failed again"))
+            state = json.loads((job / "state.json").read_text())
+            self.assertEqual(state["status"], "manual_review")
+            self.assertEqual(state["attempts"]["worker_failures"], 2)
+
     def test_advance_stops_immediately_for_manual_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)

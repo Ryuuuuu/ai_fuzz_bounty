@@ -284,6 +284,7 @@ class PipelineRunnerTests(unittest.TestCase):
             runtime.mkdir()
             logs.mkdir()
             (runtime / "fuzz-0.log").write_text(
+                "#120 NEW cov: 51 ft: 77 corp: 10/1Kb\n"
                 "stat::number_of_executed_units: 120\n"
                 "stat::average_exec_per_sec: 60\n"
                 "stat::peak_rss_mb: 42\n",
@@ -294,6 +295,8 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["number_of_executed_units"], 120)
             self.assertEqual(records[0]["peak_rss_mb"], 42)
+            self.assertEqual(records[0]["coverage_edges"], 51)
+            self.assertEqual(records[0]["coverage_features"], 77)
             self.assertTrue((logs / "probe-worker-0.log").is_file())
             self.assertFalse((logs / "probe-worker-1.log").exists())
 

@@ -60,7 +60,7 @@ def candidate(status="verified", language="C++", commit="b" * 40):
         },
         "assessment": {
             "suggested_entry_kind": "existing_harness",
-            "signals": ["existing_fuzz_assets:2"],
+            "signals": ["standard_build:cmakelists.txt", "existing_fuzz_assets:2"],
         },
         "observed_at": "2026-09-09T00:00:00+00:00",
     }
@@ -158,8 +158,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_support_index_filters_before_work_order_creation(self):
         with tempfile.TemporaryDirectory() as directory:
+            strict = {**CONFIG, "allow_generic_integrations": False}
             unsupported = prepare_jobs(
-                [candidate()], directory, CONFIG, LOCK, {}
+                [candidate()], directory, strict, LOCK, {}
             )
             self.assertEqual(unsupported.created, 0)
             self.assertEqual(
@@ -175,6 +176,43 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(supported.created, 1)
             job = json.loads(next(Path(directory).glob("*/job.json")).read_text())
             self.assertEqual(job["compatibility"]["oss_fuzz_project"], "parser")
+
+    def test_missing_oss_fuzz_project_uses_generated_private_integration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            summary = prepare_jobs([candidate()], directory, CONFIG, LOCK, {})
+            self.assertEqual(summary.created, 1)
+            job = json.loads(next(Path(directory).glob("*/job.json")).read_text())
+            self.assertEqual(job["route"]["name"], "oss_fuzz_generated")
+            self.assertEqual(
+                job["compatibility"]["strategy"],
+                "generated_private_oss_fuzz_project",
+            )
+            self.assertEqual(job["compatibility"]["generic_build_signal"], "cmake")
+
+    def test_generic_candidate_without_supported_build_signal_is_rejected_early(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = candidate()
+            value["assessment"]["signals"] = ["existing_fuzz_assets:2"]
+            summary = prepare_jobs([value], directory, CONFIG, LOCK, {})
+            self.assertEqual(summary.created, 0)
+            self.assertEqual(
+                summary.skip_reasons, {"no_supported_generic_build_signal": 1}
+            )
+
+    def test_supported_candidate_is_planned_before_generic_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            generic = candidate(commit="c" * 40)
+            generic["repository"] = "org/generic"
+            generic["repository_url"] = "https://github.com/org/generic"
+            generic["assessment"]["fuzz_score"] = 100
+            supported = candidate(commit="d" * 40)
+            supported["assessment"]["fuzz_score"] = 1
+            summary = prepare_jobs(
+                [generic, supported], directory, CONFIG, LOCK,
+                {"org/parser": {"project": "parser", "language": "c++"}},
+                limit=1,
+            )
+            self.assertEqual(summary.job_ids, ["org-parser-" + "d" * 12])
 
 
 if __name__ == "__main__":

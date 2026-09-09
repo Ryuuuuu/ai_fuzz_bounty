@@ -68,7 +68,16 @@ def prepare_jobs(
     reasons: Counter[str] = Counter()
     job_ids: list[str] = []
 
-    for candidate in candidates:
+    queued = list(candidates)
+    if support_index is not None:
+        queued.sort(
+            key=lambda item: (
+                str(item.get("repository") or "").casefold() not in support_index,
+                -float((item.get("assessment") or {}).get("fuzz_score") or 0),
+                str(item.get("repository") or "").casefold(),
+            )
+        )
+    for candidate in queued:
         if limit is not None and created + existing >= limit:
             break
         work_order, reason = make_work_order(
@@ -97,7 +106,7 @@ def prepare_jobs(
         _write_json(
             job_dir / "state.json",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "job_id": job_id,
                 "status": "queued",
                 "stage": "policy_recheck",
@@ -148,10 +157,19 @@ def make_work_order(
     if route is None:
         return None, route_reason
     support = None
+    generic_build_signal = None
     if language.casefold() in CPP_LANGUAGES and support_index is not None:
         support = support_index.get(repository.casefold())
-        if support is None:
+        if support is None and not bool(
+            pipeline_config.get("allow_generic_integrations", True)
+        ):
             return None, "no_pinned_oss_fuzz_project"
+        if support is None:
+            generic_build_signal = _generic_build_signal(assessment)
+            if generic_build_signal is None:
+                return None, "no_supported_generic_build_signal"
+            route = "oss_fuzz_generated"
+            route_reason = "generate a private OSS-Fuzz project definition and harness"
 
     job_id = f"{_slug(repository)}-{commit[:12].lower()}"
     created_at = utc_now()
@@ -187,6 +205,12 @@ def make_work_order(
                 "checked": support_index is not None,
                 "oss_fuzz_project": (support or {}).get("project"),
                 "oss_fuzz_language": (support or {}).get("language"),
+                "generic_build_signal": generic_build_signal,
+                "strategy": (
+                    "pinned_existing_oss_fuzz_project"
+                    if support
+                    else "generated_private_oss_fuzz_project"
+                ),
             },
             "ai": {
                 "provider": "codex_cli",
@@ -312,21 +336,54 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
     )
     afl_run = _read_optional_object(job_dir / "artifacts" / "afl-cmplog-run.json")
     triage = _read_optional_object(job_dir / "artifacts" / "triage-summary.json")
+    validation = _read_optional_object(
+        job_dir / "artifacts" / "validation-agent-report.json"
+    )
+    coverage_plan = _read_optional_object(job_dir / "artifacts" / "coverage-plan.json")
     budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
     completed = float(progress.get("completed_seconds") or 0)
     probe_findings = len(probe_run.get("crash_files") or [])
     probe_status = probe_run.get("status")
     if probe_run and not probe_status:
         probe_status = "sanitizer_finding" if probe_findings else "passed"
+    worker_stats = fuzz_run.get("worker_stats") or []
+    exec_per_second = sum(
+        int(item.get("average_exec_per_sec") or 0)
+        for item in worker_stats
+        if isinstance(item, dict)
+    )
+    coverage_edges = max(
+        (int(item.get("coverage_edges") or 0) for item in worker_stats if isinstance(item, dict)),
+        default=0,
+    )
+    coverage_features = max(
+        (int(item.get("coverage_features") or 0) for item in worker_stats if isinstance(item, dict)),
+        default=0,
+    )
+    remaining = max(0.0, budget - completed)
+    total_crashes = (
+        probe_findings
+        + len(fuzz_run.get("crash_files") or [])
+        + len(afl_run.get("crash_files") or [])
+    )
     return {
         "job_id": job_id,
         "repository": (job.get("source") or {}).get("repository"),
         "commit": (job.get("source") or {}).get("commit"),
         "status": state.get("status"),
         "stage": state.get("stage"),
+        "fuzz_target": (
+            fuzz_run.get("fuzz_target")
+            or probe_run.get("fuzz_target")
+            or (coverage_plan.get("review") or {}).get("selected_fuzz_target")
+        ),
         "fuzz_budget_seconds": budget,
         "fuzz_completed_seconds": completed,
         "fuzz_percent": round(min(100.0, completed * 100 / budget), 2) if budget else 0,
+        "fuzz_remaining_seconds": round(remaining, 3),
+        "exec_per_second": exec_per_second,
+        "coverage_edges": coverage_edges,
+        "coverage_features": coverage_features,
         "coverage_stalled": bool(progress.get("coverage_stalled")),
         "corpus_files": int(fuzz_run.get("corpus_files") or 0),
         "crash_files": len(fuzz_run.get("crash_files") or []),
@@ -345,6 +402,11 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "finding_source": state.get("finding_source"),
         "triage_artifact": state.get("triage_artifact"),
         "validated_groups": int(triage.get("validated_group_count") or 0),
+        "total_crashes": total_crashes,
+        "validation_status": validation.get("status") or state.get("validation_status"),
+        "false_positive_groups": sum(
+            1 for group in triage.get("groups") or [] if not group.get("reproduced")
+        ),
         "last_error": state.get("last_error"),
         "updated_at": state.get("updated_at"),
     }
@@ -427,9 +489,7 @@ def _route(
         )
         return route, reason, required, optional
     if language.casefold() == "python":
-        required = _tool_records(toolchain_lock, ("vistafuzz",))
-        optional = _tool_records(toolchain_lock, ("quartetfuzz",))
-        return "vistafuzz", "extract documented API constraints once", required, optional
+        return None, "vistafuzz_is_an_opencv_specific_auxiliary_artifact", [], []
     return None, "language_route_unavailable", [], []
 
 
@@ -451,6 +511,23 @@ def _tool_records(
             }
         )
     return records
+
+
+def _generic_build_signal(assessment: dict[str, Any]) -> str | None:
+    supported = {
+        "cmakelists.txt": "cmake",
+        "meson.build": "meson",
+        "configure.ac": "autotools",
+        "cargo.toml": "cargo",
+    }
+    for value in assessment.get("signals") or []:
+        text = str(value).casefold()
+        if not text.startswith("standard_build:"):
+            continue
+        for marker in text.removeprefix("standard_build:").split(","):
+            if marker in supported:
+                return supported[marker]
+    return None
 
 
 def _slug(repository: str) -> str:

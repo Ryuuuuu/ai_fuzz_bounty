@@ -1,15 +1,19 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68,<82"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fuzz-target-scout"
-version = "0.4.0"
+version = "0.5.0"
 description = "Find Linux-friendly open-source fuzzing candidates with verified bug-bounty policies."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Ryuuuuu/ai_fuzz_bounty"
+Issues = "https://github.com/Ryuuuuu/ai_fuzz_bounty/issues"
 
 [project.scripts]
 fuzz-target-scout = "fuzz_target_scout.cli:main"

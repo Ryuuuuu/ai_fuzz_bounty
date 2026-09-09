@@ -54,6 +54,8 @@ class TriageRunner:
             raise PipelineError("triage requires at least three reproduction attempts")
         records = [self._validate_crash(job_dir, build, fuzzer, path) for path in crashes]
         groups = _deduplicate(records)
+        for group in groups:
+            group["classification"] = _classify_group(group)
         validated = [group for group in groups if group["reproduced"]]
         if validated and bool(self.pipeline.get("triage_ubsan_enabled", True)):
             self._cross_check_ubsan(job_dir, build, fuzzer, validated)
@@ -85,12 +87,15 @@ class TriageRunner:
                 job_dir / "artifacts" / "validation-handoff.json",
                 _handoff(job, fuzzer, validated, report),
             )
-            state["status"] = "ready_for_human"
+            state["status"] = "validation_pending"
+            state["stage"] = "validation"
+            state["validation_status"] = "pending"
         elif crashes:
             state["status"] = "triage_review_required"
+            state["stage"] = "complete"
         else:
             state["status"] = "exhausted"
-        state["stage"] = "complete"
+            state["stage"] = "complete"
         state["last_error"] = report_error or None
         state["updated_at"] = utc_now()
         state.setdefault("attempts", {})["triage"] = (
@@ -427,6 +432,25 @@ def _deduplicate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         groups[key]["duplicate_inputs"].append(record["original_sha256"])
     return list(groups.values())
+
+
+def _classify_group(group: dict[str, Any]) -> dict[str, str]:
+    if group.get("reproduced"):
+        return {
+            "verdict": "validated_sanitizer_finding",
+            "reason": "the minimized input produced one stable sanitizer signature in at least three clean runs",
+        }
+    attempts = (group.get("representative") or {}).get("reproduction_attempts") or []
+    signatures = [str(item.get("signature") or "") for item in attempts]
+    if not any(signatures):
+        return {
+            "verdict": "no_sanitizer_reproduction",
+            "reason": "no sanitizer signature was observed during clean reproduction",
+        }
+    return {
+        "verdict": "unstable_reproduction",
+        "reason": "clean reproduction produced inconsistent sanitizer signatures",
+    }
 
 
 def _report_evidence(job: dict[str, Any], build: dict[str, Any], groups: list[dict[str, Any]]) -> dict[str, Any]:

@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import shutil
+from pathlib import Path
+from typing import Any, Callable
+
+from .harness_generation import (
+    extract_harness_code,
+    generation_prompt,
+    invoke_oss_fuzz_gen_adapter,
+    source_context,
+    validate_generated_harness,
+)
+from .pipeline import PipelineError, utc_now
+
+
+BUILD_SYSTEM_MARKERS = (
+    ("cmake", ("CMakeLists.txt",)),
+    ("meson", ("meson.build",)),
+    ("autotools", ("configure.ac", "configure.in", "Makefile.am")),
+    ("cargo", ("Cargo.toml",)),
+)
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
+HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx"}
+
+
+def detect_build_system(source: Path) -> str:
+    for name, markers in BUILD_SYSTEM_MARKERS:
+        if any((source / marker).is_file() for marker in markers):
+            return name
+    raise PipelineError("no supported CMake, Meson, Autotools, or Cargo build was detected")
+
+
+def create_generic_project(
+    *,
+    job_dir: Path,
+    source: Path,
+    project_dir: Path,
+    project_name: str,
+    pipeline: dict[str, Any],
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    progress = progress or (lambda _: None)
+    build_system = detect_build_system(source)
+    project_dir.mkdir(parents=True, exist_ok=False)
+    harness, origin, usage, candidate = _obtain_harness(
+        job_dir, source, project_name, pipeline, progress
+    )
+    (project_dir / "generic_harness.cc").write_text(harness, encoding="utf-8")
+    (project_dir / "Dockerfile").write_text(_dockerfile(build_system), encoding="utf-8")
+    build_script = _build_script(build_system)
+    build_path = project_dir / "build.sh"
+    build_path.write_text(build_script, encoding="utf-8")
+    build_path.chmod(0o755)
+    (project_dir / "project.yaml").write_text(
+        "homepage: https://example.invalid/local-generated-integration\n"
+        "language: c++\n"
+        "primary_contact: local-only@example.invalid\n"
+        "auto_ccs: []\n",
+        encoding="utf-8",
+    )
+    return {
+        "schema_version": 1,
+        "created_at": utc_now(),
+        "project": project_name,
+        "build_system": build_system,
+        "harness_origin": origin,
+        "candidate": candidate,
+        "ai_usage": usage,
+        "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
+        "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
+        "repair_attempts": [],
+    }
+
+
+def repair_generic_harness(
+    *,
+    job_dir: Path,
+    source: Path,
+    project_dir: Path,
+    pipeline: dict[str, Any],
+    build_error: str,
+    attempt: int,
+) -> dict[str, Any]:
+    record_path = job_dir / "artifacts" / "generic-integration.json"
+    record = _read_json(record_path)
+    candidate = record.get("candidate") or {}
+    if not candidate.get("file"):
+        candidate = _select_public_candidate(source)
+    context = source_context(source, candidate, radius=140)
+    harness_path = project_dir / "generic_harness.cc"
+    prior = harness_path.read_text(encoding="utf-8", errors="replace")
+    prompt = generation_prompt(
+        project=str(record["project"]), language="C++", fuzz_target="generic_fuzzer",
+        candidate=candidate, context=context, existing_harness=prior,
+        prior_code=prior, build_error=build_error[-8000:],
+    )
+    output = job_dir / "artifacts" / f"generic-integration-repair-{attempt}"
+    if output.exists():
+        shutil.rmtree(output)
+    response, usage = invoke_oss_fuzz_gen_adapter(pipeline, prompt, output)
+    code = extract_harness_code(response)
+    validation = validate_generated_harness(code, candidate)
+    harness_path.write_text(code, encoding="utf-8")
+    mirror = job_dir / "integration" / "oss-fuzz" / "generic_harness.cc"
+    if mirror.parent.is_dir():
+        mirror.write_text(code, encoding="utf-8")
+    item = {
+        "attempt": attempt,
+        "created_at": utc_now(),
+        "ai_usage": usage,
+        "validation": validation,
+        "build_error_sha256": hashlib.sha256(build_error.encode()).hexdigest(),
+    }
+    record["candidate"] = candidate
+    record["harness_sha256"] = validation["sha256"]
+    record.setdefault("repair_attempts", []).append(item)
+    _write_json(record_path, record)
+    return item
+
+
+def _obtain_harness(
+    job_dir: Path,
+    source: Path,
+    project: str,
+    pipeline: dict[str, Any],
+    progress: Callable[[str], None],
+) -> tuple[str, str, dict[str, int], dict[str, Any]]:
+    existing = _find_existing_harness(source)
+    if existing is not None:
+        code = existing.read_text(encoding="utf-8", errors="replace")
+        candidate = {"signature": "existing LLVMFuzzerTestOneInput"}
+        validate_generated_harness(code, candidate)
+        return code, f"existing:{existing.relative_to(source).as_posix()}", {}, candidate
+    candidate = _select_public_candidate(source)
+    context = source_context(source, candidate, radius=140)
+    prompt = generation_prompt(
+        project=project,
+        language="C++",
+        fuzz_target="generic_fuzzer",
+        candidate=candidate,
+        context=context,
+        existing_harness=(
+            "#include <cstddef>\n#include <cstdint>\n"
+            "extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t*, size_t);\n"
+        ),
+    )
+    output = job_dir / "artifacts" / "generic-integration-generation"
+    if output.exists():
+        shutil.rmtree(output)
+    progress(f"{job_dir.name}: generating initial harness for {candidate['signature']}")
+    response, usage = invoke_oss_fuzz_gen_adapter(pipeline, prompt, output)
+    code = extract_harness_code(response)
+    validate_generated_harness(code, candidate)
+    return code, "codex_oss_fuzz_gen_adapter", usage, candidate
+
+
+def _find_existing_harness(source: Path) -> Path | None:
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink() or not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_size > 500_000:
+                continue
+            if "LLVMFuzzerTestOneInput" in path.read_text(encoding="utf-8", errors="replace"):
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _select_public_candidate(source: Path) -> dict[str, Any]:
+    prototype = re.compile(
+        r"^\s*(?:extern\s+\"C\"\s+)?(?:[A-Za-z_][\w:<>,*&\s]+)\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;{}]*\)\s*;"
+    )
+    rejected = {"main", "malloc", "free", "operator", "if", "for", "while"}
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink() or not path.is_file() or path.suffix.casefold() not in HEADER_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_size > 300_000:
+                continue
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            match = prototype.match(line)
+            if not match or match.group("name").split("::")[-1] in rejected:
+                continue
+            return {
+                "id": hashlib.sha256(f"{path}:{number}".encode()).hexdigest()[:16],
+                "file": path.relative_to(source).as_posix(),
+                "local_symbol_line": number,
+                "signature": line.strip()[:1000],
+            }
+    raise PipelineError("no existing harness or public function prototype was found")
+
+
+def _dockerfile(build_system: str) -> str:
+    packages = {
+        "cmake": "cmake ninja-build pkg-config",
+        "meson": "meson ninja-build pkg-config",
+        "autotools": "autoconf automake libtool make pkg-config",
+        "cargo": "cargo rustc pkg-config",
+    }[build_system]
+    return f"""FROM gcr.io/oss-fuzz-base/base-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    {packages} \\
+    && rm -rf /var/lib/apt/lists/*
+COPY build.sh generic_harness.cc $SRC/
+WORKDIR $SRC/project
+"""
+
+
+def _build_script(build_system: str) -> str:
+    prelude = """#!/usr/bin/env bash
+set -euo pipefail
+export CC CXX CFLAGS CXXFLAGS LIB_FUZZING_ENGINE OUT WORK
+rm -rf "$WORK/build"
+mkdir -p "$WORK/build" "$OUT"
+"""
+    builds = {
+        "cmake": """cmake -S . -B "$WORK/build" -G Ninja \\
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_SHARED_LIBS=OFF \\
+  -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \\
+  -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS"
+cmake --build "$WORK/build" --parallel "$(nproc)"
+""",
+        "meson": """CC="$CC" CXX="$CXX" meson setup "$WORK/build" . \\
+  --default-library=static --buildtype=debugoptimized
+meson compile -C "$WORK/build"
+""",
+        "autotools": """autoreconf -fi
+CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\
+  ./configure --disable-shared --enable-static
+make -j"$(nproc)"
+find . -type f -name '*.a' -exec cp -n {} "$WORK/build/" \\;
+""",
+        "cargo": """RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=2" cargo build --release --lib
+find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/" \\;
+""",
+    }
+    link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
+if (( ${#archives[@]} == 0 )); then
+  echo 'generic integration found no static libraries' >&2
+  exit 1
+fi
+"$CXX" $CXXFLAGS -std=c++17 -I. -Iinclude -Isrc "$SRC/generic_harness.cc" \\
+  -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
+  $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
+"""
+    return prelude + builds[build_system] + link
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PipelineError(f"could not read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PipelineError(f"expected an object in {path}")
+    return value
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)

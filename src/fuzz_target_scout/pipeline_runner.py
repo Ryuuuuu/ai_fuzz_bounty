@@ -21,6 +21,7 @@ from .coverage_analysis import (
     refresh_evidence_hash,
 )
 from .github import GitHubClient
+from .generic_integration import create_generic_project, repair_generic_harness
 from .harness_generation import (
     extract_harness_code,
     generation_prompt,
@@ -43,6 +44,7 @@ from .quartet_gate import (
     find_harness_source,
     quartet_record,
 )
+from .stagnation import generate_dictionary
 
 
 Progress = Callable[[str], None]
@@ -613,6 +615,9 @@ class PipelineRunner:
                     progress,
                     cached_result,
                 )
+        if active_session_id:
+            self._remove_container(str(state.get("active_fuzz_container") or ""))
+            self._clear_active_fuzz_session(state)
         remaining = max(0, budget - int(completed_seconds))
         if remaining == 0 and artifact_path.is_file():
             result = self._read_json(artifact_path)
@@ -624,6 +629,7 @@ class PipelineRunner:
         )
         session_budget = min(remaining, max(1, checkpoint))
         session_id = f"fuzz-{time.time_ns()}"
+        container_name = self._container_name(job_id, session_id)
         session_started = utc_now()
         state["status"] = "running"
         state["updated_at"] = session_started
@@ -631,6 +637,7 @@ class PipelineRunner:
         state["active_fuzz_session_id"] = session_id
         state["active_fuzz_session_started_at"] = session_started
         state["active_fuzz_session_seconds"] = session_budget
+        state["active_fuzz_container"] = container_name
         self._write_json(state_path, state)
         monotonic_started = time.monotonic()
         try:
@@ -641,8 +648,10 @@ class PipelineRunner:
                 workers=int((job.get("execution") or {})["parallel_workers"]),
                 label="fuzz",
                 session_id=session_id,
+                container_name=container_name,
             )
         except Exception as exc:
+            self._remove_container(container_name)
             elapsed = min(float(session_budget), time.monotonic() - monotonic_started)
             completed_seconds += max(0.0, elapsed)
             progress["completed_seconds"] = completed_seconds
@@ -747,7 +756,18 @@ class PipelineRunner:
                 and bool(getattr(self, "pipeline", {}).get("afl_cmplog_enabled", True))
                 and not (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
             )
-            state["status"] = "afl_cmplog_pending" if should_run_afl else "ready"
+            needs_harness = (
+                bool(progress.get("coverage_stalled"))
+                and bool(progress.get("stagnation_dictionary_applied"))
+                and (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
+                and not bool(progress.get("stagnation_harness_scheduled"))
+            )
+            if needs_harness and self._schedule_stagnation_harness(job_dir):
+                progress["stagnation_harness_scheduled"] = True
+                self._write_json(progress_path, progress)
+                state["status"] = "harness_work_pending"
+            else:
+                state["status"] = "afl_cmplog_pending" if should_run_afl else "ready"
             state["last_error"] = None
             state["fuzz_completed_seconds"] = round(completed_seconds, 3)
             state["coverage_stalled"] = bool(progress.get("coverage_stalled"))
@@ -763,6 +783,7 @@ class PipelineRunner:
             "active_fuzz_session_id",
             "active_fuzz_session_started_at",
             "active_fuzz_session_seconds",
+            "active_fuzz_container",
         ):
             state.pop(key, None)
 
@@ -777,6 +798,8 @@ class PipelineRunner:
             )
         artifact_path = job_dir / "artifacts" / "afl-cmplog-run.json"
         if artifact_path.is_file():
+            self._remove_container(str(state.get("active_afl_container") or ""))
+            state.pop("active_afl_container", None)
             result = self._read_json(artifact_path)
             if result.get("status") == "failed_optional_lane":
                 progress_path = job_dir / "artifacts" / "fuzz-progress.json"
@@ -808,10 +831,13 @@ class PipelineRunner:
         state["status"] = "afl_cmplog_running"
         state["last_error"] = None
         state["updated_at"] = utc_now()
+        container_name = self._container_name(job_id, f"afl-{time.time_ns()}")
+        state["active_afl_container"] = container_name
         self._write_json(state_path, state)
         try:
-            result = self._run_afl_cmplog(job_dir, job, progress)
+            result = self._run_afl_cmplog(job_dir, job, progress, container_name)
         except Exception as exc:
+            self._remove_container(container_name)
             result = {
                 "schema_version": 1,
                 "created_at": utc_now(),
@@ -824,6 +850,7 @@ class PipelineRunner:
             state["status"] = "ready"
             state["last_error"] = f"optional AFL++ lane failed: {exc}"[:2000]
             state["updated_at"] = utc_now()
+            state.pop("active_afl_container", None)
             self._write_json(state_path, state)
             result["state"] = state
             return result
@@ -841,6 +868,8 @@ class PipelineRunner:
     ) -> dict[str, Any]:
         progress_path = job_dir / "artifacts" / "fuzz-progress.json"
         progress = self._read_json(progress_path)
+        self._remove_container(str(state.get("active_afl_container") or ""))
+        state.pop("active_afl_container", None)
         if not bool(progress.get("afl_cmplog_accounted")):
             elapsed_budget = min(
                 float(result["requested_seconds"]),
@@ -865,6 +894,16 @@ class PipelineRunner:
             if int(result["new_corpus_files"]) > 0:
                 progress["stalled_seconds"] = 0
                 progress["coverage_stalled"] = False
+            elif not result["crash_files"]:
+                target = str(result.get("fuzz_target") or "")
+                dictionary = generate_dictionary(job_dir, target)
+                progress["stagnation_dictionary"] = dictionary
+                if int(dictionary["token_count"]) > 0:
+                    progress["stagnation_dictionary_applied"] = True
+                    progress["stalled_seconds"] = 0
+                    progress["coverage_stalled"] = False
+                else:
+                    progress["stagnation_dictionary_empty"] = True
             self._write_json(progress_path, progress)
         completed = float(progress.get("completed_seconds") or 0)
         budget = int((job.get("budgets") or {})["fuzz_seconds"])
@@ -876,18 +915,47 @@ class PipelineRunner:
         if result["crash_files"] or completed >= budget:
             state["triage_artifact"] = "afl-cmplog-run.json"
             return self._finish_fuzz_state(state_path, state, result, completed)
-        state["status"] = "ready"
+        schedule_harness = (
+            bool(progress.get("stagnation_dictionary_empty"))
+            and not bool(progress.get("stagnation_harness_scheduled"))
+            and self._schedule_stagnation_harness(job_dir)
+        )
+        if schedule_harness:
+            progress["stagnation_harness_scheduled"] = True
+            self._write_json(progress_path, progress)
+        state["status"] = "harness_work_pending" if schedule_harness else "ready"
         state["last_error"] = None
         state["updated_at"] = utc_now()
         self._write_json(state_path, state)
         result["state"] = state
         return result
 
+    def _schedule_stagnation_harness(self, job_dir: Path) -> bool:
+        plan_path = job_dir / "artifacts" / "coverage-plan.json"
+        if not plan_path.is_file():
+            return False
+        plan = self._read_json(plan_path)
+        candidates = (plan.get("evidence") or {}).get("gap_candidates") or []
+        if not candidates:
+            return False
+        selected = candidates[0]
+        review = plan.setdefault("review", {})
+        review["decision"] = "generate_new_harness"
+        review["candidate_ids"] = [str(selected.get("id") or "")]
+        review["execution_ready"] = False
+        review["reason"] = "coverage remained stalled after AFL++ CmpLog and a generated dictionary"
+        archive = job_dir / "artifacts" / "coverage-plan-before-stagnation-harness.json"
+        if not archive.exists():
+            shutil.copy2(plan_path, archive)
+        self._write_json(plan_path, plan)
+        return True
+
     def _run_afl_cmplog(
         self,
         job_dir: Path,
         job: dict[str, Any],
         progress: dict[str, Any],
+        container_name: str,
     ) -> dict[str, Any]:
         del progress
         integration = self._read_json(
@@ -962,7 +1030,9 @@ class PipelineRunner:
                 "output_directory": str(snapshot),
             },
         )
-        return self._afl_session(job_dir, job, snapshot, project, target, embedded_commit)
+        return self._afl_session(
+            job_dir, job, snapshot, project, target, embedded_commit, container_name
+        )
 
     def _afl_session(
         self,
@@ -972,6 +1042,7 @@ class PipelineRunner:
         project: str,
         target: str,
         embedded_commit: str,
+        container_name: str,
     ) -> dict[str, Any]:
         runtime_out = job_dir / "runtime-out" / "afl-cmplog"
         if runtime_out.exists():
@@ -1002,7 +1073,10 @@ class PipelineRunner:
             remaining,
         )
         command = [
-            "docker", "run", "--rm", "--network", "none", "--read-only",
+            "docker", "run", "--rm", "--name", container_name,
+            "--label", "fuzz-target-scout=true",
+            "--label", f"fuzz-target-scout.job={job_dir.name}",
+            "--network", "none", "--read-only",
             "--tmpfs", "/tmp:rw,exec,nosuid,size=1g", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "512",
             "--cpus", "1", "--memory", f"{int(self.pipeline['container_memory_mb'])}m",
@@ -1388,7 +1462,7 @@ class PipelineRunner:
 
     def _prepare_integration(self, job_dir: Path, job: dict[str, Any]) -> None:
         route = str((job.get("route") or {}).get("name") or "")
-        if route not in {"oss_fuzz_existing", "oss_fuzz_gen"}:
+        if route not in {"oss_fuzz_existing", "oss_fuzz_gen", "oss_fuzz_generated"}:
             raise PipelineError(f"integration route is not implemented: {route}")
         oss_fuzz = self.tools_root / "oss-fuzz"
         if not (oss_fuzz / ".git").is_dir():
@@ -1397,6 +1471,9 @@ class PipelineRunner:
         project_name, project_dir = self._find_oss_fuzz_project(
             oss_fuzz, repository_url
         )
+        if route == "oss_fuzz_generated" and project_dir is None:
+            self._prepare_generated_integration(job_dir, job, oss_fuzz)
+            return
         if route == "oss_fuzz_gen" and project_dir is None:
             self._record_unsupported_integration(job_dir, job)
             raise UnsupportedIntegrationError(
@@ -1503,6 +1580,101 @@ class PipelineRunner:
             },
         )
 
+    def _prepare_generated_integration(
+        self, job_dir: Path, job: dict[str, Any], oss_fuzz: Path
+    ) -> None:
+        oss_fuzz_commit = self._capture(
+            ["git", "-C", str(oss_fuzz), "rev-parse", "HEAD"]
+        )
+        log_path = job_dir / "logs" / "integration.log"
+        oss_fuzz_worktree = job_dir / "oss-fuzz-worktree"
+        if oss_fuzz_worktree.exists():
+            actual = self._capture(
+                ["git", "-C", str(oss_fuzz_worktree), "rev-parse", "HEAD"]
+            )
+            if actual.casefold() != oss_fuzz_commit.casefold():
+                raise PipelineError("existing OSS-Fuzz worktree is at the wrong commit")
+        else:
+            self._run(
+                [
+                    "git", "-C", str(oss_fuzz), "worktree", "add", "--detach",
+                    str(oss_fuzz_worktree), oss_fuzz_commit,
+                ],
+                log_path,
+            )
+        source_checkout = job_dir / "source"
+        build_source = job_dir / "build-source"
+        commit = str((job.get("source") or {}).get("commit") or "")
+        if build_source.exists():
+            actual = self._capture(
+                ["git", "-C", str(build_source), "rev-parse", "HEAD"]
+            )
+            if actual.casefold() != commit.casefold():
+                raise PipelineError("existing build worktree is at the wrong commit")
+        else:
+            self._run(
+                [
+                    "git", "-C", str(source_checkout), "worktree", "add", "--detach",
+                    str(build_source), commit,
+                ],
+                log_path,
+            )
+        self._sync_submodules(build_source, log_path)
+        project_name = "fts-" + job_dir.name[:48]
+        project_dir = oss_fuzz_worktree / "projects" / project_name
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+        generated = create_generic_project(
+            job_dir=job_dir,
+            source=build_source,
+            project_dir=project_dir,
+            project_name=project_name,
+            pipeline=self.pipeline,
+            progress=self.progress,
+        )
+        integration_dir = job_dir / "integration" / "oss-fuzz"
+        if integration_dir.exists():
+            shutil.rmtree(integration_dir)
+        shutil.copytree(project_dir, integration_dir, symlinks=False)
+        hashes = {
+            path.relative_to(integration_dir).as_posix(): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in sorted(integration_dir.rglob("*"))
+            if path.is_file()
+        }
+        self._write_json(
+            job_dir / "artifacts" / "generic-integration.json", generated
+        )
+        self._write_json(
+            job_dir / "artifacts" / "integration-manifest.json",
+            {
+                "schema_version": 1,
+                "created_at": utc_now(),
+                "route": "oss_fuzz_generated",
+                "oss_fuzz_project": project_name,
+                "oss_fuzz_commit": oss_fuzz_commit,
+                "oss_fuzz_worktree": str(oss_fuzz_worktree),
+                "oss_fuzz_project_directory": str(project_dir),
+                "target_commit": commit,
+                "source_checkout": str(source_checkout),
+                "build_worktree": str(build_source),
+                "integration_file_sha256": hashes,
+            },
+        )
+        self._write_json(
+            job_dir / "artifacts" / "integration-support.json",
+            {
+                "schema_version": 1,
+                "checked_at": utc_now(),
+                "repository": (job.get("source") or {}).get("repository"),
+                "supported": True,
+                "strategy": "generated_private_oss_fuzz_project",
+                "oss_fuzz_project": project_name,
+                "build_system": generated["build_system"],
+            },
+        )
+
     def _sync_submodules(self, checkout: Path, log_path: Path) -> None:
         gitmodules = checkout / ".gitmodules"
         if not gitmodules.is_file():
@@ -1582,20 +1754,44 @@ class PipelineRunner:
             log_path,
             timeout=timeout,
         )
-        self._run_streaming(
-            [
-                "python3",
-                str(helper),
-                "build_fuzzers",
-                "--clean",
-                "--sanitizer",
-                "address",
-                project,
-                str(build_source),
-            ],
-            log_path,
-            timeout=timeout,
-        )
+        build_command = [
+            "python3", str(helper), "build_fuzzers", "--clean", "--sanitizer",
+            "address", project, str(build_source),
+        ]
+        generated = manifest.get("route") == "oss_fuzz_generated"
+        maximum = int(self.pipeline.get("max_harness_attempts", 3)) if generated else 1
+        for attempt in range(1, maximum + 1):
+            try:
+                self._run_streaming(build_command, log_path, timeout=timeout)
+                break
+            except PipelineError:
+                if not generated or attempt >= maximum:
+                    raise
+                error = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+                repair_generic_harness(
+                    job_dir=job_dir,
+                    source=build_source,
+                    project_dir=Path(manifest["oss_fuzz_project_directory"]),
+                    pipeline=self.pipeline,
+                    build_error=error,
+                    attempt=attempt,
+                )
+                self._run_streaming(
+                    [
+                        "python3", str(helper), "build_image", "--no-pull", "--cache",
+                        project,
+                    ],
+                    log_path,
+                    timeout=timeout,
+                )
+        if generated:
+            mirror = job_dir / "integration" / "oss-fuzz" / "generic_harness.cc"
+            manifest.setdefault("integration_file_sha256", {})[
+                "generic_harness.cc"
+            ] = hashlib.sha256(mirror.read_bytes()).hexdigest()
+            self._write_json(
+                job_dir / "artifacts" / "integration-manifest.json", manifest
+            )
         out_dir = oss_fuzz / "build" / "out" / project
         fuzzers = sorted(
             path.name
@@ -1655,6 +1851,7 @@ class PipelineRunner:
         workers: int,
         label: str,
         session_id: str = "",
+        container_name: str = "",
     ) -> dict[str, Any]:
         if seconds < 1 or workers < 1:
             raise PipelineError("fuzz duration and worker count must be positive")
@@ -1684,6 +1881,12 @@ class PipelineRunner:
             "docker",
             "run",
             "--rm",
+            "--name",
+            container_name or self._container_name(job_dir.name, f"{label}-{time.time_ns()}"),
+            "--label",
+            "fuzz-target-scout=true",
+            "--label",
+            f"fuzz-target-scout.job={job_dir.name}",
             "--network",
             "none",
             "--read-only",
@@ -1828,6 +2031,7 @@ class PipelineRunner:
     ) -> list[dict[str, int | str]]:
         records: list[dict[str, int | str]] = []
         pattern = re.compile(r"^stat::([a-z_]+):\s+(\d+)", re.MULTILINE)
+        coverage_pattern = re.compile(r"\bcov:\s*(\d+)\s+ft:\s*(\d+)")
         for index, source in enumerate(sorted(runtime_out.rglob("fuzz-*.log"))):
             if source.is_symlink() or not source.is_file():
                 continue
@@ -1837,6 +2041,10 @@ class PipelineRunner:
             record: dict[str, int | str] = {"log_path": str(destination)}
             for name, value in pattern.findall(text):
                 record[name] = int(value)
+            coverage = coverage_pattern.findall(text)
+            if coverage:
+                record["coverage_edges"] = max(int(value[0]) for value in coverage)
+                record["coverage_features"] = max(int(value[1]) for value in coverage)
             records.append(record)
         return records
 
@@ -1969,6 +2177,30 @@ class PipelineRunner:
             encoding="utf-8",
         )
         temporary.replace(path)
+
+    @staticmethod
+    def _container_name(job_id: str, session_id: str) -> str:
+        material = f"{job_id}-{session_id}".casefold()
+        slug = re.sub(r"[^a-z0-9]+", "-", material).strip("-")
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:10]
+        return f"fts-{slug[:45].rstrip('-')}-{digest}"
+
+    @staticmethod
+    def _remove_container(name: str) -> None:
+        if not re.fullmatch(r"fts-[a-z0-9-]{3,80}", name):
+            return
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=_subprocess_environment(),
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
 
     @staticmethod
     def _capture(command: list[str]) -> str:

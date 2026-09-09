@@ -5,6 +5,7 @@ import json
 import platform
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from .config import load_config
@@ -19,7 +20,11 @@ from .pipeline import (
 )
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .pipeline_worker import PipelineWorker
+from .operations import Housekeeper, pipeline_overview
 from .triage import TriageRunner
+from .validation_agent import ValidationAgentRunner
+from .migrations import migrate_runs
+from .vistafuzz_adapter import VistaFuzzAdapter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,11 +81,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     triage.add_argument("--job-id", required=True)
     triage.add_argument("--no-ai", action="store_true")
+    validate = commands.add_parser(
+        "validate", help="Create local PoCs and a human-review report for reproduced crashes"
+    )
+    validate.add_argument("--job-id", required=True)
     worker = commands.add_parser(
         "worker", help="Advance queued jobs through their 24-hour fuzz budget"
     )
     worker.add_argument("--max-jobs", type=int, default=1)
     worker.add_argument("--setup-only", action="store_true")
+    dashboard = commands.add_parser(
+        "dashboard", help="Show jobs, throughput, findings and remaining budgets"
+    )
+    dashboard.add_argument("--json", action="store_true")
+    dashboard.add_argument("--watch", action="store_true")
+    dashboard.add_argument("--interval", type=int)
+    housekeep = commands.add_parser(
+        "housekeep", help="Enforce disk limits and remove orphan containers"
+    )
+    housekeep.add_argument("--job-id")
+    housekeep.add_argument("--json", action="store_true")
+    migrate = commands.add_parser("migrate", help="Upgrade existing run state files safely")
+    migrate.add_argument("--dry-run", action="store_true")
+    vista = commands.add_parser(
+        "vistafuzz", help="Inspect or smoke-test the pinned OpenCV VistaFuzz artifact"
+    )
+    vista.add_argument("--smoke-seconds", type=int)
     commands.add_parser("doctor", help="Check fuzzing pipeline prerequisites")
     return parser
 
@@ -88,7 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     config, _ = load_config(args.config)
-    if args.command not in {"doctor", "list", "status", "plan"} and platform.system() != "Linux":
+    if args.command not in {
+        "doctor", "list", "status", "plan", "dashboard"
+    } and platform.system() != "Linux":
         raise SystemExit("fuzz execution requires Linux (Ubuntu or WSL2)")
     try:
         if args.command == "plan":
@@ -119,8 +147,18 @@ def main(argv: list[str] | None = None) -> None:
             _afl_cmplog(config, args)
         elif args.command == "triage":
             _triage(config, args)
+        elif args.command == "validate":
+            _validate(config, args)
         elif args.command == "worker":
             _worker(config, args)
+        elif args.command == "dashboard":
+            _dashboard(config, args)
+        elif args.command == "housekeep":
+            _housekeep(config, args)
+        elif args.command == "migrate":
+            _migrate(config, args)
+        elif args.command == "vistafuzz":
+            _vistafuzz(config, args)
         elif args.command == "doctor":
             _doctor(config)
     except PipelineError as exc:
@@ -173,9 +211,16 @@ def _status(config: dict, args: argparse.Namespace) -> None:
         return
     print(f"repository         {value['repository']}@{value['commit']}")
     print(f"state              {value['status']} / {value['stage']}")
+    print(f"fuzz target        {value['fuzz_target'] or '-'}")
     print(
         f"fuzz progress      {value['fuzz_completed_seconds']:.0f}/"
         f"{value['fuzz_budget_seconds']}s ({value['fuzz_percent']:.2f}%)"
+    )
+    print(f"remaining          {value['fuzz_remaining_seconds']:.0f}s")
+    print(f"throughput         {value['exec_per_second']} exec/s")
+    print(
+        f"coverage           edges={value['coverage_edges']} / "
+        f"features={value['coverage_features']}"
     )
     print(f"coverage stalled   {str(value['coverage_stalled']).lower()}")
     print(f"corpus / crashes   {value['corpus_files']} / {value['crash_files']}")
@@ -200,6 +245,11 @@ def _status(config: dict, args: argparse.Namespace) -> None:
             f"{value['triage_artifact']}"
         )
     print(f"validated groups   {value['validated_groups']}")
+    print(
+        f"findings           crashes={value['total_crashes']} / "
+        f"false_positive={value['false_positive_groups']} / "
+        f"validation={value['validation_status'] or 'pending'}"
+    )
     if value["last_error"]:
         print(f"last error         {value['last_error']}")
 
@@ -305,6 +355,17 @@ def _triage(config: dict, args: argparse.Namespace) -> None:
     )
 
 
+def _validate(config: dict, args: argparse.Namespace) -> None:
+    runner = ValidationAgentRunner(
+        config, progress=lambda message: print(message, flush=True)
+    )
+    result = runner.validate(args.job_id)
+    print(
+        f"validation complete: findings={len(result['findings'])} "
+        f"status={result['state']['status']}"
+    )
+
+
 def _doctor(config: dict) -> None:
     pipeline = config["pipeline"]
     checks = [
@@ -344,6 +405,62 @@ def _worker(config: dict, args: argparse.Namespace) -> None:
             f"worker result: job_id={result.job_id} action={result.action} "
             f"status={result.status} stage={result.stage} error={result.error}"
         )
+
+
+def _dashboard(config: dict, args: argparse.Namespace) -> None:
+    interval = args.interval or int(config["pipeline"]["dashboard_interval_seconds"])
+    if interval < 1:
+        raise PipelineError("dashboard interval must be positive")
+    while True:
+        value = pipeline_overview(config["pipeline"]["runs_path"])
+        if args.json:
+            print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+        else:
+            print(
+                f"jobs={value['job_count']} disk={value['total_disk_bytes']} "
+                f"states={value['status_counts']}"
+            )
+            print(
+                "STATUS                 STAGE                    PROGRESS   EXEC/S     COV  "
+                "CRASH  VALIDATION       TARGET / REPOSITORY"
+            )
+            for item in value["jobs"]:
+                print(
+                    f"{str(item['status']):22.22} {str(item['stage']):24.24} "
+                    f"{item['fuzz_percent']:7.2f}% {item['exec_per_second']:7d} "
+                    f"{item['coverage_edges']:7d} "
+                    f"{item['total_crashes']:6d} "
+                    f"{str(item['validation_status'] or '-'):16.16} "
+                    f"{item['fuzz_target'] or '-'} / {item['repository']}"
+                )
+        if not args.watch:
+            return
+        time.sleep(interval)
+
+
+def _housekeep(config: dict, args: argparse.Namespace) -> None:
+    value = Housekeeper(config).run(args.job_id)
+    if args.json:
+        print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    for item in value["jobs"]:
+        print(
+            f"{item['job_id']}: {item['before_bytes']} -> {item['after_bytes']} bytes, "
+            f"removed={item['removed_files']}, over_limit={item['over_limit']}"
+        )
+    if value["removed_orphan_containers"]:
+        print("removed containers: " + ", ".join(value["removed_orphan_containers"]))
+
+
+def _migrate(config: dict, args: argparse.Namespace) -> None:
+    value = migrate_runs(config["pipeline"]["runs_path"], dry_run=args.dry_run)
+    print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+
+
+def _vistafuzz(config: dict, args: argparse.Namespace) -> None:
+    adapter = VistaFuzzAdapter(config)
+    value = adapter.smoke(args.smoke_seconds) if args.smoke_seconds else adapter.inspect()
+    print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def _docker_server_status() -> str:

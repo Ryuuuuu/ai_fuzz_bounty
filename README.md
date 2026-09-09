@@ -2,8 +2,9 @@
 
 Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상 정책이 확인된
 후보만 격리된 AI 퍼징 파이프라인으로 넘기는 범용 시스템입니다. 특정 제품에
-종속되지 않으며, 현재 실행 경로는 기존 OSS-Fuzz 통합이 있는 C/C++ 프로젝트를
-안정적으로 처리합니다.
+종속되지 않습니다. 기존 OSS-Fuzz 통합이 있는 C/C++ 프로젝트를 우선 처리하고,
+미등록 프로젝트는 CMake, Meson, Autotools, Cargo를 감지해 작업별 OSS-Fuzz 정의와
+초기 하네스를 생성합니다.
 
 ## 판정 흐름
 
@@ -16,8 +17,8 @@ Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상
 5. 정적 점수를 통과한 verified 후보 중 상위 몇 개만 AI가 재평가합니다.
 6. 기본 export는 verified만 JSONL로 내보냅니다. needs_review, rejected,
    초대제인 conditional은 자동 파이프라인에서 제외됩니다.
-7. 작업 생성 시 고정된 OSS-Fuzz 커밋의 1,241개 프로젝트 인덱스와 대조해,
-   실제 자동 빌드 경로가 있는 C/C++ 후보만 큐에 넣습니다.
+7. 작업 생성 시 고정된 OSS-Fuzz 프로젝트 인덱스와 대조해 등록된 후보를 먼저 큐에
+   넣고, 미등록 후보는 지원 빌드 파일 신호를 확인한 뒤 범용 통합 생성 경로로 넘깁니다.
 
 AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECURITY.md의 명시적
 문구와 catalog.json에 기록된 공식 정책 근거만 사용합니다. 카탈로그 항목은
@@ -95,6 +96,7 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
     fuzz-pipeline afl-cmplog --job-id <job-id>
     # run이 끝난 뒤 자동 worker가 수행하며, 수동 실행도 가능
     fuzz-pipeline triage --job-id <job-id>
+    fuzz-pipeline validate --job-id <job-id>
 
 준비된 작업을 오래된 순서대로 24시간 실행하고 다음 작업으로 넘기려면:
 
@@ -103,11 +105,14 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
 현재 진행률, corpus, crash와 정체 상태 확인:
 
     fuzz-pipeline status --job-id <job-id>
+    fuzz-pipeline dashboard --watch
+    fuzz-pipeline housekeep
 
 `--max-jobs 0`은 실행 가능한 큐가 빌 때까지 계속 처리한다. 빌드와 검증까지만 미리
 진행하려면 `--setup-only`를 사용한다. 동시에 두 worker가 실행되지 않도록 잠금 파일을
 사용한다. 크래시가 생기면 worker가 입력 최소화, 격리 환경 3회 재현, sanitizer
-스택 지문 중복 제거를 수행하고 사람 검토용 보고서 초안을 한 번의 Codex 호출로 만든다.
+스택 지문 중복 제거를 수행한다. 재현된 그룹만 별도 Codex 검증 에이전트가 로컬 전용
+PoC, 트리거 경로, 영향도 근거와 사람 검토용 보고서 초안으로 정리한다.
 실행 세션별 완료 시간을 기록하므로 worker나 호스트가 중단돼도 남은 퍼징 예산만
 재개한다. 결과를 외부 버그바운티 서비스에 자동 제출하지 않는다.
 
@@ -123,10 +128,16 @@ Quartet 검토를 최대 `max_fuzz_target_attempts`개까지 순서대로 수행
 작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. OSS-Fuzz와
 OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게이트로
 적용합니다. AFL++ CmpLog는 4시간 동안 corpus가 늘지 않을 때 한 번 실행하고 새 입력을
-기존 corpus로 되돌립니다. probe나 본 퍼징 체크포인트의 crash는 남은 시간을 소모하지
-않고 즉시 triage로 넘깁니다. VistaFuzz는 Python API 경로를
-활성화했을 때만 사용합니다. 전체 방법론과 단계별 산출물은
+기존 corpus로 되돌립니다. 새 입력이 없으면 소스 문자열 dictionary를 만들고, 다시
+정체되면 이미 측정한 미도달 후보로 새 하네스를 생성합니다. probe나 본 퍼징 체크포인트의 crash는 남은 시간을 소모하지
+않고 즉시 triage로 넘깁니다. VistaFuzz는 OpenCV-Python 전용 연구 아티팩트이므로
+일반 후보에 연결하지 않습니다. `fuzz-pipeline vistafuzz`로 고정 버전과 API 자료를
+점검할 수 있고, 명시적으로 활성화한 경우에만 별도 스모크를 실행합니다. 전체 방법론과 단계별 산출물은
 [`docs/FUZZ_PIPELINE.md`](docs/FUZZ_PIPELINE.md)에 정리되어 있습니다.
+
+설치 절차는 [`docs/INSTALL.md`](docs/INSTALL.md), 운영·복구는
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md), 버전 업데이트는
+[`docs/MIGRATIONS.md`](docs/MIGRATIONS.md)를 따릅니다.
 
 OSS-Fuzz-Gen의 `--ai-binary`에는 로컬 Codex 어댑터를 지정합니다.
 

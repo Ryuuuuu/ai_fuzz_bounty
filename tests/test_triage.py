@@ -59,7 +59,12 @@ class TriageTests(unittest.TestCase):
             ):
                 result = runner.triage(job_id, use_ai=False)
             self.assertEqual(result["validated_group_count"], 1)
-            self.assertEqual(result["state"]["status"], "ready_for_human")
+            self.assertEqual(result["state"]["status"], "validation_pending")
+            self.assertEqual(result["state"]["stage"], "validation")
+            self.assertEqual(
+                result["groups"][0]["classification"]["verdict"],
+                "validated_sanitizer_finding",
+            )
             handoff = json.loads(
                 (job_dir / "artifacts" / "validation-handoff.json").read_text()
             )
@@ -89,7 +94,7 @@ class TriageTests(unittest.TestCase):
                 result = runner.triage(job_id, use_ai=False)
 
             self.assertEqual(result["validated_group_count"], 1)
-            self.assertEqual(result["state"]["status"], "ready_for_human")
+            self.assertEqual(result["state"]["status"], "validation_pending")
 
     @staticmethod
     def _fixture(root: Path, *, crash: bool):

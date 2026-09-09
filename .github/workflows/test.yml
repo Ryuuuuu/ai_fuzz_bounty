@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -26,3 +26,10 @@ jobs:
       - run: /tmp/fts-wheel/bin/python -m pip install dist/*.whl
       - run: cd /tmp && /tmp/fts-wheel/bin/fts --config /tmp/no-config.toml catalog
       - run: cd /tmp && /tmp/fts-wheel/bin/fuzz-pipeline --config /tmp/no-config.toml doctor
+
+  ubuntu-container:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --file tests/ubuntu24.Dockerfile --tag fuzz-target-scout:test .
+      - run: docker run --rm fuzz-target-scout:test
