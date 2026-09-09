@@ -9,6 +9,18 @@ from fuzz_target_scout.config import load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_automatic_resource_settings_remain_dynamic_until_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.toml"
+            config_path.write_text(
+                "[pipeline]\nparallel_workers = 0\ncontainer_memory_mb = 0\n",
+                encoding="utf-8",
+            )
+            config, _ = load_config(config_path)
+
+        self.assertEqual(config["pipeline"]["parallel_workers"], 0)
+        self.assertEqual(config["pipeline"]["container_memory_mb"], 0)
+
     def test_packaged_inputs_match_repository_inputs(self) -> None:
         root = Path(__file__).resolve().parents[1]
         package = root / "src" / "fuzz_target_scout" / "resources"

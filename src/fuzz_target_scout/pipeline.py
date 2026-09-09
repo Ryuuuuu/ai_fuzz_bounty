@@ -250,6 +250,14 @@ def make_work_order(
                 "primary_sanitizer": "address",
                 "secondary_sanitizer": "undefined",
                 "parallel_workers": int(pipeline_config["parallel_workers"]),
+                "max_parallel_jobs": int(
+                    pipeline_config.get("max_parallel_jobs", 0)
+                ),
+                "resource_allocation": (
+                    "dynamic" if int(pipeline_config.get("parallel_workers", 0)) <= 0
+                    or int(pipeline_config.get("container_memory_mb", 0)) <= 0
+                    else "configured_caps"
+                ),
                 "network_during_fuzzing": False,
                 "container_read_only_source": True,
             },

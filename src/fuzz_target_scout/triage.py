@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .pipeline import PipelineError, utc_now
+from .resources import ResourceAllocation, plan_resources
 
 
 SANITIZER_ERROR = re.compile(
@@ -28,7 +29,13 @@ class TriageRunner:
         self.runs_root = Path(self.pipeline["runs_path"])
         self.progress = progress or (lambda _: None)
 
-    def triage(self, job_id: str, *, use_ai: bool = True) -> dict[str, Any]:
+    def triage(
+        self,
+        job_id: str,
+        *,
+        use_ai: bool = True,
+        allocation: ResourceAllocation | None = None,
+    ) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
         job = _read_json(job_dir / "job.json")
         state_path = job_dir / "state.json"
@@ -42,6 +49,8 @@ class TriageRunner:
             "afl-cmplog-run.json",
         }:
             raise PipelineError("state references an unsupported triage artifact")
+        allocation = allocation or plan_resources(self.pipeline, requested_jobs=1)
+        self._container_memory_mb = allocation.container_memory_mb
         fuzz_run = _read_json(job_dir / "artifacts" / triage_artifact)
         fuzzer = str(fuzz_run.get("fuzz_target") or "")
         build = _read_json(job_dir / "artifacts" / "build-manifest.json")
@@ -296,7 +305,7 @@ class TriageRunner:
             "docker", "run", "--rm", "--network", "none", "--read-only",
             "--tmpfs", "/tmp:rw,exec,nosuid,size=512m", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "256",
-            "--cpus", "1", "--memory", f"{int(self.pipeline['container_memory_mb'])}m",
+            "--cpus", "1", "--memory", f"{self._container_memory_mb}m",
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-e", "FUZZING_ENGINE=libfuzzer", "-e", f"SANITIZER={sanitizer}",
             "-e", "HELPER=True", "-v", f"{out_dir}:/out:ro",

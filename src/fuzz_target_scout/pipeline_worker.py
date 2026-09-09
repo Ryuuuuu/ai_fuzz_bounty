@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ from .pipeline import PipelineError, utc_now
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .triage import TriageRunner
 from .operations import Housekeeper
+from .resources import ResourceAllocation, plan_resources
 from .validation_agent import ValidationAgentRunner
 
 
@@ -45,6 +48,7 @@ class PipelineWorker:
         self.triage_runner = TriageRunner(config, progress=self.progress)
         self.validation_runner = ValidationAgentRunner(config, progress=self.progress)
         self.housekeeper = Housekeeper(config)
+        self._non_fuzz_lock = threading.Lock()
 
     def run(self, max_jobs: int, *, setup_only: bool = False) -> list[WorkerResult]:
         if max_jobs < 0:
@@ -62,16 +66,69 @@ class PipelineWorker:
             if housekeeper is not None:
                 housekeeper.run()
             while max_jobs == 0 or len(results) < max_jobs:
-                job_id = self._next_job(attempted)
-                if not job_id:
+                requested_jobs = (
+                    None if max_jobs == 0 else max_jobs - len(results)
+                )
+                allocation = plan_resources(
+                    self.pipeline, requested_jobs=requested_jobs
+                )
+                remaining = allocation.parallel_jobs
+                job_ids = self._next_jobs(attempted, remaining)
+                if not job_ids:
                     break
-                attempted.add(job_id)
-                results.append(self._advance(job_id, setup_only=setup_only))
+                attempted.update(job_ids)
+                batch_allocation = plan_resources(
+                    self.pipeline,
+                    requested_jobs=len(job_ids),
+                    snapshot=allocation.detected,
+                )
+                self.progress(
+                    "resource plan: "
+                    f"jobs={len(job_ids)} workers/job={batch_allocation.workers_per_job} "
+                    f"memory/job={batch_allocation.container_memory_mb}MB"
+                )
+                ready_jobs: list[str] = []
+                for job_id in job_ids:
+                    prepared = self._advance(
+                        job_id,
+                        setup_only=True,
+                        allocation=batch_allocation,
+                    )
+                    if prepared.action == "ready" and not setup_only:
+                        ready_jobs.append(job_id)
+                    else:
+                        results.append(prepared)
+                if ready_jobs:
+                    run_allocation = plan_resources(
+                        self.pipeline,
+                        requested_jobs=len(ready_jobs),
+                        snapshot=allocation.detected,
+                    )
+                    with ThreadPoolExecutor(
+                        max_workers=len(ready_jobs), thread_name_prefix="fuzz-job"
+                    ) as executor:
+                        futures = [
+                            executor.submit(
+                                self._advance,
+                                job_id,
+                                setup_only=False,
+                                allocation=run_allocation,
+                            )
+                            for job_id in ready_jobs
+                        ]
+                        results.extend(future.result() for future in futures)
                 if housekeeper is not None:
-                    housekeeper.run(job_id)
+                    for job_id in job_ids:
+                        housekeeper.run(job_id)
         return results
 
     def _next_job(self, attempted: set[str]) -> str:
+        jobs = self._next_jobs(attempted, 1)
+        return jobs[0] if jobs else ""
+
+    def _next_jobs(self, attempted: set[str], limit: int) -> list[str]:
+        if limit < 1:
+            return []
         candidates: list[tuple[str, str]] = []
         for state_path in self.runs_root.glob("*/state.json"):
             try:
@@ -86,9 +143,15 @@ class PipelineWorker:
             created = str(state.get("created_at") or "")
             candidates.append((created, job_id))
         candidates.sort(key=lambda item: (item[0], item[1]))
-        return candidates[0][1] if candidates else ""
+        return [job_id for _, job_id in candidates[:limit]]
 
-    def _advance(self, job_id: str, *, setup_only: bool) -> WorkerResult:
+    def _advance(
+        self,
+        job_id: str,
+        *,
+        setup_only: bool,
+        allocation: ResourceAllocation | None = None,
+    ) -> WorkerResult:
         action = "none"
         try:
             for _ in range(100):
@@ -100,32 +163,32 @@ class PipelineWorker:
                     return WorkerResult(job_id, status, stage, "needs_attention")
                 if stage in STAGE_ORDER[:-1]:
                     action = "prepare"
-                    self.runner.prepare(job_id)
+                    self._serialized(self.runner.prepare, job_id)
                 elif stage == "integration":
                     action = "integrate"
-                    self.runner.integrate(job_id)
+                    self._serialized(self.runner.integrate, job_id)
                 elif stage == "build":
                     action = "build"
-                    self.runner.build(job_id)
+                    self._serialized(self.runner.build, job_id)
                 elif stage == "smoke":
                     action = "smoke"
-                    self.runner.smoke(job_id)
+                    self._serialized(self.runner.smoke, job_id)
                 elif stage == "quartet_gate":
                     if not self._artifact(job_id, "probe-run.json").is_file():
                         action = "probe"
-                        self.runner.probe(job_id)
+                        self._serialized(self.runner.probe, job_id)
                     else:
                         action = "quartet"
-                        self.runner.quartet(job_id)
+                        self._serialized(self.runner.quartet, job_id)
                 elif stage == "coverage_analysis":
                     action = "analyze"
-                    self.runner.analyze(job_id)
+                    self._serialized(self.runner.analyze, job_id)
                 elif stage == "fuzzing":
                     if status == "afl_cmplog_pending":
                         if setup_only:
                             return WorkerResult(job_id, status, stage, "ready")
                         action = "afl_cmplog"
-                        self.runner.afl_cmplog(job_id)
+                        self._serialized(self._run_afl, job_id, allocation)
                     elif status in {"harness_work_pending", "generation_failed"}:
                         cycles = int((state.get("attempts") or {}).get("harness_generation", 0))
                         if cycles >= int(self.pipeline["max_generation_cycles"]):
@@ -133,20 +196,22 @@ class PipelineWorker:
                                 job_id, status, stage, "manual_review", "generation cycle limit reached"
                             )
                         action = "generate"
-                        self.runner.generate(job_id)
+                        self._serialized(self.runner.generate, job_id)
                     elif status in {"ready", "running", "interrupted", "worker_failed"}:
                         if setup_only:
                             return WorkerResult(job_id, status, stage, "ready")
                         action = "fuzz"
-                        self.runner.fuzz(job_id)
+                        self._run_fuzz(job_id, allocation)
                     else:
                         return WorkerResult(job_id, status, stage, "needs_attention")
                 elif stage == "triage":
                     action = "triage"
-                    self.triage_runner.triage(job_id, use_ai=False)
+                    self._serialized(self._run_triage, job_id, allocation)
                 elif stage == "validation":
                     action = "validate"
-                    result = self.validation_runner.validate(job_id)
+                    result = self._serialized(
+                        self._run_validation, job_id, allocation
+                    )
                     final_state = result["state"]
                     return WorkerResult(
                         job_id,
@@ -167,6 +232,43 @@ class PipelineWorker:
                 action,
                 str(exc)[:2000],
             )
+
+    def _serialized(self, function, *args, **kwargs):
+        lock = getattr(self, "_non_fuzz_lock", None)
+        if lock is None:
+            return function(*args, **kwargs)
+        with lock:
+            return function(*args, **kwargs)
+
+    def _run_fuzz(
+        self, job_id: str, allocation: ResourceAllocation | None
+    ) -> dict[str, Any]:
+        if allocation is None:
+            return self.runner.fuzz(job_id)
+        return self.runner.fuzz(job_id, allocation=allocation)
+
+    def _run_afl(
+        self, job_id: str, allocation: ResourceAllocation | None
+    ) -> dict[str, Any]:
+        if allocation is None:
+            return self.runner.afl_cmplog(job_id)
+        return self.runner.afl_cmplog(job_id, allocation=allocation)
+
+    def _run_triage(
+        self, job_id: str, allocation: ResourceAllocation | None
+    ) -> dict[str, Any]:
+        if allocation is None:
+            return self.triage_runner.triage(job_id, use_ai=False)
+        return self.triage_runner.triage(
+            job_id, use_ai=False, allocation=allocation
+        )
+
+    def _run_validation(
+        self, job_id: str, allocation: ResourceAllocation | None
+    ) -> dict[str, Any]:
+        if allocation is None:
+            return self.validation_runner.validate(job_id)
+        return self.validation_runner.validate(job_id, allocation=allocation)
 
     def _state(self, job_id: str) -> dict[str, Any]:
         path = self.runs_root / job_id / "state.json"

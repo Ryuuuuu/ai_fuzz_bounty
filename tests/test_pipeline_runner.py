@@ -15,6 +15,7 @@ from fuzz_target_scout.coverage_analysis import (
 )
 from fuzz_target_scout.pipeline import PipelineError, UnsupportedIntegrationError
 from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
+from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 from fuzz_target_scout.quartet_gate import (
     _numbered_source_excerpt,
     find_harness_source,
@@ -602,15 +603,38 @@ class PipelineRunnerTests(unittest.TestCase):
             runner.runs_root = root
             runner.progress = lambda _message: None
             calls = []
+            observed = {}
+            allocation = ResourceAllocation(
+                parallel_jobs=2,
+                workers_per_job=3,
+                container_memory_mb=2304,
+                fuzzer_rss_limit_mb=640,
+                cpu_reserve=1,
+                memory_reserve_mb=1024,
+                detected=ResourceSnapshot(8, 8192, 6144, ("test",)),
+            )
+
+            def fake_fuzz(*_args, **kwargs):
+                observed.update(kwargs)
+                return {"fuzz_target": "fuzz_parser"}
+
             with patch.object(
                 runner, "_recheck_policy", side_effect=lambda *_: calls.append("policy")
             ), patch.object(
                 runner,
                 "_fuzz_session",
-                return_value={"fuzz_target": "fuzz_parser"},
+                side_effect=fake_fuzz,
             ):
-                result = runner.fuzz(job_id)
+                result = runner.fuzz(job_id, allocation=allocation)
             self.assertEqual(calls, ["policy"])
+            self.assertEqual(observed["workers"], 3)
+            self.assertEqual(observed["memory_mb"], 2304)
+            self.assertEqual(observed["rss_limit_mb"], 640)
+            resource_plan = json.loads(
+                (artifacts / "resource-plan.json").read_text()
+            )
+            self.assertEqual(resource_plan["mode"], "libfuzzer")
+            self.assertEqual(resource_plan["workers_per_job"], 3)
             self.assertEqual(result["state"]["stage"], "triage")
 
     def test_full_run_resumes_only_remaining_budget(self):

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .pipeline import PipelineError, load_toolchain_lock, utc_now
+from .resources import plan_resources
 
 
 class VistaFuzzAdapter:
@@ -81,13 +82,15 @@ class VistaFuzzAdapter:
         _run(["docker", "build", "--tag", tag, str(work)], build_log, 7200)
         name = "fts-vistafuzz-" + str(time.time_ns())[-12:]
         run_log = logs / "smoke.log"
+        allocation = plan_resources(self.pipeline, requested_jobs=1)
         command = [
             "docker", "run", "--rm", "--name", name,
             "--label", "fuzz-target-scout=true",
             "--label", "fuzz-target-scout.job=vistafuzz-artifact",
             "--network", "none", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "512",
-            "--cpus", "2", "--memory", f"{int(self.pipeline['container_memory_mb'])}m",
+            "--cpus", str(min(2, allocation.workers_per_job)),
+            "--memory", f"{allocation.container_memory_mb}m",
             "--tmpfs", "/tmp:rw,exec,nosuid,size=1g",
             "-v", f"{work}:/app:rw", tag, "bash", "-lc",
             f"cd /app && timeout {seconds}s python3 main.py",

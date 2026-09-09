@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .pipeline import PipelineError, utc_now
+from .resources import ResourceAllocation, plan_resources
 
 
 JOB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,160}$")
@@ -28,8 +29,13 @@ class ValidationAgentRunner:
         self.runs_root = Path(self.pipeline["runs_path"])
         self.progress = progress or (lambda _: None)
 
-    def validate(self, job_id: str) -> dict[str, Any]:
+    def validate(
+        self,
+        job_id: str,
+        allocation: ResourceAllocation | None = None,
+    ) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
+        allocation = allocation or plan_resources(self.pipeline, requested_jobs=1)
         state_path = job_dir / "state.json"
         state = _read_json(state_path)
         if state.get("stage") != "validation":
@@ -46,7 +52,7 @@ class ValidationAgentRunner:
         groups = [group for group in triage.get("groups") or [] if group.get("reproduced")]
         if not groups:
             raise PipelineError("validation agent requires a reproduced crash group")
-        poc = self._write_poc_artifacts(job_dir, handoff, groups)
+        poc = self._write_poc_artifacts(job_dir, handoff, groups, allocation)
         evidence = self._evidence(job_dir, job, triage, groups, poc)
         state["status"] = "validation_running"
         state["updated_at"] = utc_now()
@@ -96,7 +102,11 @@ class ValidationAgentRunner:
         return result
 
     def _write_poc_artifacts(
-        self, job_dir: Path, handoff: dict[str, Any], groups: list[dict[str, Any]]
+        self,
+        job_dir: Path,
+        handoff: dict[str, Any],
+        groups: list[dict[str, Any]],
+        allocation: ResourceAllocation,
     ) -> list[dict[str, Any]]:
         build = _read_json(job_dir / "artifacts" / "build-manifest.json")
         out_dir = Path(str(build["output_directory"])).resolve()
@@ -130,7 +140,7 @@ class ValidationAgentRunner:
                 "docker", "run", "--rm", "--network", "none", "--read-only",
                 "--tmpfs", "/tmp:rw,exec,nosuid,size=512m", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--pids-limit", "256",
-                "--cpus", "1", "--memory", f"{int(self.pipeline['container_memory_mb'])}m",
+                "--cpus", "1", "--memory", f"{allocation.container_memory_mb}m",
                 "--user", "$(id -u):$(id -g)",
                 "-e", "FUZZING_ENGINE=libfuzzer", "-e", "SANITIZER=address",
                 "-e", "HELPER=True", "-v", f"{out_dir}:/out:ro",

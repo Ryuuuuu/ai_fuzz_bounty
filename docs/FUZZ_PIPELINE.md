@@ -185,9 +185,19 @@ smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으�
 성공 후 smoke, probe, Quartet, coverage 분석을 새 하네스에 다시 수행한다.
 
 `fuzz-pipeline worker --max-jobs 0`은 생성 시간이 오래된 작업부터 위 상태 전이를
-실행한다. 각 작업의 24시간 예산이 끝나 `triage_pending`이 되면 다음 작업을 선택한다.
+실행한다. 실행 시 CPU affinity, cgroup v1/v2, `/proc/meminfo`와 Docker daemon의
+CPU·메모리 제한을 각 작업 묶음 시작 시 측정하고 가장 작은 유효 제한을 사용한다. CPU 1개와 메모리 1GB를
+기본 여유분으로 남긴 뒤 동시 작업 수, 작업별 libFuzzer worker 수, 컨테이너 메모리와
+worker RSS 제한을 함께 계산한다. 각 실행의 측정값은 `artifacts/resource-plan.json`에
+남긴다.
+
+한 coordinator만 잠금을 획득하지만, 승인된 장기 퍼징 작업은 계산된 개수만큼 별도
+Docker 컨테이너에서 동시에 실행한다. 준비·빌드·probe·Quartet·coverage 검토와 하네스
+생성은 공유 도구와 빌드 산출물 충돌을 피하도록 직렬화한다. OSS-Fuzz-Gen이나 정체 대응
+Codex 단계에서 생성된 하네스도 동일한 자원 할당을 받아 기존 하네스 작업과 병렬 실행된다.
+각 작업의 24시간 예산이 끝나 `triage_pending`이 되면 다음 작업을 선택한다.
 하네스 생성은 작업당 최대 두 사이클로 제한하며, 그 이상은 사람 검토 대상으로 남긴다.
-worker 시작은 파일 잠금으로 직렬화하고, 전체 퍼징 직전 버그바운티 정책을 다시 확인한다.
+전체 퍼징 직전 버그바운티 정책을 다시 확인한다.
 `fuzz-progress.json`에 정상 완료 및 중단 세션을 누적한다. 재부팅 뒤 `running` 또는
 `interrupted` 작업을 다시 선택하고 이미 완료한 실행 시간을 제외한 예산만 요청한다.
 각 체크포인트는 고유 실행 ID로 결과와 진행률을 연결해 상태 기록 직전 중단에도 한 번만

@@ -44,6 +44,7 @@ from .quartet_gate import (
     find_harness_source,
     quartet_record,
 )
+from .resources import ResourceAllocation, ResourceSnapshot, plan_resources
 from .stagnation import generate_dictionary
 
 
@@ -66,6 +67,66 @@ class PipelineRunner:
         self.policy = PolicyVerifier(
             config["policy"]["catalog_path"],
             int(config["policy"]["max_catalog_age_days"]),
+        )
+
+    def _resource_allocation(
+        self,
+        job: dict[str, Any],
+        *,
+        requested_jobs: int = 1,
+    ) -> ResourceAllocation:
+        if hasattr(self, "config"):
+            return plan_resources(self.pipeline, requested_jobs=requested_jobs)
+        pipeline = getattr(self, "pipeline", {})
+        workers = max(
+            1,
+            int(
+                pipeline.get("parallel_workers")
+                or (job.get("execution") or {}).get("parallel_workers")
+                or 1
+            ),
+        )
+        memory_mb = max(
+            512,
+            int(pipeline.get("container_memory_mb") or workers * 1024 + 384),
+        )
+        rss_limit = max(
+            256,
+            min(
+                int(pipeline.get("fuzzer_rss_limit_mb") or 1024),
+                max(256, (memory_mb - 384) // workers),
+            ),
+        )
+        snapshot = ResourceSnapshot(
+            cpu_count=workers,
+            memory_total_mb=memory_mb,
+            memory_available_mb=memory_mb,
+            sources=("legacy_test_allocation",),
+        )
+        return ResourceAllocation(
+            parallel_jobs=1,
+            workers_per_job=workers,
+            container_memory_mb=memory_mb,
+            fuzzer_rss_limit_mb=rss_limit,
+            cpu_reserve=0,
+            memory_reserve_mb=0,
+            detected=snapshot,
+        )
+
+    def _record_resource_allocation(
+        self,
+        job_dir: Path,
+        allocation: ResourceAllocation,
+        mode: str,
+    ) -> None:
+        self._write_json(
+            job_dir / "artifacts" / "resource-plan.json",
+            {
+                "schema_version": 1,
+                "measured_at": utc_now(),
+                "mode": mode,
+                **allocation.as_dict(),
+            },
         )
 
     def prepare(self, job_id: str, until: str = "integration") -> dict[str, Any]:
@@ -147,12 +208,16 @@ class PipelineRunner:
             raise PipelineError(
                 f"job {job_id} is at {state.get('stage')}, expected coverage_analysis"
             )
+        allocation = self._resource_allocation(job)
+        self._record_resource_allocation(job_dir, allocation, "probe")
         return self._fuzz_session(
             job_dir,
             job,
             seconds=int(self.pipeline["probe_seconds"]),
-            workers=min(2, int(self.pipeline["parallel_workers"])),
+            workers=min(2, allocation.workers_per_job),
             label="probe",
+            memory_mb=allocation.container_memory_mb,
+            rss_limit_mb=allocation.fuzzer_rss_limit_mb,
         )
 
     def quartet(self, job_id: str) -> dict[str, Any]:
@@ -561,7 +626,11 @@ class PipelineRunner:
         record["state"] = state
         return record
 
-    def fuzz(self, job_id: str) -> dict[str, Any]:
+    def fuzz(
+        self,
+        job_id: str,
+        allocation: ResourceAllocation | None = None,
+    ) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
         job = self._read_json(job_dir / "job.json")
         state_path = job_dir / "state.json"
@@ -624,6 +693,8 @@ class PipelineRunner:
             return self._finish_fuzz_state(state_path, state, result, completed_seconds)
         if remaining == 0:
             raise PipelineError("completed fuzz budget has no result artifact")
+        allocation = allocation or self._resource_allocation(job)
+        self._record_resource_allocation(job_dir, allocation, "libfuzzer")
         checkpoint = int(
             getattr(self, "pipeline", {}).get("fuzz_checkpoint_seconds", remaining)
         )
@@ -645,10 +716,12 @@ class PipelineRunner:
                 job_dir,
                 job,
                 seconds=session_budget,
-                workers=int((job.get("execution") or {})["parallel_workers"]),
+                workers=allocation.workers_per_job,
                 label="fuzz",
                 session_id=session_id,
                 container_name=container_name,
+                memory_mb=allocation.container_memory_mb,
+                rss_limit_mb=allocation.fuzzer_rss_limit_mb,
             )
         except Exception as exc:
             self._remove_container(container_name)
@@ -787,7 +860,11 @@ class PipelineRunner:
         ):
             state.pop(key, None)
 
-    def afl_cmplog(self, job_id: str) -> dict[str, Any]:
+    def afl_cmplog(
+        self,
+        job_id: str,
+        allocation: ResourceAllocation | None = None,
+    ) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
         job = self._read_json(job_dir / "job.json")
         state_path = job_dir / "state.json"
@@ -828,6 +905,8 @@ class PipelineRunner:
             raise PipelineError("coverage analysis did not approve the current fuzz target")
         self.progress(f"{job_id}: rechecking bug-bounty authorization before AFL++")
         self._recheck_policy(job_dir, job)
+        allocation = allocation or self._resource_allocation(job)
+        self._record_resource_allocation(job_dir, allocation, "afl_cmplog")
         state["status"] = "afl_cmplog_running"
         state["last_error"] = None
         state["updated_at"] = utc_now()
@@ -835,7 +914,13 @@ class PipelineRunner:
         state["active_afl_container"] = container_name
         self._write_json(state_path, state)
         try:
-            result = self._run_afl_cmplog(job_dir, job, progress, container_name)
+            result = self._run_afl_cmplog(
+                job_dir,
+                job,
+                progress,
+                container_name,
+                allocation,
+            )
         except Exception as exc:
             self._remove_container(container_name)
             result = {
@@ -956,6 +1041,7 @@ class PipelineRunner:
         job: dict[str, Any],
         progress: dict[str, Any],
         container_name: str,
+        allocation: ResourceAllocation,
     ) -> dict[str, Any]:
         del progress
         integration = self._read_json(
@@ -1031,7 +1117,14 @@ class PipelineRunner:
             },
         )
         return self._afl_session(
-            job_dir, job, snapshot, project, target, embedded_commit, container_name
+            job_dir,
+            job,
+            snapshot,
+            project,
+            target,
+            embedded_commit,
+            container_name,
+            allocation,
         )
 
     def _afl_session(
@@ -1043,6 +1136,7 @@ class PipelineRunner:
         target: str,
         embedded_commit: str,
         container_name: str,
+        allocation: ResourceAllocation | None = None,
     ) -> dict[str, Any]:
         runtime_out = job_dir / "runtime-out" / "afl-cmplog"
         if runtime_out.exists():
@@ -1072,6 +1166,7 @@ class PipelineRunner:
             ),
             remaining,
         )
+        allocation = allocation or self._resource_allocation(job)
         command = [
             "docker", "run", "--rm", "--name", container_name,
             "--label", "fuzz-target-scout=true",
@@ -1079,7 +1174,7 @@ class PipelineRunner:
             "--network", "none", "--read-only",
             "--tmpfs", "/tmp:rw,exec,nosuid,size=1g", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "512",
-            "--cpus", "1", "--memory", f"{int(self.pipeline['container_memory_mb'])}m",
+            "--cpus", "1", "--memory", f"{allocation.container_memory_mb}m",
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-e", "FUZZING_ENGINE=afl", "-e", "SANITIZER=address",
             "-e", "RUN_FUZZER_MODE=interactive", "-e", "HELPER=True",
@@ -1122,6 +1217,8 @@ class PipelineRunner:
             "sanitizer": "address",
             "cmplog": True,
             "network": "none",
+            "workers": 1,
+            "container_memory_mb": allocation.container_memory_mb,
             "oss_fuzz_declared_aflplusplus_commit": embedded_commit,
             "new_corpus_files": collected["new_corpus_files"],
             "crash_files": collected["crash_files"],
@@ -1853,6 +1950,8 @@ class PipelineRunner:
         label: str,
         session_id: str = "",
         container_name: str = "",
+        memory_mb: int | None = None,
+        rss_limit_mb: int | None = None,
     ) -> dict[str, Any]:
         if seconds < 1 or workers < 1:
             raise PipelineError("fuzz duration and worker count must be positive")
@@ -1875,8 +1974,14 @@ class PipelineRunner:
         crash_dir.mkdir(parents=True, exist_ok=True)
         self._seed_corpus(out_dir, fuzzer, corpus_dir)
 
-        memory_mb = int(self.pipeline["container_memory_mb"])
-        rss_limit_mb = int(self.pipeline["fuzzer_rss_limit_mb"])
+        memory_mb = max(
+            512,
+            int(memory_mb or self.pipeline.get("container_memory_mb") or 1024),
+        )
+        rss_limit_mb = max(
+            256,
+            int(rss_limit_mb or self.pipeline.get("fuzzer_rss_limit_mb") or 512),
+        )
         input_timeout = int(self.pipeline["input_timeout_seconds"])
         command = [
             "docker",
@@ -1965,6 +2070,8 @@ class PipelineRunner:
             "elapsed_seconds": elapsed,
             "requested_seconds": seconds,
             "workers": workers,
+            "container_memory_mb": memory_mb,
+            "fuzzer_rss_limit_mb": rss_limit_mb,
             "project": project,
             "fuzz_target": fuzzer,
             "engine": "libfuzzer",

@@ -19,6 +19,12 @@ fuzz-pipeline housekeep
 fuzz-pipeline worker --max-jobs 0
 ```
 
+`doctor`는 현재 환경에서 감지한 CPU, 사용 가능 메모리, 동시 작업 수, 작업별 worker와
+메모리를 표시한다. 자동 계산은 WSL 여부에 의존하지 않으며 일반 Ubuntu, VM과 cgroup으로
+제한된 실행 환경에서도 동작한다. `resource_cpu_reserve`,
+`resource_memory_reserve_mb`, `max_parallel_jobs`, `parallel_workers`를 설정하면 자동
+계산의 상한과 호스트 여유분을 조정할 수 있다.
+
 `housekeep`은 오래된 로그와 corpus를 설정된 파일 수·용량까지 줄이고 완료 작업의 임시
 실행 복사본을 삭제한다. `artifacts`, `crashes`, `validation`, `poc`의 증거는 삭제하지
 않는다. 작업 전체가 `job_disk_limit_mb`를 넘으면 `resource_limit_required`로 멈춘다.

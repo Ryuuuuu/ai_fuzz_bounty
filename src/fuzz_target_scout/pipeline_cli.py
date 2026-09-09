@@ -21,6 +21,7 @@ from .pipeline import (
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .pipeline_worker import PipelineWorker
 from .operations import Housekeeper, pipeline_overview
+from .resources import plan_resources
 from .triage import TriageRunner
 from .validation_agent import ValidationAgentRunner
 from .migrations import migrate_runs
@@ -88,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker = commands.add_parser(
         "worker", help="Advance queued jobs through their 24-hour fuzz budget"
     )
-    worker.add_argument("--max-jobs", type=int, default=1)
+    worker.add_argument("--max-jobs", type=int, default=0)
     worker.add_argument("--setup-only", action="store_true")
     dashboard = commands.add_parser(
         "dashboard", help="Show jobs, throughput, findings and remaining budgets"
@@ -368,6 +369,7 @@ def _validate(config: dict, args: argparse.Namespace) -> None:
 
 def _doctor(config: dict) -> None:
     pipeline = config["pipeline"]
+    resources = plan_resources(pipeline)
     checks = [
         ("operating system", f"{platform.system()} {platform.release()}"),
         ("python", platform.python_version()),
@@ -385,8 +387,13 @@ def _doctor(config: dict) -> None:
         ("runs root", str(Path(pipeline["runs_path"]))),
         ("tools root", str(Path(pipeline["tools_path"]))),
         ("AI model", f"{pipeline['ai_model']} ({pipeline['ai_reasoning_effort']})"),
-        ("fuzz workers", str(pipeline["parallel_workers"])),
-        ("container memory", f"{pipeline['container_memory_mb']} MB"),
+        ("detected CPUs", str(resources.detected.cpu_count)),
+        ("available memory", f"{resources.detected.memory_available_mb} MB"),
+        ("parallel jobs", str(resources.parallel_jobs)),
+        ("workers per job", str(resources.workers_per_job)),
+        ("memory per job", f"{resources.container_memory_mb} MB"),
+        ("fuzzer RSS limit", f"{resources.fuzzer_rss_limit_mb} MB"),
+        ("resource sources", ", ".join(resources.detected.sources)),
     ]
     daemon = _docker_server_status()
     checks.insert(2, ("docker daemon", daemon))

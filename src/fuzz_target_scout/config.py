@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import os
 import tomllib
 from importlib.resources import files
 from pathlib import Path
@@ -78,7 +77,17 @@ DEFAULTS: dict[str, Any] = {
         "coverage_stall_seconds": 14400,
         "afl_cmplog_enabled": True,
         "afl_cmplog_seconds": 3600,
+        "max_parallel_jobs": 0,
+        "auto_parallel_job_cap": 4,
         "parallel_workers": 0,
+        "max_workers_per_job": 6,
+        "min_workers_per_job": 2,
+        "resource_cpu_reserve": 1,
+        "resource_memory_reserve_mb": 1024,
+        "memory_per_fuzz_worker_mb": 768,
+        "container_memory_overhead_mb": 384,
+        "min_container_memory_mb": 1024,
+        "inspect_docker_resources": True,
         "probe_seconds": 60,
         "container_memory_mb": 0,
         "fuzzer_rss_limit_mb": 1024,
@@ -128,19 +137,6 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         with config_path.open("rb") as handle:
             loaded = tomllib.load(handle)
     config = _merge(DEFAULTS, loaded)
-    if int(config["pipeline"]["parallel_workers"]) <= 0:
-        config["pipeline"]["parallel_workers"] = min(
-            6, max(1, (os.cpu_count() or 2) - 1)
-        )
-    if int(config["pipeline"]["container_memory_mb"]) <= 0:
-        available_mb = _available_memory_mb()
-        config["pipeline"]["container_memory_mb"] = max(
-            512, min(6144, int(available_mb * 0.65))
-        )
-        config["pipeline"]["fuzzer_rss_limit_mb"] = min(
-            int(config["pipeline"]["fuzzer_rss_limit_mb"]),
-            max(256, int(config["pipeline"]["container_memory_mb"]) - 384),
-        )
     base = config_path.parent
     path_settings = (
         ("policy", "catalog_path"),
@@ -169,18 +165,3 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
             )
         config[section][key] = str(value.resolve())
     return config, config_path
-
-
-def _available_memory_mb() -> int:
-    meminfo = Path("/proc/meminfo")
-    if meminfo.is_file():
-        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith("MemAvailable:"):
-                return max(512, int(line.split()[1]) // 1024)
-    try:
-        return max(
-            512,
-            int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024**2),
-        )
-    except (AttributeError, OSError, ValueError):
-        return 4096

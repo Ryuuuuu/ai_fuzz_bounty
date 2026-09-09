@@ -1,13 +1,56 @@
 import json
+import threading
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.pipeline_worker import PipelineWorker
+from fuzz_target_scout.pipeline_worker import WorkerResult
+from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 
 
 class PipelineWorkerTests(unittest.TestCase):
+    def test_worker_runs_independent_fuzz_jobs_in_parallel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            for index in range(2):
+                self._job(
+                    runs,
+                    f"fuzz-job-{index}",
+                    created=f"2026-01-0{index + 1}T00:00:00Z",
+                    stage="fuzzing",
+                    status="ready",
+                )
+            snapshot = ResourceSnapshot(8, 8192, 6144, ("test",))
+            allocation = ResourceAllocation(2, 2, 1536, 576, 1, 1024, snapshot)
+            barrier = threading.Barrier(2)
+            observed_allocations = []
+
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {}
+            worker.progress = lambda _message: None
+            worker.housekeeper = None
+
+            def fake_advance(job_id, *, setup_only, allocation):
+                if setup_only:
+                    return WorkerResult(job_id, "ready", "fuzzing", "ready")
+                observed_allocations.append(allocation)
+                barrier.wait(timeout=2)
+                return WorkerResult(job_id, "exhausted", "complete", "fuzz")
+
+            worker._advance = fake_advance
+            with patch(
+                "fuzz_target_scout.pipeline_worker.plan_resources",
+                return_value=allocation,
+            ):
+                results = worker.run(2)
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(observed_allocations, [allocation, allocation])
+
     def test_validation_stage_dispatches_to_separate_agent(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)
