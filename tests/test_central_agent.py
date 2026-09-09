@@ -198,7 +198,10 @@ class CentralAgentTests(unittest.TestCase):
                 {},
             )
             messages = []
-            agent.notifier.send = lambda message: (messages.append(message) or True, "ok")
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True,
+                "ok",
+            )
             allocation = ResourceAllocation(
                 1,
                 2,
@@ -221,6 +224,97 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(len(log_lines), 2)
         self.assertEqual(len(messages), 1)
         self.assertIn("crashes/fuzz/crash-1", messages[0])
+
+    def test_monitor_suppresses_same_incident_and_notifies_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            messages = []
+            agent.notifier.send = lambda message: (messages.append(message) or True, "ok")
+            decisions = iter(
+                [
+                    {
+                        "severity": "critical",
+                        "notify": True,
+                        "summary": "하네스 작업이 필요합니다.",
+                        "problems": ["coverage blocked"],
+                    },
+                    {
+                        "severity": "critical",
+                        "notify": True,
+                        "summary": "하네스 보완이 필요합니다.",
+                        "problems": ["different AI wording is ignored"],
+                    },
+                    {
+                        "severity": "healthy",
+                        "notify": False,
+                        "summary": "ARM64 퍼징이 정상 실행 중입니다.",
+                        "problems": [],
+                    },
+                ]
+            )
+            agent.reviewer.health = lambda _evidence: (next(decisions), {})
+            allocation = ResourceAllocation(
+                1,
+                3,
+                2048,
+                768,
+                1,
+                1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            blocked = {
+                "job_count": 1,
+                "status_counts": {"manual_review": 1},
+                "total_disk_bytes": 0,
+                "jobs": [
+                    {
+                        "job_id": "org-parser-aaaaaaaaaaaa",
+                        "status": "manual_review",
+                        "last_error": "coverage plan requires harness work",
+                        "updated_at": "2026-01-01T00:00:00Z",
+                    }
+                ],
+            }
+            healthy = {
+                "job_count": 1,
+                "status_counts": {"running": 1},
+                "total_disk_bytes": 0,
+                "jobs": [
+                    {
+                        "job_id": "org-parser-aaaaaaaaaaaa",
+                        "status": "running",
+                        "last_error": None,
+                        "updated_at": "2099-01-01T00:00:00Z",
+                    }
+                ],
+            }
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                side_effect=[blocked, blocked, healthy],
+            ):
+                first = agent.monitor("scheduled_check")
+                repeated = agent.monitor("scheduled_check")
+                recovered = agent.monitor("scheduled_check")
+
+        self.assertEqual(first["notification_transition"], "alerted")
+        self.assertEqual(repeated["notification_transition"], "duplicate_suppressed")
+        self.assertEqual(recovered["notification_transition"], "recovered")
+        self.assertEqual(len(messages), 2)
+        self.assertIn("중앙 상태 경고", messages[0])
+        self.assertIn("중앙 상태 복구", messages[1])
+        self.assertIn("실행 또는 준비 중인 작업: 1", messages[1])
 
     def test_cycle_review_and_improvement_finish_before_the_next_batch(self):
         with tempfile.TemporaryDirectory() as directory:

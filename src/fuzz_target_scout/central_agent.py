@@ -499,6 +499,66 @@ class CentralAgent:
             "ai_usage": usage,
             "pending_finding_events": len(events),
         }
+        self._notify_findings(events)
+        should_notify = bool(deterministic) or bool(decision.get("notify"))
+        notification_transition = "unchanged"
+        if should_notify:
+            lines = ["⚠️ AI fuzz 중앙 상태 경고", str(decision.get("summary") or "")]
+            for item in deterministic[:6]:
+                lines.append(
+                    f"- {item.get('job_id', 'system')}: {item.get('reason', '')}"
+                )
+            health_key = _health_incident_key(deterministic, decision)
+            active = self.state.get("active_health_incident") or {}
+            if active.get("key") != health_key or not active.get("alert_delivered"):
+                delivered, detail = self._notify(
+                    f"health_incident:{health_key}",
+                    "\n".join(lines),
+                    deduplicate=False,
+                )
+                self.state["active_health_incident"] = {
+                    "key": health_key,
+                    "started_at": (
+                        active.get("started_at")
+                        if active.get("key") == health_key
+                        else record["created_at"]
+                    ),
+                    "alert_delivered": delivered,
+                    "delivery_detail": detail,
+                    "summary": str(decision.get("summary") or "")[:1000],
+                }
+                notification_transition = "alerted" if delivered else "alert_failed"
+            else:
+                notification_transition = "duplicate_suppressed"
+        else:
+            active = self.state.get("active_health_incident") or {}
+            if active.get("key") and active.get("alert_delivered"):
+                counts = overview.get("status_counts") or {}
+                live = int(counts.get("running") or 0) + int(counts.get("ready") or 0)
+                recovery = [
+                    "✅ AI fuzz 중앙 상태 복구",
+                    str(decision.get("summary") or "퍼징 파이프라인이 정상 상태로 돌아왔습니다."),
+                    f"- 실행 또는 준비 중인 작업: {live}",
+                ]
+                delivered, detail = self._notify(
+                    f"health_recovery:{active['key']}",
+                    "\n".join(recovery),
+                    deduplicate=False,
+                )
+                if delivered:
+                    self.state["last_recovered_health_incident"] = {
+                        **active,
+                        "recovered_at": record["created_at"],
+                    }
+                    self.state.pop("active_health_incident", None)
+                    notification_transition = "recovered"
+                else:
+                    active["recovery_delivery_detail"] = detail
+                    self.state["active_health_incident"] = active
+                    notification_transition = "recovery_failed"
+            elif active.get("key"):
+                self.state.pop("active_health_incident", None)
+        record["notification_transition"] = notification_transition
         self._append_jsonl(self.log_path, record)
         self._write_decision("health", record)
         self.progress(
@@ -506,23 +566,6 @@ class CentralAgent:
             f"severity={decision.get('severity')} jobs={overview['job_count']} "
             f"findings={len(events)}"
         )
-        self._notify_findings(events)
-        should_notify = bool(deterministic) or bool(decision.get("notify"))
-        if should_notify:
-            lines = ["⚠️ AI fuzz 중앙 상태 경고", str(decision.get("summary") or "")]
-            for item in deterministic[:6]:
-                lines.append(
-                    f"- {item.get('job_id', 'system')}: {item.get('reason', '')}"
-                )
-            health_material = {
-                "severity": decision.get("severity"),
-                "problems": deterministic,
-                "ai_problems": decision.get("problems") or [],
-            }
-            health_key = hashlib.sha256(
-                json.dumps(health_material, sort_keys=True).encode()
-            ).hexdigest()
-            self._notify(f"health:{health_key}", "\n".join(lines))
         self.state["last_monitor_at"] = record["created_at"]
         self.state["last_health_snapshot"] = _compact_previous(overview)
         self._save_state()
@@ -1216,6 +1259,35 @@ def _report_has_finding(path: Path, name: str) -> bool:
     if name == "improvement-run.json":
         return bool(value.get("crash_files"))
     return False
+
+
+def _health_incident_key(
+    deterministic: list[dict[str, str]], decision: dict[str, Any]
+) -> str:
+    if deterministic:
+        material: dict[str, Any] = {
+            "source": "deterministic",
+            "problems": sorted(
+                (
+                    str(item.get("job_id") or "system"),
+                    str(item.get("reason") or ""),
+                )
+                for item in deterministic
+            ),
+        }
+    else:
+        problems = decision.get("problems") or []
+        material = {
+            "source": "ai",
+            "severity": str(decision.get("severity") or "warning"),
+            "problems": sorted(
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in problems
+            ),
+        }
+    return hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
 
 
 def _compact_previous(overview: dict[str, Any]) -> dict[str, Any]:
