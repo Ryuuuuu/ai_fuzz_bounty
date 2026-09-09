@@ -1,1 +1,88 @@
-# ai_fuzz_bounty
+# Fuzz Target Scout
+
+Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상 정책이 확인된
+후보만 다음 파이프라인으로 내보내는 탐색기입니다. 실제 퍼저나 취약점 검증기는
+포함하지 않습니다.
+
+## 판정 흐름
+
+1. GitHub Repository Search에서 최근 유지보수되는 C, C++, Rust, Go 저장소를 찾습니다.
+2. 각 저장소의 SECURITY.md를 먼저 읽습니다.
+3. 저장소 정책이 유료 바운티를 명시하거나, 날짜가 기록된 검증 카탈로그와
+   정확히 일치할 때만 verified로 판정합니다.
+4. verified와 conditional 후보에 대해서만 파일 트리와 README를 읽어
+   빌드 방식, Linux 지원, 테스트, 기존 fuzz harness, 저장소 크기를 평가합니다.
+5. 정적 점수를 통과한 verified 후보 중 상위 몇 개만 AI가 재평가합니다.
+6. 기본 export는 verified만 JSONL로 내보냅니다. needs_review, rejected,
+   초대제인 conditional은 자동 파이프라인에서 제외됩니다.
+
+AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECURITY.md의 명시적
+문구와 catalog.json에 기록된 공식 정책 근거만 사용합니다. 카탈로그 항목은
+기본 45일 후 자동으로 needs_review 상태가 됩니다.
+
+## WSL 설치
+
+    cd /home/ryuuu/ai_fuzz_bounty
+    python3 -m venv .venv
+    source .venv/bin/activate
+    python -m pip install -e .
+    cp config.example.toml config.toml
+
+GitHub의 비인증 API 제한은 반복 탐색에 부족하므로 읽기 전용 토큰을 환경변수로
+설정하는 것을 권장합니다. 토큰을 설정 파일이나 저장소에 기록하지 마세요.
+
+    export GITHUB_TOKEN='...'
+    codex login
+    fts doctor
+    fts ai-check
+
+AI 재평가는 WSL에 설치되고 로그인된 Codex CLI를 비대화식으로 호출합니다.
+별도 OPENAI_API_KEY는 필요하지 않습니다. 기본 모델은
+gpt-daybreak-blue-latest, reasoning effort는 high입니다. Daybreak 프로그램
+접근 권한이 계정에 별도로 준비되어 있어야 합니다.
+
+## 사용
+
+먼저 포함된 정책 카탈로그 10개로 전체 흐름을 확인할 수 있습니다.
+
+    fts scan --catalog-only --no-ai
+    fts list
+    fts export
+
+GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
+
+    fts scan --limit 40
+    fts list --all
+    fts export --minimum-score 55
+
+반복 실행:
+
+    fts daemon --limit 40 --interval-seconds 21600
+
+실제 운영에서는 WSL의 systemd timer나 별도 작업 관리자가 fts scan을
+주기적으로 실행하는 구성이 더 관리하기 쉽습니다. daemon은 간단한 장시간
+실행용입니다.
+
+출력 파일 data/verified-candidates.jsonl의 각 줄에는 저장소, 확인한 commit,
+정책 URL, 점수, 재현 난이도, 추천 진입 형태가 들어갑니다. 후속 AI-Fuzz
+파이프라인은 이 파일에서 한 줄씩 가져가 24시간 작업 단위를 만들 수 있습니다.
+
+초대제 후보까지 의도적으로 포함하려면 다음 옵션을 사용합니다.
+
+    fts export --include-conditional
+
+## 토큰 및 API 호출 절감
+
+- SECURITY.md가 없거나 유료 범위가 확인되지 않으면 코드 트리를 읽지 않습니다.
+- AI는 verified이면서 정적 점수가 기준 이상인 후보만 호출합니다.
+- 한 번의 scan에서 상위 후보 최대 5개를 하나의 Codex 호출로 묶습니다.
+- AI에는 README나 정책 원문 대신 계산된 신호와 관련 경로 최대 40개만 보냅니다.
+- 저장소 commit, 증거 해시, 모델, 프롬프트 버전이 같으면 SQLite 캐시를 사용합니다.
+- codex exec를 빈 임시 작업공간의 read-only, ephemeral 모드로 실행하고
+  JSON Schema 출력을 받아 고정 컨텍스트 비용과 파싱 실패를 줄입니다.
+
+이 값들은 config.toml의 ai, github, scoring 섹션에서 조정할 수 있습니다.
+
+## 테스트
+
+    python -m unittest discover -s tests -v
