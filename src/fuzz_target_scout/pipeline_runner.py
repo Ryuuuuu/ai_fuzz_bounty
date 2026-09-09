@@ -761,6 +761,14 @@ class PipelineRunner:
         )
         if not fuzzers:
             raise PipelineError("OSS-Fuzz build produced no executable fuzz targets")
+        snapshot_root = job_dir / "build-output"
+        snapshot_root.mkdir(exist_ok=True)
+        snapshot = snapshot_root / "asan"
+        temporary_snapshot = snapshot_root / f"asan.tmp-{time.time_ns()}"
+        shutil.copytree(out_dir, temporary_snapshot)
+        if snapshot.exists():
+            shutil.rmtree(snapshot)
+        temporary_snapshot.replace(snapshot)
         image_id = self._capture(
             [
                 "docker",
@@ -786,7 +794,8 @@ class PipelineRunner:
                 "oss_fuzz_project": project,
                 "builder_image_id": image_id,
                 "fuzz_targets": fuzzers,
-                "output_directory": str(out_dir),
+                "output_directory": str(snapshot),
+                "oss_fuzz_shared_output_directory": str(out_dir),
             },
         )
 
@@ -808,6 +817,8 @@ class PipelineRunner:
         if fuzzer not in build.get("fuzz_targets", []):
             raise PipelineError("smoke target is not present in the build manifest")
         out_dir = Path(str(build["output_directory"]))
+        if not out_dir.is_dir():
+            raise PipelineError("job ASan build snapshot is missing")
         runtime_out = job_dir / "runtime-out" / label
         if not runtime_out.exists():
             runtime_out.parent.mkdir(parents=True, exist_ok=True)

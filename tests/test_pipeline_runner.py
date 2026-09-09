@@ -108,6 +108,40 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(files[0].read_bytes(), b"seed")
             self.assertFalse((root / "outside.bin").exists())
 
+    def test_fuzz_session_rejects_missing_job_build_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job = root / job_id
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            for name, value in (
+                (
+                    "build-manifest.json",
+                    {
+                        "oss_fuzz_project": "parser",
+                        "fuzz_targets": ["fuzz_parser"],
+                        "output_directory": str(job / "build-output" / "asan"),
+                    },
+                ),
+                ("smoke.json", {"fuzz_target": "fuzz_parser"}),
+            ):
+                (artifacts / name).write_text(json.dumps(value))
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "container_memory_mb": 1024,
+                "fuzzer_rss_limit_mb": 512,
+                "input_timeout_seconds": 10,
+            }
+            with self.assertRaisesRegex(PipelineError, "build snapshot is missing"):
+                runner._fuzz_session(
+                    job,
+                    {},
+                    seconds=1,
+                    workers=1,
+                    label="probe",
+                )
+
     def test_collects_worker_stats_and_copies_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
