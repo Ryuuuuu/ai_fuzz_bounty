@@ -46,8 +46,8 @@ systemd_quote() {
   printf '"%s"' "$value"
 }
 
-working_directory="$(systemd_quote "$project_root")"
-environment_file="$(systemd_quote "$environment_path")"
+working_directory="$project_root"
+environment_file="$environment_path"
 exec_start="$(systemd_quote "$launcher") --config $(systemd_quote "$config_path") agent"
 cat >"$unit_path" <<EOF
 [Unit]
