@@ -41,6 +41,18 @@ class GenericIntegrationTests(unittest.TestCase):
                 script = _build_script(expected)
                 self.assertIn("$LIB_FUZZING_ENGINE", script)
                 self.assertIn("$OUT/generic_fuzzer", script)
+                harness_line = next(
+                    line for line in script.splitlines()
+                    if '"$SRC/generic_harness.cc"' in line
+                )
+                self.assertTrue(harness_line.endswith("\\"))
+                self.assertFalse(harness_line.endswith("\\n"))
+                self.assertTrue(
+                    any(
+                        line.startswith("  -Wl,--start-group")
+                        for line in script.splitlines()
+                    )
+                )
 
     def test_reuses_existing_harness_without_ai(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,6 +72,7 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(result["build_system"], "cmake")
             self.assertTrue(result["harness_origin"].startswith("existing:"))
+            self.assertEqual(result["candidate"]["file"], "fuzz.cc")
             self.assertEqual(
                 (project / "generic_harness.cc").stat().st_mode & 0o777, 0o644
             )

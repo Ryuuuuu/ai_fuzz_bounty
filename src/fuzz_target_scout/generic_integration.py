@@ -97,6 +97,12 @@ def repair_generic_harness(
     record_path = job_dir / "artifacts" / "generic-integration.json"
     record = _read_json(record_path)
     candidate = record.get("candidate") or {}
+    harness_origin = str(record.get("harness_origin", ""))
+    if harness_origin.startswith("existing:"):
+        raise PipelineError(
+            "the upstream LLVMFuzzerTestOneInput harness is preserved; "
+            "repair the deterministic build integration instead"
+        )
     if not candidate.get("file"):
         candidate = _select_public_candidate(source)
     context = source_context(source, candidate, radius=140)
@@ -144,9 +150,14 @@ def _obtain_harness(
     existing = _find_existing_harness(source)
     if existing is not None:
         code = existing.read_text(encoding="utf-8", errors="replace")
-        candidate = {"signature": "existing LLVMFuzzerTestOneInput"}
+        relative = existing.relative_to(source).as_posix()
+        candidate = {
+            "id": hashlib.sha256(relative.encode()).hexdigest()[:16],
+            "file": relative,
+            "signature": "LLVMFuzzerTestOneInput(const uint8_t*, size_t)",
+        }
         validate_generated_harness(code, candidate)
-        return code, f"existing:{existing.relative_to(source).as_posix()}", {}, candidate
+        return code, f"existing:{relative}", {}, candidate
     candidate = _select_public_candidate(source)
     context = source_context(source, candidate, radius=140)
     prompt = generation_prompt(
@@ -285,7 +296,8 @@ if (( ${#archives[@]} == 0 )); then
   echo 'generic integration found no static libraries' >&2
   exit 1
 fi
-"$CXX" $CXXFLAGS -std=c++17 "${include_flags[@]}" "$SRC/generic_harness.cc" \\n  -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
+"$CXX" $CXXFLAGS -std=c++17 "${include_flags[@]}" "$SRC/generic_harness.cc" \\
+  -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
   $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
     return prelude + builds[build_system] + link
