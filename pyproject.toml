@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fuzz-target-scout"
-version = "0.1.0"
+version = "0.2.0"
 description = "Find Linux-friendly open-source fuzzing candidates with verified bug-bounty policies."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,9 @@ oss-fuzz-gen-codex = "fuzz_target_scout.oss_fuzz_gen_codex:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+fuzz_target_scout = ["resources/*.json", "resources/schemas/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

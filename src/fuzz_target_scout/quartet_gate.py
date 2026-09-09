@@ -140,18 +140,42 @@ def build_quartet_evidence(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     generated_path = str(build.get("generated_harness_path") or "")
     source_root = job_dir / "source"
+    harness_origin = "upstream"
     generated = False
     if generated_path:
-        candidate_root = (job_dir / "build-source").resolve()
         candidate_path = Path(generated_path).resolve()
-        if candidate_path.parent != candidate_root and candidate_root not in candidate_path.parents:
+        integration = _read_json(job_dir / "artifacts" / "integration-manifest.json")
+        allowed_roots = [(job_dir / "build-source").resolve()]
+        project_directory = str(integration.get("oss_fuzz_project_directory") or "")
+        if project_directory:
+            allowed_roots.append(Path(project_directory).resolve())
+        candidate_root = next(
+            (
+                root
+                for root in allowed_roots
+                if candidate_path == root or root in candidate_path.parents
+            ),
+            None,
+        )
+        if candidate_root is None:
             raise PipelineError("generated harness escaped the build worktree")
         if not candidate_path.is_file():
             raise PipelineError("generated harness recorded by the build is missing")
         source_root = candidate_root
+        harness_origin = (
+            "upstream" if candidate_root.name == "build-source" else "oss_fuzz_project"
+        )
         generated = True
     fuzz_target = str(smoke["fuzz_target"])
-    harness = Path(generated_path) if generated else find_harness_source(source_root, fuzz_target)
+    if generated:
+        harness = Path(generated_path)
+    else:
+        try:
+            harness = find_harness_source(source_root, fuzz_target)
+        except PipelineError:
+            source_root = job_dir / "integration" / "oss-fuzz"
+            harness = find_harness_source(source_root, fuzz_target)
+            harness_origin = "oss_fuzz_project"
     source_code = harness.read_text(encoding="utf-8", errors="replace")
     lines = source_code.splitlines()
     includes = [
@@ -200,6 +224,7 @@ def build_quartet_evidence(
         "oss_fuzz_project": build.get("oss_fuzz_project"),
         "fuzz_target": fuzz_target,
         "harness_path": harness.relative_to(source_root).as_posix(),
+        "harness_origin": harness_origin,
         "generated_harness": generated,
         "harness_sha256": hashlib.sha256(source_code.encode("utf-8")).hexdigest(),
         "line_count": len(lines),
@@ -232,6 +257,16 @@ def build_quartet_evidence(
         "the_existing_oss_fuzz_integration_and_live_probe_are_independent_runtime_evidence",
     ]
     return facts, ai_evidence
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineError(f"could not read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PipelineError(f"expected an object in {path}")
+    return value
 
 
 def validate_quartet_review(

@@ -17,6 +17,7 @@ MANUAL_STATUSES = {
     "running",
     "complete",
     "exhausted",
+    "unsupported_integration",
 }
 
 

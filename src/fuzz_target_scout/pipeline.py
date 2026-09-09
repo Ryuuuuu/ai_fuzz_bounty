@@ -17,6 +17,10 @@ class PipelineError(RuntimeError):
     pass
 
 
+class UnsupportedIntegrationError(PipelineError):
+    """The target is valid but has no safely reusable build integration."""
+
+
 @dataclass(slots=True)
 class PlanSummary:
     created: int

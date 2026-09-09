@@ -29,7 +29,12 @@ from .harness_generation import (
     source_context,
     validate_generated_harness,
 )
-from .pipeline import COMMIT_PATTERN, PipelineError, utc_now
+from .pipeline import (
+    COMMIT_PATTERN,
+    PipelineError,
+    UnsupportedIntegrationError,
+    utc_now,
+)
 from .policy import PolicyVerifier
 from .quartet_gate import (
     CodexQuartetReviewer,
@@ -273,9 +278,23 @@ class PipelineRunner:
         if fuzz_target not in build.get("fuzz_targets", []):
             raise PipelineError("generation plan selected an unknown fuzz target")
         source_root = job_dir / "source"
-        evidence_harness = find_harness_source(source_root, fuzz_target)
-        relative_harness = evidence_harness.relative_to(source_root)
-        build_harness = job_dir / "build-source" / relative_harness
+        harness_origin = "upstream"
+        try:
+            evidence_harness = find_harness_source(source_root, fuzz_target)
+            relative_harness = evidence_harness.relative_to(source_root)
+            build_harness = job_dir / "build-source" / relative_harness
+        except PipelineError:
+            integration_root = job_dir / "integration" / "oss-fuzz"
+            evidence_harness = find_harness_source(integration_root, fuzz_target)
+            relative_harness = evidence_harness.relative_to(integration_root)
+            integration = self._read_json(
+                job_dir / "artifacts" / "integration-manifest.json"
+            )
+            build_harness = (
+                Path(str(integration["oss_fuzz_project_directory"]))
+                / relative_harness
+            )
+            harness_origin = "oss_fuzz_project"
         if not build_harness.is_file():
             raise PipelineError("build worktree does not contain the selected harness")
         original_code = evidence_harness.read_text(encoding="utf-8", errors="replace")
@@ -373,7 +392,7 @@ class PipelineRunner:
         record = generation_record(
             candidate=candidate,
             fuzz_target=fuzz_target,
-            harness_path=relative_harness.as_posix(),
+            harness_path=f"{harness_origin}/{relative_harness.as_posix()}",
             validation=final_validation,
             attempts=attempts,
             oss_fuzz_gen_commit=actual_tool_commit,
@@ -469,7 +488,11 @@ class PipelineRunner:
         try:
             action(job_dir, job)
         except Exception as exc:
-            state["status"] = "failed"
+            state["status"] = (
+                "unsupported_integration"
+                if isinstance(exc, UnsupportedIntegrationError)
+                else "failed"
+            )
             state["last_error"] = str(exc)[:2000]
             state["updated_at"] = utc_now()
             self._write_json(state_path, state)
@@ -658,22 +681,56 @@ class PipelineRunner:
             oss_fuzz, repository_url
         )
         if route == "oss_fuzz_gen" and project_dir is None:
-            raise PipelineError(
-                "new OSS-Fuzz project generation is not implemented yet"
+            self._record_unsupported_integration(job_dir, job)
+            raise UnsupportedIntegrationError(
+                "repository has no pinned OSS-Fuzz project definition; safe automatic build integration is unavailable"
             )
         if project_dir is None:
-            raise PipelineError("repository has no matching OSS-Fuzz integration")
+            self._record_unsupported_integration(job_dir, job)
+            raise UnsupportedIntegrationError(
+                "repository has no matching pinned OSS-Fuzz project definition"
+            )
+
+        oss_fuzz_commit = self._capture(
+            ["git", "-C", str(oss_fuzz), "rev-parse", "HEAD"]
+        )
+        oss_fuzz_worktree = job_dir / "oss-fuzz-worktree"
+        if oss_fuzz_worktree.exists():
+            actual = self._capture(
+                ["git", "-C", str(oss_fuzz_worktree), "rev-parse", "HEAD"]
+            )
+            if actual.casefold() != oss_fuzz_commit.casefold():
+                raise PipelineError("existing OSS-Fuzz worktree is at the wrong commit")
+        else:
+            self._run(
+                [
+                    "git",
+                    "-C",
+                    str(oss_fuzz),
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(oss_fuzz_worktree),
+                    oss_fuzz_commit,
+                ],
+                job_dir / "logs" / "integration.log",
+            )
+        project_dir = oss_fuzz_worktree / "projects" / project_name
+        if not project_dir.is_dir():
+            raise PipelineError("job OSS-Fuzz worktree is missing the matched project")
 
         integration_dir = job_dir / "integration" / "oss-fuzz"
-        integration_dir.mkdir(parents=True, exist_ok=True)
+        if integration_dir.exists():
+            shutil.rmtree(integration_dir)
+        shutil.copytree(project_dir, integration_dir, symlinks=False)
         hashes: dict[str, str] = {}
         for name in ("Dockerfile", "build.sh", "project.yaml"):
-            source_path = project_dir / name
-            if not source_path.is_file():
+            if not (integration_dir / name).is_file():
                 raise PipelineError(f"OSS-Fuzz project is missing {name}")
-            destination = integration_dir / name
-            shutil.copy2(source_path, destination)
-            hashes[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
+        for path in sorted(integration_dir.rglob("*")):
+            if path.is_file():
+                relative = path.relative_to(integration_dir).as_posix()
+                hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
 
         source_checkout = job_dir / "source"
         build_source = job_dir / "build-source"
@@ -705,13 +762,39 @@ class PipelineRunner:
                 "created_at": utc_now(),
                 "route": route,
                 "oss_fuzz_project": project_name,
-                "oss_fuzz_commit": self._capture(
-                    ["git", "-C", str(oss_fuzz), "rev-parse", "HEAD"]
-                ),
+                "oss_fuzz_commit": oss_fuzz_commit,
+                "oss_fuzz_worktree": str(oss_fuzz_worktree),
+                "oss_fuzz_project_directory": str(project_dir),
                 "target_commit": commit,
                 "source_checkout": str(source_checkout),
                 "build_worktree": str(build_source),
                 "integration_file_sha256": hashes,
+            },
+        )
+        self._write_json(
+            job_dir / "artifacts" / "integration-support.json",
+            {
+                "schema_version": 1,
+                "checked_at": utc_now(),
+                "repository": (job.get("source") or {}).get("repository"),
+                "supported": True,
+                "strategy": "pinned_existing_oss_fuzz_project",
+                "oss_fuzz_project": project_name,
+            },
+        )
+
+    def _record_unsupported_integration(
+        self, job_dir: Path, job: dict[str, Any]
+    ) -> None:
+        self._write_json(
+            job_dir / "artifacts" / "integration-support.json",
+            {
+                "schema_version": 1,
+                "checked_at": utc_now(),
+                "repository": (job.get("source") or {}).get("repository"),
+                "supported": False,
+                "strategy": "manual_integration_required",
+                "reason": "no_project_definition_in_pinned_oss_fuzz",
             },
         )
 
@@ -722,7 +805,9 @@ class PipelineRunner:
         )
         project = str(manifest["oss_fuzz_project"])
         build_source = Path(manifest["build_worktree"])
-        oss_fuzz = self.tools_root / "oss-fuzz"
+        oss_fuzz = Path(
+            str(manifest.get("oss_fuzz_worktree") or self.tools_root / "oss-fuzz")
+        )
         helper = oss_fuzz / "infra" / "helper.py"
         log_path = job_dir / "logs" / "oss-fuzz-build.log"
         timeout = int(self.pipeline["setup_timeout_seconds"])
@@ -965,7 +1050,13 @@ class PipelineRunner:
         preferred = str(manifest.get("generated_fuzz_target") or "")
         selected = preferred if preferred in fuzzers else _select_smoke_target(fuzzers)
         project = str(manifest["oss_fuzz_project"])
-        helper = self.tools_root / "oss-fuzz" / "infra" / "helper.py"
+        integration = self._read_json(
+            job_dir / "artifacts" / "integration-manifest.json"
+        )
+        oss_fuzz = Path(
+            str(integration.get("oss_fuzz_worktree") or self.tools_root / "oss-fuzz")
+        )
+        helper = oss_fuzz / "infra" / "helper.py"
         self._run(
             [
                 "python3",

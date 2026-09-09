@@ -61,10 +61,10 @@ smoke_seconds = 300
 fuzz_seconds = 86400
 triage_timeout_seconds = 3600
 coverage_stall_seconds = 14400
-# 12코어/8GB WSL 기준. 메모리가 부족하면 4로 낮추세요.
-parallel_workers = 6
+# 0이면 현재 Ubuntu/WSL 자원에 맞춰 자동 계산합니다.
+parallel_workers = 0
 probe_seconds = 60
-container_memory_mb = 6144
+container_memory_mb = 0
 fuzzer_rss_limit_mb = 1024
 input_timeout_seconds = 10
 

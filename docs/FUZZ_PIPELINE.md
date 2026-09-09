@@ -37,8 +37,9 @@ queued
   → policy_recheck
   → source_checkout
   → integration
-  → quartet_gate
   → smoke
+  → probe
+  → quartet_gate
   → coverage_analysis
   → fuzzing_asan_24h
   → triage
@@ -126,9 +127,12 @@ fuzz-pipeline run --job-id <id>
 ```
 
 원본 checkout은 증거용으로 깨끗하게 유지하고 별도 Git worktree에서만 빌드한다.
-빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 새 OSS-Fuzz
-프로젝트를 만들어야 하는 경로와 여러 작업을 차례로 넘기는 스케줄러는 다음 구현
-단위다. `probe`는 격리 구성과 처리량을 60초 확인한다. `quartet`은 고정된
+OSS-Fuzz 저장소와 프로젝트 정의도 작업마다 별도 worktree로 고정한다. 따라서 서로
+다른 프로그램의 Dockerfile, 하네스 수정과 `build/out`이 겹치지 않는다.
+빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 현재 자동
+실행 경계는 고정된 OSS-Fuzz 버전에 프로젝트 정의가 존재하는 C/C++ 저장소다. 정의가
+없는 저장소는 임의의 빌드 스크립트를 실행하지 않고 지원되지 않는 통합으로 중단한다.
+`probe`는 격리 구성과 처리량을 60초 확인한다. `quartet`은 고정된
 QuartetFuzz 매뉴얼의 P1–P4 기준으로 하네스를 한 번 구조화 검토하고 기존 ASan 빌드,
 smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으면 P4 함수 도달은
 중간 신뢰도로 명시하며, 디버거로 확인했다고 기록하지 않는다. `analyze`는 공개 Introspector
@@ -157,16 +161,13 @@ worker 시작은 파일 잠금으로 직렬화하고, 전체 퍼징 직전 버�
 모두 있어야 넘길 수 있다. 후속 출력은 비무기화 PoC, 재현 순서, 트리거 조건,
 근거 기반 영향도, 중복 조사 기록과 사람 검토용 보고서 초안이다.
 
-현재 WSL 사용자가 Docker 소켓을 사용할 수 없으면 한 번만 다음을 실행하고 Windows
-터미널에서 WSL을 재시작한다.
+Ubuntu 사용자가 Docker 소켓을 사용할 수 없으면 한 번만 다음을 실행하고 로그아웃한
+뒤 다시 로그인한다.
 
 ```bash
 sudo usermod -aG docker "$USER"
 ```
 
-```powershell
-wsl --shutdown
-```
-
-다시 WSL을 연 뒤 `docker info`와 `fuzz-pipeline doctor`가 성공해야 한다. Docker
+WSL2에서는 Windows 터미널에서 `wsl --shutdown` 후 다시 열어도 된다. 다시 로그인한
+뒤 `docker info`와 `fuzz-pipeline doctor`가 성공해야 한다. Docker
 소켓 권한을 모든 사용자에게 여는 방식은 사용하지 않는다.

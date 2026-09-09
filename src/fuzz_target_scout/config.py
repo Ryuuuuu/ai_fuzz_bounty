@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import tomllib
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -66,13 +68,22 @@ DEFAULTS: dict[str, Any] = {
         "fuzz_seconds": 86400,
         "triage_timeout_seconds": 3600,
         "coverage_stall_seconds": 14400,
-        "parallel_workers": 6,
+        "parallel_workers": 0,
         "probe_seconds": 60,
-        "container_memory_mb": 6144,
+        "container_memory_mb": 0,
         "fuzzer_rss_limit_mb": 1024,
         "input_timeout_seconds": 10,
     },
     "daemon": {"interval_seconds": 21600},
+}
+
+
+_PACKAGED_INPUTS = {
+    ("policy", "catalog_path"): "catalog.json",
+    ("ai", "schema_path"): "schemas/candidate-assessment.schema.json",
+    ("pipeline", "toolchain_lock_path"): "toolchain.lock.json",
+    ("pipeline", "coverage_schema_path"): "schemas/coverage-review.schema.json",
+    ("pipeline", "quartet_schema_path"): "schemas/quartet-review.schema.json",
 }
 
 
@@ -93,8 +104,21 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         with config_path.open("rb") as handle:
             loaded = tomllib.load(handle)
     config = _merge(DEFAULTS, loaded)
+    if int(config["pipeline"]["parallel_workers"]) <= 0:
+        config["pipeline"]["parallel_workers"] = min(
+            6, max(1, (os.cpu_count() or 2) - 1)
+        )
+    if int(config["pipeline"]["container_memory_mb"]) <= 0:
+        available_mb = _available_memory_mb()
+        config["pipeline"]["container_memory_mb"] = max(
+            512, min(6144, int(available_mb * 0.65))
+        )
+        config["pipeline"]["fuzzer_rss_limit_mb"] = min(
+            int(config["pipeline"]["fuzzer_rss_limit_mb"]),
+            max(256, int(config["pipeline"]["container_memory_mb"]) - 384),
+        )
     base = config_path.parent
-    for section, key in (
+    path_settings = (
         ("policy", "catalog_path"),
         ("ai", "schema_path"),
         ("storage", "database_path"),
@@ -105,9 +129,31 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("pipeline", "toolchain_lock_path"),
         ("pipeline", "coverage_schema_path"),
         ("pipeline", "quartet_schema_path"),
-    ):
+    )
+    for section, key in path_settings:
         value = Path(config[section][key]).expanduser()
         if not value.is_absolute():
             value = base / value
+        packaged_name = _PACKAGED_INPUTS.get((section, key))
+        explicitly_configured = key in (loaded.get(section) or {})
+        if packaged_name and not explicitly_configured and not value.exists():
+            value = Path(
+                str(files("fuzz_target_scout").joinpath("resources", packaged_name))
+            )
         config[section][key] = str(value.resolve())
     return config, config_path
+
+
+def _available_memory_mb() -> int:
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("MemAvailable:"):
+                return max(512, int(line.split()[1]) // 1024)
+    try:
+        return max(
+            512,
+            int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024**2),
+        )
+    except (AttributeError, OSError, ValueError):
+        return 4096

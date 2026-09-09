@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -11,12 +13,116 @@ from fuzz_target_scout.coverage_analysis import (
     deterministic_review,
     validate_review,
 )
-from fuzz_target_scout.pipeline import PipelineError
+from fuzz_target_scout.pipeline import PipelineError, UnsupportedIntegrationError
 from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
 from fuzz_target_scout.quartet_gate import find_harness_source, validate_quartet_review
 
 
 class PipelineRunnerTests(unittest.TestCase):
+    def test_unsupported_integration_is_recorded_as_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            (job_dir / "artifacts").mkdir(parents=True)
+            (job_dir / "job.json").write_text("{}")
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "integration", "attempts": {}})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            with self.assertRaises(UnsupportedIntegrationError):
+                runner._single_stage(
+                    job_id,
+                    expected="integration",
+                    next_stage="build",
+                    next_status="integrated",
+                    action=lambda *_: (_ for _ in ()).throw(
+                        UnsupportedIntegrationError("no pinned definition")
+                    ),
+                )
+            state = json.loads((job_dir / "state.json").read_text())
+            self.assertEqual(state["status"], "unsupported_integration")
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_integration_uses_job_specific_oss_fuzz_worktree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / "tools"
+            oss_fuzz = tools / "oss-fuzz"
+            project = oss_fuzz / "projects" / "sample"
+            project.mkdir(parents=True)
+            (oss_fuzz / "infra").mkdir()
+            (oss_fuzz / "infra" / "helper.py").write_text("# helper\n")
+            (project / "project.yaml").write_text(
+                "main_repo: https://github.com/org/parser\n", encoding="utf-8"
+            )
+            (project / "Dockerfile").write_text("FROM scratch\n")
+            (project / "build.sh").write_text("#!/bin/sh\n")
+            (project / "fuzz_parser.cc").write_text(
+                "int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long);\n"
+            )
+            self._git_commit(oss_fuzz)
+
+            job_dir = root / "job"
+            source = job_dir / "source"
+            source.mkdir(parents=True)
+            (source / "parser.cc").write_text("int parse();\n")
+            self._git_commit(source)
+            commit = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            for name in ("artifacts", "logs", "integration"):
+                (job_dir / name).mkdir(exist_ok=True)
+
+            runner = object.__new__(PipelineRunner)
+            runner.tools_root = tools
+            runner.pipeline = {"setup_timeout_seconds": 60}
+            runner._prepare_integration(
+                job_dir,
+                {
+                    "route": {"name": "oss_fuzz_existing"},
+                    "source": {
+                        "repository_url": "https://github.com/org/parser.git",
+                        "commit": commit,
+                    },
+                },
+            )
+
+            manifest = json.loads(
+                (job_dir / "artifacts" / "integration-manifest.json").read_text()
+            )
+            self.assertEqual(manifest["oss_fuzz_project"], "sample")
+            self.assertTrue(Path(manifest["oss_fuzz_worktree"]).is_dir())
+            self.assertNotEqual(Path(manifest["oss_fuzz_worktree"]), oss_fuzz)
+            self.assertIn("fuzz_parser.cc", manifest["integration_file_sha256"])
+            self.assertTrue(
+                (job_dir / "integration" / "oss-fuzz" / "fuzz_parser.cc").is_file()
+            )
+
+    @staticmethod
+    def _git_commit(repository: Path) -> None:
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "config",
+                "user.email",
+                "test@example.invalid",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-qm", "fixture"], check=True
+        )
+
     def test_prepare_advances_resumably_to_integration(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

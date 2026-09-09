@@ -1,8 +1,9 @@
 # Fuzz Target Scout
 
 Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상 정책이 확인된
-후보만 다음 파이프라인으로 내보내는 탐색기입니다. 실제 퍼저나 취약점 검증기는
-포함하지 않습니다.
+후보만 격리된 AI 퍼징 파이프라인으로 넘기는 범용 시스템입니다. 특정 제품에
+종속되지 않으며, 현재 실행 경로는 기존 OSS-Fuzz 통합이 있는 C/C++ 프로젝트를
+안정적으로 처리합니다.
 
 ## 판정 흐름
 
@@ -20,13 +21,17 @@ AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECUR
 문구와 catalog.json에 기록된 공식 정책 근거만 사용합니다. 카탈로그 항목은
 기본 45일 후 자동으로 needs_review 상태가 됩니다.
 
-## WSL 설치
+## Ubuntu 및 WSL2 설치
 
-    cd /home/ryuuu/ai_fuzz_bounty
-    python3 -m venv .venv
+    git clone https://github.com/Ryuuuuu/ai_fuzz_bounty.git
+    cd ai_fuzz_bounty
+    ./scripts/bootstrap_ubuntu.sh
     source .venv/bin/activate
-    python -m pip install -e .
-    cp config.example.toml config.toml
+
+지원 기준은 Ubuntu 24.04 이상 또는 Python 3.11 이상이 설치된 Ubuntu/WSL2,
+Git, Docker Engine, 로그인된 Codex CLI입니다. 설치 경로나 사용자 이름은
+가정하지 않습니다. `parallel_workers`와 컨테이너 메모리를 0으로 두면 현재
+머신의 CPU와 사용 가능한 메모리에서 자동 계산합니다.
 
 GitHub의 비인증 API 제한은 반복 탐색에 부족하므로 읽기 전용 토큰을 환경변수로
 설정하는 것을 권장합니다. 토큰을 설정 파일이나 저장소에 기록하지 마세요.
@@ -36,7 +41,7 @@ GitHub의 비인증 API 제한은 반복 탐색에 부족하므로 읽기 전용
     fts doctor
     fts ai-check
 
-AI 재평가는 WSL에 설치되고 로그인된 Codex CLI를 비대화식으로 호출합니다.
+AI 재평가는 Linux 환경에 설치되고 로그인된 Codex CLI를 비대화식으로 호출합니다.
 별도 OPENAI_API_KEY는 필요하지 않습니다. 기본 모델은
 gpt-daybreak-blue-latest, reasoning effort는 high입니다. Daybreak 프로그램
 접근 권한이 계정에 별도로 준비되어 있어야 합니다.
@@ -59,7 +64,7 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
 
     fts daemon --limit 40 --interval-seconds 21600
 
-실제 운영에서는 WSL의 systemd timer나 별도 작업 관리자가 fts scan을
+실제 운영에서는 systemd timer나 별도 작업 관리자가 fts scan을
 주기적으로 실행하는 구성이 더 관리하기 쉽습니다. daemon은 간단한 장시간
 실행용입니다.
 
@@ -94,7 +99,7 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
 사용한다.
 
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
-그룹에 추가한 뒤 WSL을 재시작해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
+그룹에 추가한 뒤 다시 로그인해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
 
 작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. OSS-Fuzz와
 OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게이트로

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -71,6 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     config, _ = load_config(args.config)
+    if args.command not in {"doctor", "list", "plan"} and platform.system() != "Linux":
+        raise SystemExit("fuzz execution requires Linux (Ubuntu or WSL2)")
     try:
         if args.command == "plan":
             _plan(config, args)
@@ -212,6 +215,8 @@ def _run(config: dict, args: argparse.Namespace) -> None:
 def _doctor(config: dict) -> None:
     pipeline = config["pipeline"]
     checks = [
+        ("operating system", f"{platform.system()} {platform.release()}"),
+        ("python", platform.python_version()),
         ("git", shutil.which("git") or "missing"),
         ("docker cli", shutil.which("docker") or "missing"),
         ("codex cli", shutil.which("codex") or "missing"),
@@ -222,6 +227,8 @@ def _doctor(config: dict) -> None:
         ("runs root", str(Path(pipeline["runs_path"]))),
         ("tools root", str(Path(pipeline["tools_path"]))),
         ("AI model", f"{pipeline['ai_model']} ({pipeline['ai_reasoning_effort']})"),
+        ("fuzz workers", str(pipeline["parallel_workers"])),
+        ("container memory", f"{pipeline['container_memory_mb']} MB"),
     ]
     daemon = _docker_server_status()
     checks.insert(2, ("docker daemon", daemon))
