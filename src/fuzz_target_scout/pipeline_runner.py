@@ -10,6 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from .coverage_analysis import (
     CodexCoverageReviewer,
@@ -163,7 +164,10 @@ class PipelineRunner:
             )
         artifact_path = job_dir / "artifacts" / "quartet-review.json"
         if artifact_path.is_file():
-            return self._read_json(artifact_path)
+            record = self._read_json(artifact_path)
+            return self._apply_quartet_state(
+                job_dir, state_path, state, record, count_attempt=False
+            )
         probe_path = job_dir / "artifacts" / "probe-run.json"
         if not probe_path.is_file():
             raise PipelineError("run a probe before the Quartet gate")
@@ -175,8 +179,28 @@ class PipelineRunner:
             job_dir, job, build, smoke, probe, quartet_root
         )
         review, usage = CodexQuartetReviewer(self.pipeline).review(ai_evidence)
-        record = quartet_record(facts, review, usage)
+        try:
+            record = quartet_record(facts, review, usage)
+        except PipelineError:
+            self._write_json(
+                job_dir / "artifacts" / "quartet-review-rejected.json",
+                {"facts": facts, "raw_review": review, "ai_usage": usage},
+            )
+            raise
         self._write_json(artifact_path, record)
+        return self._apply_quartet_state(
+            job_dir, state_path, state, record, count_attempt=True
+        )
+
+    def _apply_quartet_state(
+        self,
+        job_dir: Path,
+        state_path: Path,
+        state: dict[str, Any],
+        record: dict[str, Any],
+        *,
+        count_attempt: bool,
+    ) -> dict[str, Any]:
         ready = bool(record["review"]["execution_ready"])
         if ready and (job_dir / "artifacts" / "coverage-plan.json").is_file():
             state["stage"] = "fuzzing"
@@ -189,9 +213,10 @@ class PipelineRunner:
             state["status"] = "quartet_review_required"
         state["last_error"] = None
         state["updated_at"] = utc_now()
-        state.setdefault("attempts", {})["quartet_gate"] = (
-            int(state.setdefault("attempts", {}).get("quartet_gate", 0)) + 1
-        )
+        if count_attempt:
+            state.setdefault("attempts", {})["quartet_gate"] = (
+                int(state.setdefault("attempts", {}).get("quartet_gate", 0)) + 1
+            )
         self._write_json(state_path, state)
         record["state"] = state
         return record
@@ -833,6 +858,9 @@ class PipelineRunner:
                 ],
                 job_dir / "logs" / "integration.log",
             )
+        self._sync_submodules(
+            build_source, job_dir / "logs" / "integration.log"
+        )
         self._write_json(
             job_dir / "artifacts" / "integration-manifest.json",
             {
@@ -861,6 +889,44 @@ class PipelineRunner:
             },
         )
 
+    def _sync_submodules(self, checkout: Path, log_path: Path) -> None:
+        gitmodules = checkout / ".gitmodules"
+        if not gitmodules.is_file():
+            return
+        self._validate_submodule_urls(gitmodules)
+        self._run(
+            [
+                "git", "-c", "protocol.file.allow=never", "-C", str(checkout),
+                "submodule", "sync",
+            ],
+            log_path,
+        )
+        self._run(
+            [
+                "git", "-c", "protocol.file.allow=never", "-C", str(checkout),
+                "submodule", "update", "--init", "--depth", "1",
+            ],
+            log_path,
+            timeout=int(self.pipeline["setup_timeout_seconds"]),
+        )
+
+    @staticmethod
+    def _validate_submodule_urls(gitmodules: Path) -> None:
+        urls = re.findall(
+            r"(?m)^\s*url\s*=\s*(\S.*?)\s*$",
+            gitmodules.read_text(encoding="utf-8", errors="replace"),
+        )
+        for url in urls:
+            if url.startswith(("../", "./")) and ":" not in url:
+                continue
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme.casefold() != "https"
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+            ):
+                raise PipelineError(f"unsafe submodule URL in .gitmodules: {url}")
     def _record_unsupported_integration(
         self, job_dir: Path, job: dict[str, Any]
     ) -> None:
@@ -889,6 +955,7 @@ class PipelineRunner:
         helper = oss_fuzz / "infra" / "helper.py"
         log_path = job_dir / "logs" / "oss-fuzz-build.log"
         timeout = int(self.pipeline["setup_timeout_seconds"])
+        self._sync_submodules(build_source, log_path)
         self._run_streaming(
             [
                 "python3",
@@ -1307,6 +1374,7 @@ def _subprocess_environment() -> dict[str, str]:
     for name in ("GITHUB_TOKEN", "GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"):
         environment.pop(name, None)
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_ALLOW_PROTOCOL"] = "https"
     return environment
 
 

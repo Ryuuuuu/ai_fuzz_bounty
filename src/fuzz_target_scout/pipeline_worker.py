@@ -85,7 +85,9 @@ class PipelineWorker:
                 stage = str(state.get("stage") or "")
                 status = str(state.get("status") or "")
                 self.progress(f"worker {job_id}: status={status} stage={stage}")
-                if stage in STAGE_ORDER:
+                if status in MANUAL_STATUSES:
+                    return WorkerResult(job_id, status, stage, "needs_attention")
+                if stage in STAGE_ORDER[:-1]:
                     action = "prepare"
                     self.runner.prepare(job_id)
                 elif stage == "integration":

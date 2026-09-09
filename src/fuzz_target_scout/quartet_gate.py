@@ -296,8 +296,10 @@ def validate_quartet_review(
     if has_fail and overall != "fail":
         raise PipelineError("Quartet principle failure must produce an overall failure")
     target_symbols = [str(value)[:300] for value in review.get("target_symbols") or []]
-    known_symbols = set(str(value) for value in facts.get("called_symbols") or [])
-    if not set(target_symbols).issubset(known_symbols):
+    known_symbols = {
+        _symbol_basename(str(value)) for value in facts.get("called_symbols") or []
+    }
+    if not {_symbol_basename(value) for value in target_symbols}.issubset(known_symbols):
         raise PipelineError("Quartet review referenced a symbol absent from the harness")
     dynamic = facts["dynamic_evidence"]
     deterministic_ok = (
@@ -320,6 +322,12 @@ def validate_quartet_review(
         "reach_confidence": "medium",
         "reach_limitation": "target symbol was not observed with a debugger",
     }
+
+
+def _symbol_basename(value: str) -> str:
+    name = re.sub(r"\([^)]*\)\s*$", "", value.strip())
+    name = re.sub(r"<.*>$", "", name)
+    return re.split(r"::|->|\.", name)[-1]
 
 
 def quartet_record(

@@ -179,6 +179,19 @@ class PipelineRunnerTests(unittest.TestCase):
             with self.assertRaises(PipelineError):
                 runner._job_dir("../outside")
 
+    def test_submodule_urls_reject_local_and_ssh_transports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".gitmodules"
+            path.write_text(
+                '[submodule "safe"]\n\turl = https://github.com/org/safe.git\n'
+                '[submodule "relative"]\n\turl = ../relative.git\n'
+            )
+            PipelineRunner._validate_submodule_urls(path)
+            for unsafe in ("file:///tmp/repo", "git@github.com:org/repo.git"):
+                path.write_text(f'[submodule "bad"]\n\turl = {unsafe}\n')
+                with self.assertRaises(PipelineError):
+                    PipelineRunner._validate_submodule_urls(path)
+
     def test_finds_exact_oss_fuzz_project_and_prefers_parser_smoke_target(self):
         with tempfile.TemporaryDirectory() as directory:
             oss_fuzz = Path(directory)
@@ -600,6 +613,53 @@ class PipelineRunnerTests(unittest.TestCase):
         )
         self.assertTrue(review["execution_ready"])
         self.assertEqual(review["reach_confidence"], "medium")
+
+    def test_quartet_accepts_qualified_name_for_known_called_symbol(self):
+        principle = {"verdict": "pass", "rationale": "seen", "evidence_lines": [1]}
+        facts = {
+            "line_count": 5,
+            "entrypoint_count": 1,
+            "data_reference_count": 2,
+            "size_reference_count": 2,
+            "unaligned_read_lines": [],
+            "called_symbols": ["SetParam"],
+            "dynamic_evidence": {
+                "asan_build": True,
+                "smoke_status": "passed",
+                "probe_corpus_files": 1,
+            },
+        }
+        review = validate_quartet_review(
+            {
+                "principles": {name: principle for name in ("p1", "p2", "p3", "p4")},
+                "overall_verdict": "pass",
+                "target_symbols": ["MsQuicApi::SetParam"],
+                "summary": "qualified C++ name",
+            },
+            facts,
+        )
+        self.assertTrue(review["execution_ready"])
+
+    def test_cached_quartet_result_repairs_interrupted_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text("{}")
+            (job_dir / "state.json").write_text(
+                json.dumps(
+                    {"stage": "quartet_gate", "status": "worker_failed", "attempts": {}}
+                )
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": False}})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            result = runner.quartet(job_id)
+            self.assertEqual(result["state"]["status"], "quartet_review_required")
 
 
 if __name__ == "__main__":

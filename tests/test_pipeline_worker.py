@@ -3,10 +3,53 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.pipeline_worker import PipelineWorker
 
 
 class PipelineWorkerTests(unittest.TestCase):
+    def test_advance_stops_immediately_for_manual_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs,
+                "review-job",
+                created="2026-01-01T00:00:00Z",
+                stage="quartet_gate",
+                status="quartet_review_required",
+            )
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_generation_cycles": 2}
+            worker.progress = lambda _message: None
+            result = worker._advance("review-job", setup_only=True)
+            self.assertEqual(result.action, "needs_attention")
+
+    def test_integration_stage_dispatches_to_integrate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs,
+                "integration-job",
+                created="2026-01-01T00:00:00Z",
+                stage="integration",
+                status="prepared",
+            )
+
+            class StubRunner:
+                @staticmethod
+                def integrate(_job_id):
+                    raise PipelineError("integrate was called")
+
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_generation_cycles": 2}
+            worker.progress = lambda _message: None
+            worker.runner = StubRunner()
+            result = worker._advance("integration-job", setup_only=True)
+            self.assertEqual(result.action, "integrate")
+            self.assertIn("integrate was called", result.error)
+
     def _job(
         self,
         root: Path,
