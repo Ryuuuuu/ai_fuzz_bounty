@@ -11,5 +11,6 @@ config.toml
 .tools/
 data/runs/
 data/job-archive/
+data/central-agent/
 !.codex/
 !.codex/config.toml

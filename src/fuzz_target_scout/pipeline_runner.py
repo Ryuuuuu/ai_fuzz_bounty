@@ -173,6 +173,13 @@ class PipelineRunner:
             self.progress(f"{job_id}: {stage} -> {next_stage}")
         return state
 
+    def recheck_policy(self, job_id: str) -> dict[str, Any]:
+        """Revalidate the recorded paid-bounty scope before an extra execution."""
+        job_dir = self._job_dir(job_id)
+        job = self._read_json(job_dir / "job.json")
+        self._recheck_policy(job_dir, job)
+        return self._read_json(job_dir / "artifacts" / "authorization-recheck.json")
+
     def integrate(self, job_id: str) -> dict[str, Any]:
         return self._single_stage(
             job_id,

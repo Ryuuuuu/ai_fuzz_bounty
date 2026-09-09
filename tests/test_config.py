@@ -52,6 +52,10 @@ class ConfigTests(unittest.TestCase):
             ("pipeline", "coverage_schema_path"),
             ("pipeline", "quartet_schema_path"),
             ("pipeline", "triage_schema_path"),
+            ("pipeline", "validation_schema_path"),
+            ("agent", "capacity_schema_path"),
+            ("agent", "health_schema_path"),
+            ("agent", "cycle_schema_path"),
         ):
             path = Path(config[section][key])
             self.assertTrue(path.is_file(), path)

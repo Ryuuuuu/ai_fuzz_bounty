@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import time
 from pathlib import Path
 
 from .config import load_config
+from .central_agent import CentralAgent
 from .pipeline import (
     PipelineError,
     list_jobs,
@@ -91,6 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     worker.add_argument("--max-jobs", type=int, default=0)
     worker.add_argument("--setup-only", action="store_true")
+    agent = commands.add_parser(
+        "agent", help="Run the AI-supervised fuzz campaign coordinator"
+    )
+    agent.add_argument("--max-batches", type=int, default=0)
+    agent.add_argument("--once", action="store_true")
+    agent.add_argument("--exit-when-idle", action="store_true")
+    agent.add_argument("--no-discovery", action="store_true")
+    agent.add_argument("--test-telegram", action="store_true")
     dashboard = commands.add_parser(
         "dashboard", help="Show jobs, throughput, findings and remaining budgets"
     )
@@ -152,6 +162,8 @@ def main(argv: list[str] | None = None) -> None:
             _validate(config, args)
         elif args.command == "worker":
             _worker(config, args)
+        elif args.command == "agent":
+            _agent(config, args)
         elif args.command == "dashboard":
             _dashboard(config, args)
         elif args.command == "housekeep":
@@ -394,6 +406,17 @@ def _doctor(config: dict) -> None:
         ("memory per job", f"{resources.container_memory_mb} MB"),
         ("fuzzer RSS limit", f"{resources.fuzzer_rss_limit_mb} MB"),
         ("resource sources", ", ".join(resources.detected.sources)),
+        (
+            "central monitor",
+            f"every {int(config['agent']['monitor_interval_seconds'])} seconds",
+        ),
+        (
+            "telegram alerts",
+            "configured"
+            if os.environ.get(str(config["agent"]["telegram_token_env"]))
+            and os.environ.get(str(config["agent"]["telegram_chat_id_env"]))
+            else "missing environment variables",
+        ),
     ]
     daemon = _docker_server_status()
     checks.insert(2, ("docker daemon", daemon))
@@ -412,6 +435,32 @@ def _worker(config: dict, args: argparse.Namespace) -> None:
             f"worker result: job_id={result.job_id} action={result.action} "
             f"status={result.status} stage={result.stage} error={result.error}"
         )
+
+
+def _agent(config: dict, args: argparse.Namespace) -> None:
+    agent = CentralAgent(config, progress=lambda message: print(message, flush=True))
+    if args.test_telegram:
+        delivered, detail = agent.test_telegram()
+        print(f"telegram test: delivered={str(delivered).lower()} detail={detail}")
+        if not delivered:
+            raise PipelineError(f"telegram test failed: {detail}")
+        return
+    try:
+        result = agent.run(
+            max_batches=args.max_batches,
+            once=args.once,
+            exit_when_idle=args.exit_when_idle,
+            discovery=not args.no_discovery,
+        )
+    except KeyboardInterrupt:
+        agent.stop()
+        print("central agent stopped", flush=True)
+        return
+    print(
+        f"central agent complete: status={result.get('status')} "
+        f"batches={result.get('completed_batches', 0)} "
+        f"state={result.get('state_path')}"
+    )
 
 
 def _dashboard(config: dict, args: argparse.Namespace) -> None:

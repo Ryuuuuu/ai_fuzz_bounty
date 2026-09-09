@@ -103,5 +103,32 @@ generic_integration_ai_timeout_seconds = 300
 vistafuzz_enabled = false
 vistafuzz_seconds = 3600
 
+[agent]
+# 30분마다 구조화된 진행 로그와 AI 상태 판정을 남깁니다.
+monitor_interval_seconds = 1800
+stale_after_seconds = 5400
+ai_timeout_seconds = 180
+ai_failure_alert_threshold = 2
+persistent_health_session = true
+health_session_rotation_checks = 24
+state_path = "data/central-agent/state.json"
+log_path = "data/central-agent/progress.jsonl"
+notification_log_path = "data/central-agent/notifications.jsonl"
+decisions_path = "data/central-agent/decisions"
+session_state_path = "data/central-agent/codex-sessions.json"
+capacity_schema_path = "schemas/central-capacity.schema.json"
+health_schema_path = "schemas/central-health.schema.json"
+cycle_schema_path = "schemas/central-cycle.schema.json"
+# 실제 비밀값이 아니라 읽을 환경변수 이름만 설정합니다.
+telegram_token_env = "FUZZ_TELEGRAM_BOT_TOKEN"
+telegram_chat_id_env = "FUZZ_TELEGRAM_CHAT_ID"
+telegram_timeout_seconds = 15
+auto_discover = true
+discovery_interval_seconds = 21600
+discovery_limit = 0
+auto_improve = true
+max_improvement_cycles_per_job = 1
+improvement_probe_seconds = 600
+
 [daemon]
 interval_seconds = 21600

@@ -103,6 +103,20 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
 
     fuzz-pipeline worker --max-jobs 0
 
+중앙 AI 에이전트가 대상 탐색, 안전 범위 내 병렬도 선택, 30분 상태 검토,
+Telegram 알림과 대상 전환 전 개선 검토까지 관리하게 하려면:
+
+    export FUZZ_TELEGRAM_BOT_TOKEN='...'
+    export FUZZ_TELEGRAM_CHAT_ID='...'
+    fuzz-pipeline agent --test-telegram
+    fuzz-pipeline agent
+
+Telegram 값은 환경변수로만 읽으며 Codex 하위 프로세스에는 전달하지 않는다. 중앙
+에이전트는 각 24시간 병렬 묶음이 끝날 때 다음 대상을 시작하기 전에 결과를 검토한다.
+확인된 coverage gap과 남은 생성 횟수가 있으면 기존 OSS-Fuzz-Gen 경로로 후속 하네스를
+만들고 기본 10분 probe, Quartet 및 coverage 게이트까지 다시 수행한다. 진행 로그는
+`data/central-agent/progress.jsonl`, AI 결정은 `data/central-agent/decisions/`에 남는다.
+
 현재 진행률, corpus, crash와 정체 상태 확인:
 
     fuzz-pipeline status --job-id <job-id>
@@ -140,7 +154,8 @@ OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게
 [`docs/FUZZ_PIPELINE.md`](docs/FUZZ_PIPELINE.md)에 정리되어 있습니다.
 
 설치 절차는 [`docs/INSTALL.md`](docs/INSTALL.md), 운영·복구는
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md), 버전 업데이트는
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md), 중앙 에이전트 운영은
+[`docs/CENTRAL_AGENT.md`](docs/CENTRAL_AGENT.md), 버전 업데이트는
 [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md)를 따릅니다.
 
 OSS-Fuzz-Gen의 `--ai-binary`에는 로컬 Codex 어댑터를 지정합니다.

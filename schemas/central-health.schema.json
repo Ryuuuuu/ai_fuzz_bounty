@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "severity": {"type": "string", "enum": ["healthy", "warning", "critical"]},
+    "notify": {"type": "boolean"},
+    "summary": {"type": "string", "maxLength": 1600},
+    "problems": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "properties": {
+          "job_id": {"type": "string"},
+          "reason": {"type": "string", "maxLength": 800},
+          "recommended_action": {"type": "string", "maxLength": 800}
+        },
+        "required": ["job_id", "reason", "recommended_action"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["severity", "notify", "summary", "problems"],
+  "additionalProperties": false
+}

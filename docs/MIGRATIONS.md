@@ -1,6 +1,7 @@
 # 업데이트와 상태 마이그레이션
 
-새 버전을 설치하기 전에 worker를 종료하고 현재 저장소와 `data/runs`를 백업한다.
+새 버전을 설치하기 전에 중앙 agent 또는 worker를 종료하고 현재 저장소와 `data/runs`를
+백업한다.
 
 ```bash
 git pull --ff-only

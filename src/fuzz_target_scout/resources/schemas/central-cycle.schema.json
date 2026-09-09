@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string", "maxLength": 2000},
+    "campaign_action": {"type": "string", "enum": ["continue", "pause"]},
+    "resource_profile": {"type": "string", "enum": ["balanced", "conservative", "throughput"]},
+    "jobs": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "job_id": {"type": "string"},
+          "outcome": {"type": "string", "enum": ["productive", "limited", "failed", "finding"]},
+          "improvement": {"type": "string", "enum": ["keep", "generate_followup_harness", "manual_review"]},
+          "rationale": {"type": "string", "maxLength": 1200},
+          "problems": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 600}},
+          "recommended_changes": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 600}}
+        },
+        "required": ["job_id", "outcome", "improvement", "rationale", "problems", "recommended_changes"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["summary", "campaign_action", "resource_profile", "jobs"],
+  "additionalProperties": false
+}

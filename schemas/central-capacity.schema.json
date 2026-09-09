@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "parallel_jobs": {"type": "integer", "minimum": 1},
+    "workers_per_job": {"type": "integer", "minimum": 1},
+    "rationale": {"type": "string", "maxLength": 1200}
+  },
+  "required": ["parallel_jobs", "workers_per_job", "rationale"],
+  "additionalProperties": false
+}

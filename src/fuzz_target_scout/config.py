@@ -104,6 +104,31 @@ DEFAULTS: dict[str, Any] = {
         "vistafuzz_enabled": False,
         "vistafuzz_seconds": 3600,
     },
+    "agent": {
+        "monitor_interval_seconds": 1800,
+        "stale_after_seconds": 5400,
+        "ai_timeout_seconds": 180,
+        "ai_failure_alert_threshold": 2,
+        "persistent_health_session": True,
+        "health_session_rotation_checks": 24,
+        "state_path": "data/central-agent/state.json",
+        "log_path": "data/central-agent/progress.jsonl",
+        "notification_log_path": "data/central-agent/notifications.jsonl",
+        "decisions_path": "data/central-agent/decisions",
+        "session_state_path": "data/central-agent/codex-sessions.json",
+        "capacity_schema_path": "schemas/central-capacity.schema.json",
+        "health_schema_path": "schemas/central-health.schema.json",
+        "cycle_schema_path": "schemas/central-cycle.schema.json",
+        "telegram_token_env": "FUZZ_TELEGRAM_BOT_TOKEN",
+        "telegram_chat_id_env": "FUZZ_TELEGRAM_CHAT_ID",
+        "telegram_timeout_seconds": 15,
+        "auto_discover": True,
+        "discovery_interval_seconds": 21600,
+        "discovery_limit": 0,
+        "auto_improve": True,
+        "max_improvement_cycles_per_job": 1,
+        "improvement_probe_seconds": 600,
+    },
     "daemon": {"interval_seconds": 21600},
 }
 
@@ -117,6 +142,9 @@ _PACKAGED_INPUTS = {
     ("pipeline", "quartet_schema_path"): "schemas/quartet-review.schema.json",
     ("pipeline", "triage_schema_path"): "schemas/triage-report.schema.json",
     ("pipeline", "validation_schema_path"): "schemas/validation-agent.schema.json",
+    ("agent", "capacity_schema_path"): "schemas/central-capacity.schema.json",
+    ("agent", "health_schema_path"): "schemas/central-health.schema.json",
+    ("agent", "cycle_schema_path"): "schemas/central-cycle.schema.json",
 }
 
 
@@ -152,6 +180,14 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("pipeline", "quartet_schema_path"),
         ("pipeline", "triage_schema_path"),
         ("pipeline", "validation_schema_path"),
+        ("agent", "state_path"),
+        ("agent", "log_path"),
+        ("agent", "notification_log_path"),
+        ("agent", "decisions_path"),
+        ("agent", "session_state_path"),
+        ("agent", "capacity_schema_path"),
+        ("agent", "health_schema_path"),
+        ("agent", "cycle_schema_path"),
     )
     for section, key in path_settings:
         value = Path(config[section][key]).expanduser()
