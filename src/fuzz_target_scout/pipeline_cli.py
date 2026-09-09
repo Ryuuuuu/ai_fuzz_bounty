@@ -173,6 +173,15 @@ def _status(config: dict, args: argparse.Namespace) -> None:
     )
     print(f"coverage stalled   {str(value['coverage_stalled']).lower()}")
     print(f"corpus / crashes   {value['corpus_files']} / {value['crash_files']}")
+    if value["preflight_target"]:
+        print(
+            f"preflight         {value['preflight_target']} / "
+            f"{value['preflight_status']} / findings={value['preflight_findings']}"
+        )
+    if value["quartet_verdict"]:
+        print(f"Quartet verdict   {value['quartet_verdict']}")
+    if value["attempted_fuzz_targets"]:
+        print(f"rejected targets  {', '.join(value['attempted_fuzz_targets'])}")
     print(f"validated groups   {value['validated_groups']}")
     if value["last_error"]:
         print(f"last error         {value['last_error']}")
@@ -229,11 +238,15 @@ def _quartet(config: dict, args: argparse.Namespace) -> None:
     runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
     result = runner.quartet(args.job_id)
     review = result["review"]
-    print(
+    message = (
         f"quartet complete: verdict={review['overall_verdict']} "
         f"execution_ready={review['execution_ready']} "
         f"reach_confidence={review['reach_confidence']}"
     )
+    state = result.get("state") or {}
+    if state.get("status") == "target_retry_pending":
+        message += f" next_target={state.get('preferred_fuzz_target')}"
+    print(message)
 
 
 def _generate(config: dict, args: argparse.Namespace) -> None:

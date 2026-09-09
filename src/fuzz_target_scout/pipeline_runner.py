@@ -178,12 +178,31 @@ class PipelineRunner:
         facts, ai_evidence = build_quartet_evidence(
             job_dir, job, build, smoke, probe, quartet_root
         )
+        rejected_path = job_dir / "artifacts" / "quartet-review-rejected.json"
+        if rejected_path.is_file():
+            rejected = self._read_json(rejected_path)
+            rejected_facts = rejected.get("facts") or {}
+            if (
+                rejected_facts.get("fuzz_target") == facts.get("fuzz_target")
+                and rejected_facts.get("harness_sha256") == facts.get("harness_sha256")
+                and rejected_facts.get("dynamic_evidence") == facts.get("dynamic_evidence")
+            ):
+                record = quartet_record(
+                    facts,
+                    rejected.get("raw_review") or {},
+                    rejected.get("ai_usage") or {},
+                )
+                record["validation_recovery"] = "discarded_out_of_range_line_citations"
+                self._write_json(artifact_path, record)
+                return self._apply_quartet_state(
+                    job_dir, state_path, state, record, count_attempt=True
+                )
         review, usage = CodexQuartetReviewer(self.pipeline).review(ai_evidence)
         try:
             record = quartet_record(facts, review, usage)
         except PipelineError:
             self._write_json(
-                job_dir / "artifacts" / "quartet-review-rejected.json",
+                rejected_path,
                 {"facts": facts, "raw_review": review, "ai_usage": usage},
             )
             raise
@@ -202,12 +221,19 @@ class PipelineRunner:
         count_attempt: bool,
     ) -> dict[str, Any]:
         ready = bool(record["review"]["execution_ready"])
+        next_target = ""
+        if not ready:
+            next_target = self._retry_alternate_fuzz_target(job_dir, state, record)
         if ready and (job_dir / "artifacts" / "coverage-plan.json").is_file():
             state["stage"] = "fuzzing"
             state["status"] = "ready"
         elif ready:
             state["stage"] = "coverage_analysis"
             state["status"] = "analysis_pending"
+        elif next_target:
+            state["stage"] = "smoke"
+            state["status"] = "target_retry_pending"
+            state["preferred_fuzz_target"] = next_target
         else:
             state["stage"] = "quartet_gate"
             state["status"] = "quartet_review_required"
@@ -220,6 +246,97 @@ class PipelineRunner:
         self._write_json(state_path, state)
         record["state"] = state
         return record
+
+    def _retry_alternate_fuzz_target(
+        self,
+        job_dir: Path,
+        state: dict[str, Any],
+        record: dict[str, Any],
+    ) -> str:
+        """Archive a rejected harness review and select one untried binary."""
+        manifest_path = job_dir / "artifacts" / "build-manifest.json"
+        if not manifest_path.is_file():
+            return ""
+        manifest = self._read_json(manifest_path)
+        fuzzers = [str(value) for value in manifest.get("fuzz_targets") or []]
+        failed = str((record.get("facts") or {}).get("fuzz_target") or "")
+        if not failed or failed not in fuzzers:
+            return ""
+        attempted = [
+            str(value)
+            for value in state.get("attempted_fuzz_targets") or []
+            if str(value) in fuzzers
+        ]
+        if failed not in attempted:
+            attempted.append(failed)
+        state["attempted_fuzz_targets"] = attempted
+        limit = max(
+            1,
+            int(getattr(self, "pipeline", {}).get("max_fuzz_target_attempts", 3)),
+        )
+        candidates = [value for value in fuzzers if value not in attempted]
+        if len(attempted) >= limit or not candidates:
+            self._write_target_selection(job_dir, attempted, "", limit)
+            return ""
+
+        selected = _select_smoke_target(candidates)
+        manifest["preferred_fuzz_target"] = selected
+        self._write_json(manifest_path, manifest)
+        history = self._archive_target_attempt(job_dir, failed, len(attempted))
+        self._write_target_selection(job_dir, attempted, selected, limit, history)
+        self.progress(
+            f"{job_dir.name}: rejected fuzz target {failed}; trying {selected}"
+        )
+        return selected
+
+    @staticmethod
+    def _archive_target_attempt(
+        job_dir: Path, fuzz_target: str, attempt_number: int
+    ) -> str:
+        safe_target = re.sub(r"[^A-Za-z0-9_.-]+", "_", fuzz_target)[:120]
+        history = (
+            job_dir
+            / "artifacts"
+            / "target-history"
+            / f"{attempt_number:02d}-{safe_target}"
+        )
+        if history.exists():
+            history = history.with_name(f"{history.name}-{time.time_ns()}")
+        history.mkdir(parents=True)
+        for name in (
+            "smoke.json",
+            "probe-run.json",
+            "quartet-review.json",
+            "quartet-review-rejected.json",
+            "coverage-plan.json",
+        ):
+            path = job_dir / "artifacts" / name
+            if path.is_file():
+                shutil.move(str(path), history / name)
+        runtime_probe = job_dir / "runtime-out" / "probe"
+        if runtime_probe.exists():
+            shutil.move(str(runtime_probe), history / "runtime-probe")
+        return history.relative_to(job_dir).as_posix()
+
+    def _write_target_selection(
+        self,
+        job_dir: Path,
+        attempted: list[str],
+        selected: str,
+        limit: int,
+        history: str = "",
+    ) -> None:
+        self._write_json(
+            job_dir / "artifacts" / "target-selection.json",
+            {
+                "schema_version": 1,
+                "updated_at": utc_now(),
+                "attempted_fuzz_targets": attempted,
+                "preferred_fuzz_target": selected or None,
+                "attempt_limit": limit,
+                "last_history_path": history or None,
+            },
+        )
 
     def analyze(self, job_id: str) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
@@ -1116,7 +1233,12 @@ class PipelineRunner:
         started_at = utc_now()
         monotonic_start = time.monotonic()
         log_path = job_dir / "logs" / f"{label}-{fuzzer}.log"
-        self._run_streaming(command, log_path, timeout=seconds + 600)
+        exit_code = self._run_streaming(
+            command,
+            log_path,
+            timeout=seconds + 600,
+            allow_failure=label == "probe",
+        )
         elapsed = round(time.monotonic() - monotonic_start, 3)
         crashes = sorted(path.name for path in crash_dir.iterdir() if path.is_file())
         corpus_files = sum(1 for path in corpus_dir.iterdir() if path.is_file())
@@ -1134,8 +1256,11 @@ class PipelineRunner:
             "engine": "libfuzzer",
             "sanitizer": "address",
             "network": "none",
+            "status": "sanitizer_finding" if crashes else "passed",
+            "exit_code": exit_code,
             "corpus_files": corpus_files,
             "crash_files": crashes,
+            "sanitizer_summaries": self._sanitizer_summaries(log_path),
             "worker_stats": worker_stats,
             "executed_units": sum(
                 item.get("number_of_executed_units", 0) for item in worker_stats
@@ -1144,6 +1269,10 @@ class PipelineRunner:
             "runtime_output_directory": str(runtime_out),
         }
         self._write_json(job_dir / "artifacts" / f"{label}-run.json", result)
+        if exit_code != 0 and not crashes:
+            raise PipelineError(
+                f"fuzzer exited with {exit_code} without a sanitizer artifact; see {log_path}"
+            )
         return result
 
     def _session_target(
@@ -1186,13 +1315,34 @@ class PipelineRunner:
             records.append(record)
         return records
 
+    @staticmethod
+    def _sanitizer_summaries(log_path: Path) -> list[str]:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        findings: list[str] = []
+        patterns = (
+            re.compile(r"(?m)^==\d+==ERROR: [^\r\n]+"),
+            re.compile(r"(?m)^SUMMARY: [^\r\n]+"),
+        )
+        for pattern in patterns:
+            for match in pattern.findall(text):
+                normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", match)[:500]
+                if normalized not in findings:
+                    findings.append(normalized)
+                if len(findings) >= 8:
+                    return findings
+        return findings
+
     def _smoke_fuzzer(self, job_dir: Path, job: dict[str, Any]) -> None:
         del job
         manifest = self._read_json(job_dir / "artifacts" / "build-manifest.json")
         fuzzers = [str(value) for value in manifest.get("fuzz_targets") or []]
         if not fuzzers:
             raise PipelineError("build manifest has no fuzz targets")
-        preferred = str(manifest.get("generated_fuzz_target") or "")
+        preferred = str(
+            manifest.get("preferred_fuzz_target")
+            or manifest.get("generated_fuzz_target")
+            or ""
+        )
         selected = preferred if preferred in fuzzers else _select_smoke_target(fuzzers)
         project = str(manifest["oss_fuzz_project"])
         integration = self._read_json(
@@ -1341,7 +1491,13 @@ class PipelineRunner:
             raise PipelineError(f"command failed: {command[0]}: {detail}")
 
     @staticmethod
-    def _run_streaming(command: list[str], log_path: Path, timeout: int) -> None:
+    def _run_streaming(
+        command: list[str],
+        log_path: Path,
+        timeout: int,
+        *,
+        allow_failure: bool = False,
+    ) -> int:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"$ {' '.join(command[:6])}\n")
             handle.flush()
@@ -1363,10 +1519,11 @@ class PipelineRunner:
                     process.kill()
                 raise PipelineError(f"command exceeded {timeout}s timeout") from exc
             handle.write(f"\nexit={return_code}\n")
-        if return_code != 0:
+        if return_code != 0 and not allow_failure:
             raise PipelineError(
                 f"command failed with exit {return_code}; see {log_path}"
             )
+        return return_code
 
 
 def _subprocess_environment() -> dict[str, str]:

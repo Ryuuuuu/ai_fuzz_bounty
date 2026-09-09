@@ -50,9 +50,12 @@ queued
 2. **source_checkout**: 작업 주문의 커밋만 체크아웃하고 실제 SHA가 같은지 확인한다.
 3. **integration**: 기존 하네스를 우선 재사용한다. 없으면 테스트 코드를 우선 자료로
    OSS-Fuzz-Gen 방식의 하네스를 최대 3회 생성·수정한다.
-4. **quartet_gate**: P1–P4와 입력 도달 여부를 검사한다. 하네스 자체 오류는 여기서
-   탈락시킨다.
-5. **smoke**: ASan 빌드로 5분 실행하고 같은 입력에서 결과가 결정적인지 확인한다.
+4. **smoke / probe**: 빌드된 하네스를 짧게 실행해 실제 동작과 sanitizer 발견을
+   확인한다. 여러 하네스가 있으면 최대 `max_fuzz_target_attempts`개까지 순서대로
+   평가하고 이전 증거를 `artifacts/target-history/`에 보존한다.
+5. **quartet_gate**: P1–P4와 입력 도달 여부를 검사한다. 하네스 자체 오류나 probe의
+   sanitizer 발견은 여기서 장기 실행을 차단한다. 700줄을 넘는 하네스는 원문 줄 번호를
+   유지한 핵심 구간만 AI에 전달한다.
 6. **coverage_analysis**: 60초 probe 결과와 공개 Fuzz Introspector 후보를 고정
    커밋의 파일에 대조한다. 직접 바이트 입력이 가능한 후보가 있을 때만 시그니처와
    수치를 한 번의 Codex 호출에 보내 기존 하네스 실행, 확장, 새 하네스 생성 중

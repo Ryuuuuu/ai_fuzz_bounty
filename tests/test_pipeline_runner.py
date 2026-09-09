@@ -15,7 +15,11 @@ from fuzz_target_scout.coverage_analysis import (
 )
 from fuzz_target_scout.pipeline import PipelineError, UnsupportedIntegrationError
 from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
-from fuzz_target_scout.quartet_gate import find_harness_source, validate_quartet_review
+from fuzz_target_scout.quartet_gate import (
+    _numbered_source_excerpt,
+    find_harness_source,
+    validate_quartet_review,
+)
 
 
 class PipelineRunnerTests(unittest.TestCase):
@@ -211,6 +215,17 @@ class PipelineRunnerTests(unittest.TestCase):
                 "fuzz_parser",
             )
 
+    def test_finds_exact_non_fuzz_named_harness_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            harness = source / "spinquic.cpp"
+            harness.write_text(
+                'extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, '
+                "unsigned long size) { return data && size; }\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(find_harness_source(source, "spinquic"), harness)
+
     def test_seed_corpus_is_content_addressed_and_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -278,6 +293,66 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(records[0]["number_of_executed_units"], 120)
             self.assertEqual(records[0]["peak_rss_mb"], 42)
             self.assertTrue((logs / "probe-worker-0.log").is_file())
+
+    def test_sanitizer_summaries_are_bounded_and_addresses_normalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "probe.log"
+            log.write_text(
+                "==12==ERROR: LeakSanitizer: detected memory leaks at 0x123abc\n"
+                "SUMMARY: AddressSanitizer: 72 byte(s) leaked at 0xfeed\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                PipelineRunner._sanitizer_summaries(log),
+                [
+                    "==12==ERROR: LeakSanitizer: detected memory leaks at 0xADDR",
+                    "SUMMARY: AddressSanitizer: 72 byte(s) leaked at 0xADDR",
+                ],
+            )
+
+    def test_long_quartet_source_excerpt_is_bounded_and_keeps_original_lines(self):
+        lines = [f"line {index}" for index in range(1000)]
+        lines[900] = "extern int LLVMFuzzerTestOneInput(const char*, size_t) {"
+        excerpt = _numbered_source_excerpt(lines, max_lines=100)
+        source_rows = [row for row in excerpt.splitlines() if not row.startswith("....:")]
+        self.assertLessEqual(len(source_rows), 100)
+        self.assertIn("0901: extern int LLVMFuzzerTestOneInput", excerpt)
+        self.assertIn("omitted]", excerpt)
+
+    def test_quartet_discards_only_out_of_range_citations(self):
+        principle = {
+            "verdict": "pass",
+            "rationale": "valid evidence remains",
+            "evidence_lines": [2, 99999],
+        }
+        facts = {
+            "line_count": 10,
+            "entrypoint_count": 1,
+            "data_reference_count": 2,
+            "size_reference_count": 2,
+            "unaligned_read_lines": [],
+            "source_symbols": ["parse"],
+            "dynamic_evidence": {
+                "asan_build": True,
+                "smoke_status": "passed",
+                "probe_status": "passed",
+                "probe_crash_count": 0,
+                "probe_corpus_files": 1,
+            },
+        }
+        review = validate_quartet_review(
+            {
+                "principles": {name: principle for name in ("p1", "p2", "p3", "p4")},
+                "overall_verdict": "pass",
+                "target_symbols": ["parse"],
+                "summary": "valid",
+            },
+            facts,
+        )
+        self.assertEqual(review["principles"]["p1"]["evidence_lines"], [2])
+        self.assertEqual(
+            review["principles"]["p1"]["discarded_evidence_lines"], [99999]
+        )
 
     def test_coverage_evidence_keeps_only_pinned_source_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -599,6 +674,8 @@ class PipelineRunnerTests(unittest.TestCase):
             "dynamic_evidence": {
                 "asan_build": True,
                 "smoke_status": "passed",
+                "probe_status": "passed",
+                "probe_crash_count": 0,
                 "probe_corpus_files": 3,
             },
         }
@@ -626,6 +703,8 @@ class PipelineRunnerTests(unittest.TestCase):
             "dynamic_evidence": {
                 "asan_build": True,
                 "smoke_status": "passed",
+                "probe_status": "passed",
+                "probe_crash_count": 0,
                 "probe_corpus_files": 1,
             },
         }
@@ -660,6 +739,77 @@ class PipelineRunnerTests(unittest.TestCase):
             runner.runs_root = root
             result = runner.quartet(job_id)
             self.assertEqual(result["state"]["status"], "quartet_review_required")
+
+    def test_failed_quartet_review_selects_and_archives_alternate_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "b" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            runtime_probe = job_dir / "runtime-out" / "probe"
+            artifacts.mkdir(parents=True)
+            runtime_probe.mkdir(parents=True)
+            (job_dir / "job.json").write_text("{}")
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "quartet_gate", "status": "quartet_pending", "attempts": {}})
+            )
+            (artifacts / "build-manifest.json").write_text(
+                json.dumps({"fuzz_targets": ["fuzz", "fuzz_parser"]})
+            )
+            for name in ("smoke.json", "probe-run.json", "quartet-review.json"):
+                (artifacts / name).write_text(
+                    json.dumps(
+                        {"facts": {"fuzz_target": "fuzz"}, "review": {"execution_ready": False}}
+                        if name == "quartet-review.json"
+                        else {"fuzz_target": "fuzz"}
+                    )
+                )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {"max_fuzz_target_attempts": 3}
+            runner.progress = lambda _message: None
+            result = runner.quartet(job_id)
+            self.assertEqual(result["state"]["stage"], "smoke")
+            self.assertEqual(result["state"]["status"], "target_retry_pending")
+            self.assertEqual(result["state"]["preferred_fuzz_target"], "fuzz_parser")
+            self.assertFalse((artifacts / "quartet-review.json").exists())
+            history = list((artifacts / "target-history").glob("*/quartet-review.json"))
+            self.assertEqual(len(history), 1)
+            self.assertFalse(runtime_probe.exists())
+
+    def test_failed_quartet_review_stops_after_target_attempt_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "c" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text("{}")
+            (job_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "stage": "quartet_gate",
+                        "status": "quartet_pending",
+                        "attempts": {},
+                        "attempted_fuzz_targets": ["fuzz_first"],
+                    }
+                )
+            )
+            (artifacts / "build-manifest.json").write_text(
+                json.dumps({"fuzz_targets": ["fuzz_first", "fuzz_second", "fuzz_third"]})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps(
+                    {"facts": {"fuzz_target": "fuzz_second"}, "review": {"execution_ready": False}}
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {"max_fuzz_target_attempts": 2}
+            runner.progress = lambda _message: None
+            result = runner.quartet(job_id)
+            self.assertEqual(result["state"]["status"], "quartet_review_required")
+            self.assertTrue((artifacts / "quartet-review.json").exists())
 
 
 if __name__ == "__main__":

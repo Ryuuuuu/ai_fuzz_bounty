@@ -58,6 +58,8 @@ introspector_endpoint = "https://introspector.oss-fuzz.com/api"
 introspector_timeout_seconds = 30
 coverage_candidate_limit = 10
 max_harness_attempts = 3
+# 여러 하네스가 빌드되면 이 개수까지만 동적 검사와 AI 검토를 시도합니다.
+max_fuzz_target_attempts = 3
 setup_timeout_seconds = 5400
 smoke_seconds = 300
 fuzz_seconds = 86400

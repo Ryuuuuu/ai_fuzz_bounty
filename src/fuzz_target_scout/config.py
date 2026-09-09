@@ -65,6 +65,7 @@ DEFAULTS: dict[str, Any] = {
         "introspector_timeout_seconds": 30,
         "coverage_candidate_limit": 10,
         "max_harness_attempts": 3,
+        "max_fuzz_target_attempts": 3,
         "setup_timeout_seconds": 5400,
         "smoke_seconds": 300,
         "fuzz_seconds": 86400,

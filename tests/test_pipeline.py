@@ -80,9 +80,20 @@ class PipelineTests(unittest.TestCase):
             (job_dir / "artifacts" / "fuzz-progress.json").write_text(
                 json.dumps({"completed_seconds": 43200, "coverage_stalled": True})
             )
+            (job_dir / "artifacts" / "probe-run.json").write_text(
+                json.dumps(
+                    {
+                        "fuzz_target": "fuzz_parser",
+                        "status": "sanitizer_finding",
+                        "crash_files": ["leak-a"],
+                    }
+                )
+            )
             value = job_status(directory, job_dir.name)
             self.assertEqual(value["fuzz_percent"], 50.0)
             self.assertTrue(value["coverage_stalled"])
+            self.assertEqual(value["preflight_target"], "fuzz_parser")
+            self.assertEqual(value["preflight_findings"], 1)
 
     def test_support_index_must_match_toolchain_commit(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -103,7 +103,9 @@ def find_harness_source(source: Path, fuzz_target: str) -> Path:
         if not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
             continue
         name = path.stem.casefold().replace("-", "_")
-        if "fuzz" not in name:
+        # Some OSS-Fuzz binaries use a product name (for example, spinquic)
+        # even though their source still exports LLVMFuzzerTestOneInput.
+        if "fuzz" not in name and name != normalized:
             continue
         score = 0
         if name == normalized:
@@ -217,6 +219,17 @@ def build_quartet_evidence(
         )
         - {"if", "for", "while", "switch", "catch", "sizeof"}
     )
+    defined_symbols = sorted(
+        set(
+            re.findall(
+                r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(~?[A-Za-z_][A-Za-z0-9_]*)\s*"
+                r"\([^;{}]*\)\s*(?:const\s*)?\{",
+                source_code,
+                re.DOTALL,
+            )
+        )
+        - {"if", "for", "while", "switch", "catch"}
+    )
     facts = {
         "schema_version": 1,
         "repository": (job.get("source") or {}).get("repository"),
@@ -234,12 +247,16 @@ def build_quartet_evidence(
         "size_reference_count": size_refs,
         "unaligned_read_lines": unaligned,
         "called_symbols": called_symbols[:100],
+        "source_symbols": sorted(set(called_symbols + defined_symbols)),
         "dynamic_evidence": {
             "asan_build": build.get("sanitizer") == "address",
             "smoke_status": smoke.get("status"),
             "probe_elapsed_seconds": probe.get("elapsed_seconds"),
+            "probe_status": probe.get("status"),
+            "probe_exit_code": probe.get("exit_code"),
             "probe_corpus_files": probe.get("corpus_files"),
             "probe_crash_count": len(probe.get("crash_files") or []),
+            "sanitizer_summaries": list(probe.get("sanitizer_summaries") or [])[:8],
             "executed_units": probe.get("executed_units"),
         },
         "quartetfuzz": {
@@ -249,9 +266,15 @@ def build_quartet_evidence(
         },
     }
     ai_evidence = dict(facts)
-    ai_evidence["numbered_harness_source"] = "\n".join(
-        f"{number:04d}: {line}" for number, line in enumerate(lines, 1)
-    )
+    excerpt = _numbered_source_excerpt(lines)
+    ai_evidence["numbered_harness_source"] = excerpt
+    ai_evidence["source_excerpt"] = {
+        "original_line_count": len(lines),
+        "included_line_count": sum(
+            1 for row in excerpt.splitlines() if not row.startswith("....:")
+        ),
+        "omitted": len(lines) > 700,
+    }
     ai_evidence["known_limitations"] = [
         "the_builder_image_has_no_gdb_so_target_symbol_reach_is_not_breakpoint_verified",
         "the_existing_oss_fuzz_integration_and_live_probe_are_independent_runtime_evidence",
@@ -281,13 +304,16 @@ def validate_quartet_review(
         verdict = str(item.get("verdict") or "")
         if verdict not in {"pass", "warn", "fail"}:
             raise PipelineError(f"invalid Quartet verdict for {principle}: {verdict}")
-        evidence_lines = [int(value) for value in item.get("evidence_lines") or []]
-        if any(value < 1 or value > line_count for value in evidence_lines):
-            raise PipelineError(f"Quartet review cited an invalid {principle} source line")
+        supplied_lines = [int(value) for value in item.get("evidence_lines") or []]
+        evidence_lines = [value for value in supplied_lines if 1 <= value <= line_count]
+        discarded_lines = [value for value in supplied_lines if value not in evidence_lines]
+        if supplied_lines and not evidence_lines:
+            raise PipelineError(f"Quartet review cited no valid {principle} source line")
         normalized[principle] = {
             "verdict": verdict,
             "rationale": str(item.get("rationale") or "")[:1500],
             "evidence_lines": evidence_lines[:8],
+            "discarded_evidence_lines": discarded_lines[:8],
         }
         has_fail = has_fail or verdict == "fail"
     overall = str(review.get("overall_verdict") or "")
@@ -297,7 +323,8 @@ def validate_quartet_review(
         raise PipelineError("Quartet principle failure must produce an overall failure")
     target_symbols = [str(value)[:300] for value in review.get("target_symbols") or []]
     known_symbols = {
-        _symbol_basename(str(value)) for value in facts.get("called_symbols") or []
+        _symbol_basename(str(value))
+        for value in facts.get("source_symbols") or facts.get("called_symbols") or []
     }
     if not {_symbol_basename(value) for value in target_symbols}.issubset(known_symbols):
         raise PipelineError("Quartet review referenced a symbol absent from the harness")
@@ -309,6 +336,8 @@ def validate_quartet_review(
         and not facts["unaligned_read_lines"]
         and bool(dynamic["asan_build"])
         and dynamic["smoke_status"] == "passed"
+        and dynamic.get("probe_status", "passed") == "passed"
+        and int(dynamic.get("probe_crash_count") or 0) == 0
         and int(dynamic.get("probe_corpus_files") or 0) > 0
     )
     execution_ready = deterministic_ok and overall != "fail"
@@ -344,6 +373,48 @@ def quartet_record(
 
 def _line_matches(lines: list[str], pattern: re.Pattern[str]) -> list[int]:
     return [number for number, line in enumerate(lines, 1) if pattern.search(line)]
+
+
+def _numbered_source_excerpt(lines: list[str], max_lines: int = 700) -> str:
+    if len(lines) <= max_lines:
+        selected = range(len(lines))
+    else:
+        selected_set = set(range(min(60, len(lines))))
+        priority_patterns = (
+            (re.compile(r"LLVMFuzzerTestOneInput"), 45),
+            (re.compile(r"~[A-Za-z_][A-Za-z0-9_]*\s*\(|\bnew\b|\bdelete\b"), 5),
+            (re.compile(r"\b(?:goto|cleanup|Initialize|Uninitialize)\b"), 4),
+            (re.compile(r"\b(?:Open|Close|SetParam|GetParam)\s*\("), 3),
+            (re.compile(r"\b(?:data|size|GetRandom|TryGet)\b"), 2),
+        )
+        for pattern, radius in priority_patterns:
+            for index, line in enumerate(lines):
+                if not pattern.search(line):
+                    continue
+                ordered_window = [index]
+                for distance in range(1, radius + 1):
+                    ordered_window.extend((index - distance, index + distance))
+                for value in ordered_window:
+                    if value < 0 or value >= len(lines):
+                        continue
+                    if len(selected_set) >= max_lines:
+                        break
+                    selected_set.add(value)
+                if len(selected_set) >= max_lines:
+                    break
+            if len(selected_set) >= max_lines:
+                break
+        selected = sorted(selected_set)
+    rendered: list[str] = []
+    previous = -1
+    for index in selected:
+        if previous >= 0 and index > previous + 1:
+            rendered.append(f"....: [lines {previous + 2}-{index} omitted]")
+        rendered.append(f"{index + 1:04d}: {lines[index]}")
+        previous = index
+    if previous < len(lines) - 1:
+        rendered.append(f"....: [lines {previous + 2}-{len(lines)} omitted]")
+    return "\n".join(rendered)
 
 
 def _capture_git_commit(path: Path) -> str:

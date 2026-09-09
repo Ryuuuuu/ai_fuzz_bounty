@@ -301,6 +301,11 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
     state = _read_object(job_dir / "state.json")
     progress = _read_optional_object(job_dir / "artifacts" / "fuzz-progress.json")
     fuzz_run = _read_optional_object(job_dir / "artifacts" / "fuzz-run.json")
+    probe_run = _read_optional_object(job_dir / "artifacts" / "probe-run.json")
+    quartet = _read_optional_object(job_dir / "artifacts" / "quartet-review.json")
+    target_selection = _read_optional_object(
+        job_dir / "artifacts" / "target-selection.json"
+    )
     triage = _read_optional_object(job_dir / "artifacts" / "triage-summary.json")
     budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
     completed = float(progress.get("completed_seconds") or 0)
@@ -316,6 +321,15 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "coverage_stalled": bool(progress.get("coverage_stalled")),
         "corpus_files": int(fuzz_run.get("corpus_files") or 0),
         "crash_files": len(fuzz_run.get("crash_files") or []),
+        "preflight_target": probe_run.get("fuzz_target"),
+        "preflight_status": probe_run.get("status"),
+        "preflight_findings": len(probe_run.get("crash_files") or []),
+        "quartet_verdict": (quartet.get("review") or {}).get("overall_verdict"),
+        "attempted_fuzz_targets": list(
+            state.get("attempted_fuzz_targets")
+            or target_selection.get("attempted_fuzz_targets")
+            or []
+        ),
         "validated_groups": int(triage.get("validated_group_count") or 0),
         "last_error": state.get("last_error"),
         "updated_at": state.get("updated_at"),
