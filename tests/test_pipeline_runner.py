@@ -569,6 +569,23 @@ class PipelineRunnerTests(unittest.TestCase):
             )
         )
 
+    def test_native_probe_is_baseline_when_public_introspector_has_no_project(self):
+        review = deterministic_review(
+            {
+                "execution_mode": "native_container",
+                "probe": {
+                    "target": "generic_fuzzer",
+                    "status": "passed",
+                    "executed_units": 100,
+                },
+                "gap_candidates": [],
+            },
+            ["optimal-targets: project not found"],
+        )
+        self.assertIsNotNone(review)
+        self.assertEqual(review["decision"], "baseline_existing")
+        self.assertEqual(review["selected_fuzz_target"], "generic_fuzzer")
+
     def test_full_session_uses_coverage_plan_target(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

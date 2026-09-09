@@ -206,6 +206,7 @@ def build_coverage_evidence(
         "repository": (job.get("source") or {}).get("repository"),
         "commit": (job.get("source") or {}).get("commit"),
         "oss_fuzz_project": project,
+        "execution_mode": build.get("execution_mode"),
         "built_fuzz_targets": list(build.get("fuzz_targets") or []),
         "source_harnesses": harnesses,
         "generated_harness": (
@@ -218,6 +219,7 @@ def build_coverage_evidence(
         ),
         "probe": {
             "target": probe.get("fuzz_target"),
+            "status": probe.get("status"),
             "seconds": probe.get("elapsed_seconds"),
             "executed_units": probe.get("executed_units"),
             "corpus_files": probe.get("corpus_files"),
@@ -295,7 +297,28 @@ def analysis_record(
 
 def deterministic_review(evidence: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
     candidates = evidence.get("gap_candidates") or []
-    target = str((evidence.get("probe") or {}).get("target") or "")
+    probe = evidence.get("probe") or {}
+    target = str(probe.get("target") or "")
+    if (
+        not candidates
+        and errors
+        and evidence.get("execution_mode") == "native_container"
+        and probe.get("status") == "passed"
+        and int(probe.get("executed_units") or 0) > 0
+    ):
+        return {
+            "decision": "baseline_existing",
+            "selected_fuzz_target": target,
+            "candidate_ids": [],
+            "rationale": (
+                "The local native project is not published in OSS-Fuzz Introspector, "
+                "and its ASan probe executed successfully; use the Quartet-approved baseline."
+            ),
+            "next_actions": [
+                "run the selected native target",
+                "use local coverage feedback for later harness improvements",
+            ],
+        }
     if not candidates and errors:
         return {
             "decision": "manual_review",
