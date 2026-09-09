@@ -227,6 +227,19 @@ class PipelineRunnerTests(unittest.TestCase):
             )
             self.assertEqual(find_harness_source(source, "spinquic"), harness)
 
+    def test_maps_generic_binary_to_unique_upstream_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            harness = source / "src" / "fuzzing" / "fuzz.cc"
+            harness.parent.mkdir(parents=True)
+            harness.write_text(
+                'extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, '
+                "unsigned long size) { return data && size; }\n",
+                encoding="utf-8",
+            )
+            (source / "src" / "parser.cc").write_text("int parse();\n")
+            self.assertEqual(find_harness_source(source, "generic_fuzzer"), harness)
+
     def test_seed_corpus_is_content_addressed_and_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -103,10 +103,6 @@ def find_harness_source(source: Path, fuzz_target: str) -> Path:
         if not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
             continue
         name = path.stem.casefold().replace("-", "_")
-        # Some OSS-Fuzz binaries use a product name (for example, spinquic)
-        # even though their source still exports LLVMFuzzerTestOneInput.
-        if "fuzz" not in name and name != normalized:
-            continue
         score = 0
         if name == normalized:
             score += 100
@@ -116,7 +112,12 @@ def find_harness_source(source: Path, fuzz_target: str) -> Path:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if "LLVMFuzzerTestOneInput" in text:
+        has_entrypoint = "LLVMFuzzerTestOneInput" in text
+        # Generated binaries often have a generic name unrelated to an upstream
+        # harness. A unique libFuzzer entrypoint is still an exact semantic map.
+        if "fuzz" not in name and name != normalized and not has_entrypoint:
+            continue
+        if has_entrypoint:
             score += 20
         if score:
             candidates.append((score, path))
