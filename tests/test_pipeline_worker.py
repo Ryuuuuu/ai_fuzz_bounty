@@ -50,6 +50,31 @@ class PipelineWorkerTests(unittest.TestCase):
             self.assertEqual(result.action, "integrate")
             self.assertIn("integrate was called", result.error)
 
+    def test_worker_dispatches_pending_afl_cmplog_lane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs,
+                "afl-job",
+                created="2026-01-01T00:00:00Z",
+                stage="fuzzing",
+                status="afl_cmplog_pending",
+            )
+
+            class StubRunner:
+                @staticmethod
+                def afl_cmplog(_job_id):
+                    raise PipelineError("afl lane was called")
+
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_generation_cycles": 2}
+            worker.progress = lambda _message: None
+            worker.runner = StubRunner()
+            result = worker._advance("afl-job", setup_only=False)
+            self.assertEqual(result.action, "afl_cmplog")
+            self.assertIn("afl lane was called", result.error)
+
     def _job(
         self,
         root: Path,

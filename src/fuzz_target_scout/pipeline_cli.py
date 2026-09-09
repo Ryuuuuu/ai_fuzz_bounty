@@ -67,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--job-id", required=True)
     run = commands.add_parser("run", help="Run the full work-order fuzzing budget")
     run.add_argument("--job-id", required=True)
+    afl = commands.add_parser(
+        "afl-cmplog", help="Run the optional AFL++ CmpLog lane after a coverage stall"
+    )
+    afl.add_argument("--job-id", required=True)
     triage = commands.add_parser(
         "triage", help="Minimize, reproduce and deduplicate sanitizer crashes"
     )
@@ -111,6 +115,8 @@ def main(argv: list[str] | None = None) -> None:
             _generate(config, args)
         elif args.command == "run":
             _run(config, args)
+        elif args.command == "afl-cmplog":
+            _afl_cmplog(config, args)
         elif args.command == "triage":
             _triage(config, args)
         elif args.command == "worker":
@@ -182,6 +188,12 @@ def _status(config: dict, args: argparse.Namespace) -> None:
         print(f"Quartet verdict   {value['quartet_verdict']}")
     if value["attempted_fuzz_targets"]:
         print(f"rejected targets  {', '.join(value['attempted_fuzz_targets'])}")
+    if value["afl_cmplog_status"]:
+        print(
+            f"AFL++ CmpLog     {value['afl_cmplog_status']} / "
+            f"new_corpus={value['afl_cmplog_new_corpus']} / "
+            f"crashes={value['afl_cmplog_crashes']}"
+        )
     print(f"validated groups   {value['validated_groups']}")
     if value["last_error"]:
         print(f"last error         {value['last_error']}")
@@ -264,6 +276,17 @@ def _run(config: dict, args: argparse.Namespace) -> None:
     print(
         f"fuzz complete: target={result['fuzz_target']} "
         f"seconds={result['elapsed_seconds']} crashes={len(result['crash_files'])}"
+    )
+
+
+def _afl_cmplog(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.afl_cmplog(args.job_id)
+    print(
+        f"AFL++ CmpLog: status={result['status']} "
+        f"target={result.get('fuzz_target', 'unknown')} "
+        f"new_corpus={result.get('new_corpus_files', 0)} "
+        f"crashes={len(result.get('crash_files') or [])}"
     )
 
 

@@ -658,7 +658,12 @@ class PipelineRunner:
         progress["coverage_stalled"] = progress["stalled_seconds"] >= stall_limit
         self._write_json(progress_path, progress)
         if completed_seconds < budget:
-            state["status"] = "ready"
+            should_run_afl = (
+                bool(progress["coverage_stalled"])
+                and bool(getattr(self, "pipeline", {}).get("afl_cmplog_enabled", True))
+                and not (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
+            )
+            state["status"] = "afl_cmplog_pending" if should_run_afl else "ready"
             state["last_error"] = None
             state["fuzz_completed_seconds"] = round(completed_seconds, 3)
             state["coverage_stalled"] = bool(progress["coverage_stalled"])
@@ -667,6 +672,405 @@ class PipelineRunner:
             result["state"] = state
             return result
         return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+
+    def afl_cmplog(self, job_id: str) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id)
+        job = self._read_json(job_dir / "job.json")
+        state_path = job_dir / "state.json"
+        state = self._read_json(state_path)
+        if state.get("stage") != "fuzzing":
+            raise PipelineError(
+                f"job {job_id} is at {state.get('stage')}, expected fuzzing"
+            )
+        artifact_path = job_dir / "artifacts" / "afl-cmplog-run.json"
+        if artifact_path.is_file():
+            result = self._read_json(artifact_path)
+            if result.get("status") == "failed_optional_lane":
+                progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+                progress = (
+                    self._read_json(progress_path) if progress_path.is_file() else {}
+                )
+                progress["afl_cmplog_status"] = "failed_optional_lane"
+                self._write_json(progress_path, progress)
+                state["status"] = "ready"
+                detail = str(result.get("error") or "unknown error")
+                state["last_error"] = f"optional AFL++ lane failed: {detail}"[:2000]
+                state["updated_at"] = utc_now()
+                self._write_json(state_path, state)
+                result["state"] = state
+                return result
+            return self._apply_afl_result(job_dir, job, state_path, state, result)
+        progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+        progress = self._read_json(progress_path) if progress_path.is_file() else {}
+        if not bool(progress.get("coverage_stalled")):
+            raise PipelineError("AFL++ CmpLog requires a recorded coverage stall")
+        quartet = self._read_json(job_dir / "artifacts" / "quartet-review.json")
+        coverage = self._read_json(job_dir / "artifacts" / "coverage-plan.json")
+        if not bool((quartet.get("review") or {}).get("execution_ready")):
+            raise PipelineError("Quartet did not approve the current fuzz target")
+        if not bool((coverage.get("review") or {}).get("execution_ready")):
+            raise PipelineError("coverage analysis did not approve the current fuzz target")
+        self.progress(f"{job_id}: rechecking bug-bounty authorization before AFL++")
+        self._recheck_policy(job_dir, job)
+        state["status"] = "afl_cmplog_running"
+        state["last_error"] = None
+        state["updated_at"] = utc_now()
+        self._write_json(state_path, state)
+        try:
+            result = self._run_afl_cmplog(job_dir, job, progress)
+        except Exception as exc:
+            result = {
+                "schema_version": 1,
+                "created_at": utc_now(),
+                "status": "failed_optional_lane",
+                "error": str(exc)[:2000],
+            }
+            self._write_json(artifact_path, result)
+            progress["afl_cmplog_status"] = "failed_optional_lane"
+            self._write_json(progress_path, progress)
+            state["status"] = "ready"
+            state["last_error"] = f"optional AFL++ lane failed: {exc}"[:2000]
+            state["updated_at"] = utc_now()
+            self._write_json(state_path, state)
+            result["state"] = state
+            return result
+
+        self._write_json(artifact_path, result)
+        return self._apply_afl_result(job_dir, job, state_path, state, result)
+
+    def _apply_afl_result(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        state_path: Path,
+        state: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+        progress = self._read_json(progress_path)
+        if not bool(progress.get("afl_cmplog_accounted")):
+            elapsed_budget = min(
+                float(result["requested_seconds"]),
+                max(0.0, float(result["elapsed_seconds"])),
+            )
+            progress["completed_seconds"] = (
+                float(progress.get("completed_seconds") or 0) + elapsed_budget
+            )
+            progress["afl_cmplog_status"] = result["status"]
+            progress["afl_cmplog_accounted"] = True
+            progress.setdefault("sessions", []).append(
+                {
+                    "started_at": result["started_at"],
+                    "completed_at": result["completed_at"],
+                    "requested_seconds": result["requested_seconds"],
+                    "elapsed_seconds": result["elapsed_seconds"],
+                    "engine": "afl",
+                    "status": result["status"],
+                    "new_corpus_files": result["new_corpus_files"],
+                }
+            )
+            if int(result["new_corpus_files"]) > 0:
+                progress["stalled_seconds"] = 0
+                progress["coverage_stalled"] = False
+            self._write_json(progress_path, progress)
+        completed = float(progress.get("completed_seconds") or 0)
+        budget = int((job.get("budgets") or {})["fuzz_seconds"])
+        state["fuzz_completed_seconds"] = round(completed, 3)
+        state["coverage_stalled"] = bool(progress.get("coverage_stalled"))
+        state.setdefault("attempts", {})["afl_cmplog"] = max(
+            1, int(state.setdefault("attempts", {}).get("afl_cmplog", 0))
+        )
+        if result["crash_files"] or completed >= budget:
+            state["triage_artifact"] = "afl-cmplog-run.json"
+            return self._finish_fuzz_state(state_path, state, result, completed)
+        state["status"] = "ready"
+        state["last_error"] = None
+        state["updated_at"] = utc_now()
+        self._write_json(state_path, state)
+        result["state"] = state
+        return result
+
+    def _run_afl_cmplog(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        progress: dict[str, Any],
+    ) -> dict[str, Any]:
+        del progress
+        integration = self._read_json(
+            job_dir / "artifacts" / "integration-manifest.json"
+        )
+        build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
+        coverage = self._read_json(job_dir / "artifacts" / "coverage-plan.json")
+        target = str((coverage.get("review") or {}).get("selected_fuzz_target") or "")
+        if target not in build.get("fuzz_targets", []):
+            raise PipelineError("coverage plan selected an unknown AFL++ target")
+        project = str(integration["oss_fuzz_project"])
+        build_source = Path(str(integration["build_worktree"]))
+        oss_fuzz = Path(
+            str(integration.get("oss_fuzz_worktree") or self.tools_root / "oss-fuzz")
+        )
+        helper = oss_fuzz / "infra" / "helper.py"
+        log_path = job_dir / "logs" / "afl-cmplog-build.log"
+        self._sync_submodules(build_source, log_path)
+        self._run_streaming(
+            [
+                "python3", str(helper), "build_fuzzers", "--clean",
+                "--engine", "afl", "--sanitizer", "address",
+                "-e", "AFL_LLVM_CMPLOG=1", "-e", "AFL_LLVM_LAF_ALL=1",
+                "-e", "AFL_LLVM_DICT2FILE=/out/afl++.dict",
+                project, str(build_source),
+            ],
+            log_path,
+            timeout=int(self.pipeline["setup_timeout_seconds"]),
+        )
+        out_dir = oss_fuzz / "build" / "out" / project
+        for required in (target, "afl-fuzz"):
+            path = out_dir / required
+            if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+                raise PipelineError(f"AFL++ build output is missing {required}")
+        (out_dir / "afl_cmplog.txt").touch()
+        snapshot_root = job_dir / "build-output"
+        snapshot_root.mkdir(exist_ok=True)
+        snapshot = snapshot_root / "afl-cmplog"
+        temporary = snapshot_root / f"afl-cmplog.tmp-{time.time_ns()}"
+        shutil.copytree(out_dir, temporary, symlinks=True)
+        if snapshot.exists():
+            shutil.rmtree(snapshot)
+        temporary.replace(snapshot)
+        embedded_commit = self._embedded_afl_commit(oss_fuzz)
+        self._write_json(
+            job_dir / "artifacts" / "afl-cmplog-build.json",
+            {
+                "schema_version": 1,
+                "built_at": utc_now(),
+                "engine": "afl",
+                "sanitizer": "address",
+                "cmplog": True,
+                "oss_fuzz_project": project,
+                "fuzz_target": target,
+                "oss_fuzz_commit": self._capture(
+                    ["git", "-C", str(oss_fuzz), "rev-parse", "HEAD"]
+                ),
+                "oss_fuzz_declared_aflplusplus_commit": embedded_commit,
+                "afl_fuzz_banner": self._binary_banner(snapshot),
+                "builder_image_id": self._capture(
+                    [
+                        "docker", "image", "inspect", "--format", "{{.Id}}",
+                        f"gcr.io/oss-fuzz/{project}",
+                    ]
+                ),
+                "fuzzer_sha256": hashlib.sha256(
+                    (snapshot / target).read_bytes()
+                ).hexdigest(),
+                "afl_fuzz_sha256": hashlib.sha256(
+                    (snapshot / "afl-fuzz").read_bytes()
+                ).hexdigest(),
+                "output_directory": str(snapshot),
+            },
+        )
+        return self._afl_session(job_dir, job, snapshot, project, target, embedded_commit)
+
+    def _afl_session(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        snapshot: Path,
+        project: str,
+        target: str,
+        embedded_commit: str,
+    ) -> dict[str, Any]:
+        runtime_out = job_dir / "runtime-out" / "afl-cmplog"
+        if runtime_out.exists():
+            shutil.rmtree(runtime_out)
+        runtime_out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(snapshot, runtime_out, symlinks=True)
+        corpus_dir = job_dir / "corpus" / target
+        crash_dir = job_dir / "crashes" / target
+        hang_dir = job_dir / "hangs" / target
+        corpus_dir.mkdir(parents=True, exist_ok=True)
+        crash_dir.mkdir(parents=True, exist_ok=True)
+        hang_dir.mkdir(parents=True, exist_ok=True)
+        build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
+        self._seed_corpus(Path(str(build["output_directory"])), target, corpus_dir)
+        budget = int((job.get("budgets") or {})["fuzz_seconds"])
+        progress = self._read_json(job_dir / "artifacts" / "fuzz-progress.json")
+        remaining = budget - int(float(progress.get("completed_seconds") or 0))
+        if remaining <= 0:
+            raise PipelineError("AFL++ CmpLog cannot exceed the total fuzzing budget")
+        seconds = min(
+            max(
+                1,
+                int(
+                    (job.get("budgets") or {}).get("afl_cmplog_seconds")
+                    or self.pipeline["afl_cmplog_seconds"]
+                ),
+            ),
+            remaining,
+        )
+        command = [
+            "docker", "run", "--rm", "--network", "none", "--read-only",
+            "--tmpfs", "/tmp:rw,exec,nosuid,size=1g", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--pids-limit", "512",
+            "--cpus", "1", "--memory", f"{int(self.pipeline['container_memory_mb'])}m",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "-e", "FUZZING_ENGINE=afl", "-e", "SANITIZER=address",
+            "-e", "RUN_FUZZER_MODE=interactive", "-e", "HELPER=True",
+            "-v", f"{runtime_out}:/out:rw",
+            "-v", f"{corpus_dir}:/tmp/{target}_corpus:rw",
+            "gcr.io/oss-fuzz-base/base-runner", "run_fuzzer", target,
+            "-V", str(seconds), "-m", "none",
+        ]
+        started_at = utc_now()
+        monotonic_start = time.monotonic()
+        run_log = job_dir / "logs" / f"afl-cmplog-{target}.log"
+        exit_code = self._run_streaming(
+            command, run_log, timeout=seconds + 600, allow_failure=True
+        )
+        elapsed = round(time.monotonic() - monotonic_start, 3)
+        synthetic_seed = corpus_dir / "input"
+        if synthetic_seed.is_symlink():
+            synthetic_seed.unlink()
+        elif synthetic_seed.is_file() and synthetic_seed.read_bytes() == b"input\n":
+            synthetic_seed.unlink()
+        collected = self._collect_afl_outputs(
+            runtime_out, corpus_dir, crash_dir, hang_dir
+        )
+        stats = self._read_afl_stats(runtime_out)
+        status = "sanitizer_finding" if collected["crash_files"] else "completed"
+        if exit_code != 0 and not collected["crash_files"]:
+            raise PipelineError(f"AFL++ exited with {exit_code} without a crash artifact")
+        return {
+            "schema_version": 1,
+            "started_at": started_at,
+            "completed_at": utc_now(),
+            "status": status,
+            "exit_code": exit_code,
+            "elapsed_seconds": elapsed,
+            "requested_seconds": seconds,
+            "project": project,
+            "fuzz_target": target,
+            "engine": "afl",
+            "sanitizer": "address",
+            "cmplog": True,
+            "network": "none",
+            "oss_fuzz_declared_aflplusplus_commit": embedded_commit,
+            "new_corpus_files": collected["new_corpus_files"],
+            "crash_files": collected["crash_files"],
+            "hang_files": collected["hang_files"],
+            "stats": stats,
+            "log_path": str(run_log),
+            "runtime_output_directory": str(runtime_out),
+        }
+
+    @staticmethod
+    def _collect_afl_outputs(
+        runtime_out: Path, corpus_dir: Path, crash_dir: Path, hang_dir: Path
+    ) -> dict[str, Any]:
+        new_corpus = 0
+        crash_names: list[str] = []
+        hang_names: list[str] = []
+        for category, destination in (("queue", corpus_dir), ("crashes", crash_dir)):
+            for source in sorted(runtime_out.rglob(category)):
+                if source.is_symlink() or not source.is_dir():
+                    continue
+                for item in source.iterdir():
+                    if (
+                        item.is_symlink()
+                        or not item.is_file()
+                        or item.name.startswith("README")
+                    ):
+                        continue
+                    content = item.read_bytes()
+                    digest = hashlib.sha256(content).hexdigest()
+                    target_path = destination / digest
+                    if target_path.is_symlink() or (
+                        target_path.exists() and not target_path.is_file()
+                    ):
+                        continue
+                    existed = target_path.is_file()
+                    if not existed:
+                        target_path.write_bytes(content)
+                    if category == "queue" and not existed:
+                        new_corpus += 1
+                    if category == "crashes" and digest not in crash_names:
+                        crash_names.append(digest)
+        for source in sorted(runtime_out.rglob("hangs")):
+            if source.is_symlink() or not source.is_dir():
+                continue
+            for item in source.iterdir():
+                if (
+                    not item.is_symlink()
+                    and item.is_file()
+                    and not item.name.startswith("README")
+                ):
+                    content = item.read_bytes()
+                    digest = hashlib.sha256(content).hexdigest()
+                    destination = hang_dir / digest
+                    if destination.is_symlink() or (
+                        destination.exists() and not destination.is_file()
+                    ):
+                        continue
+                    if not destination.is_file():
+                        destination.write_bytes(content)
+                    if digest not in hang_names:
+                        hang_names.append(digest)
+        return {
+            "new_corpus_files": new_corpus,
+            "crash_files": crash_names,
+            "hang_files": hang_names,
+        }
+
+    @staticmethod
+    def _read_afl_stats(runtime_out: Path) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        for path in sorted(runtime_out.rglob("fuzzer_stats")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            values: dict[str, str] = {"path": str(path)}
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    values[key.strip()] = value.strip()
+            records.append(values)
+        return records
+
+    @staticmethod
+    def _embedded_afl_commit(oss_fuzz: Path) -> str:
+        dockerfile = oss_fuzz / "infra" / "base-images" / "base-builder" / "Dockerfile"
+        text = dockerfile.read_text(encoding="utf-8", errors="replace")
+        match = re.search(
+            r"AFLplusplus/AFLplusplus\.git\s+aflplusplus.*?git checkout\s+([0-9a-f]{40})",
+            text,
+            re.DOTALL,
+        )
+        if not match:
+            raise PipelineError("pinned OSS-Fuzz Dockerfile has no AFL++ commit")
+        return match.group(1)
+
+    @staticmethod
+    def _binary_banner(snapshot: Path) -> str:
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "run", "--rm", "--network", "none", "--read-only",
+                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--pids-limit", "64", "--cpus", "0.25", "--memory", "256m",
+                    "--user", f"{os.getuid()}:{os.getgid()}",
+                    "-v", f"{snapshot}:/out:ro",
+                    "gcr.io/oss-fuzz-base/base-runner", "/out/afl-fuzz", "-h",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=_subprocess_environment(),
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        lines = (result.stdout + result.stderr).strip().splitlines()
+        return " ".join(lines[:2])[:500]
 
     def _finish_fuzz_state(
         self,

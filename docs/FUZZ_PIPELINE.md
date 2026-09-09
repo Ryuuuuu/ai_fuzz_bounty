@@ -42,6 +42,7 @@ queued
   → quartet_gate
   → coverage_analysis
   → fuzzing_asan_24h
+      ↳ corpus 4시간 정체 시 afl_cmplog 1회 → fuzzing_asan_24h
   → triage
   → ready_for_human | exhausted | failed
 ```
@@ -62,7 +63,10 @@ queued
    하나를 고른다. 후보가 모두 상태 의존적이면 규칙 기반 게이트가 호출을 생략한다.
 7. **fuzzing**: ASan/libFuzzer를 자동 계산된 worker 수로 총 86,400초 실행한다.
    기본 한 시간 체크포인트마다 corpus 성장과 실행량을 기록하고, 4시간 동안 corpus가
-   늘지 않으면 정체 상태를 표시한다.
+   늘지 않으면 고정 OSS-Fuzz가 제공하는 AFL++ CmpLog를 기본 3,600초 한 번 실행한다.
+   AFL queue는 SHA-256으로 중복 제거해 libFuzzer corpus로 환류한다. AFL에서 나온
+   crash는 원래 ASan/libFuzzer 빌드로 triage한다. 보조 빌드나 실행이 실패하면 오류
+   산출물을 남기고 libFuzzer 실행을 계속한다.
 8. **triage**: 입력 최소화, 깨끗한 컨테이너에서 3/3 재현, 심볼화, 스택 기준 중복 제거,
    UBSan 교차 확인과 검증 인계 자료 생성을 거친다.
 
@@ -131,6 +135,8 @@ fuzz-pipeline analyze --job-id <id>
 # analyze 결과가 extend_existing 또는 generate_new_harness일 때만
 fuzz-pipeline generate --job-id <id>
 fuzz-pipeline run --job-id <id>
+# 기록된 coverage 정체 작업에만 실행 가능하며 worker는 자동 호출한다.
+fuzz-pipeline afl-cmplog --job-id <id>
 fuzz-pipeline triage --job-id <id>
 ```
 
@@ -166,6 +172,9 @@ worker 시작은 파일 잠금으로 직렬화하고, 전체 퍼징 직전 버�
 `fuzz-progress.json`에 정상 완료 및 중단 세션을 누적한다. 재부팅 뒤 `running` 또는
 `interrupted` 작업을 다시 선택하고 이미 완료한 실행 시간을 제외한 예산만 요청한다.
 기본 체크포인트는 3,600초이며 `fuzz_checkpoint_seconds`로 조정할 수 있다.
+CmpLog 보조 실행은 `afl_cmplog_enabled`로 끌 수 있고 `afl_cmplog_seconds`로 실행 시간을
+정한다. 빌드 산출물에는 OSS-Fuzz Dockerfile이 선언한 AFL++ 커밋, 실제 `afl-fuzz`와
+대상 바이너리의 SHA-256, 프로젝트 builder 이미지 ID를 기록한다.
 
 후속 검증 에이전트를 위해 각 `job.json`에는 `validation_handoff` 계약이 들어간다.
 최소화 입력과 SHA-256, 심볼화 스택, 소스·도구 커밋, 깨끗한 환경의 3/3 재현 자료가

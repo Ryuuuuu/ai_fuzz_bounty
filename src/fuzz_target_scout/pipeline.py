@@ -216,9 +216,13 @@ def make_work_order(
                 "coverage_stall_seconds": int(
                     pipeline_config["coverage_stall_seconds"]
                 ),
+                "afl_cmplog_seconds": int(
+                    pipeline_config.get("afl_cmplog_seconds", 3600)
+                ),
             },
             "execution": {
                 "primary_engine": "libfuzzer",
+                "stagnation_engine": "afl_cmplog",
                 "primary_sanitizer": "address",
                 "secondary_sanitizer": "undefined",
                 "parallel_workers": int(pipeline_config["parallel_workers"]),
@@ -306,9 +310,14 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
     target_selection = _read_optional_object(
         job_dir / "artifacts" / "target-selection.json"
     )
+    afl_run = _read_optional_object(job_dir / "artifacts" / "afl-cmplog-run.json")
     triage = _read_optional_object(job_dir / "artifacts" / "triage-summary.json")
     budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
     completed = float(progress.get("completed_seconds") or 0)
+    probe_findings = len(probe_run.get("crash_files") or [])
+    probe_status = probe_run.get("status")
+    if probe_run and not probe_status:
+        probe_status = "sanitizer_finding" if probe_findings else "passed"
     return {
         "job_id": job_id,
         "repository": (job.get("source") or {}).get("repository"),
@@ -322,14 +331,17 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "corpus_files": int(fuzz_run.get("corpus_files") or 0),
         "crash_files": len(fuzz_run.get("crash_files") or []),
         "preflight_target": probe_run.get("fuzz_target"),
-        "preflight_status": probe_run.get("status"),
-        "preflight_findings": len(probe_run.get("crash_files") or []),
+        "preflight_status": probe_status,
+        "preflight_findings": probe_findings,
         "quartet_verdict": (quartet.get("review") or {}).get("overall_verdict"),
         "attempted_fuzz_targets": list(
             state.get("attempted_fuzz_targets")
             or target_selection.get("attempted_fuzz_targets")
             or []
         ),
+        "afl_cmplog_status": afl_run.get("status"),
+        "afl_cmplog_new_corpus": int(afl_run.get("new_corpus_files") or 0),
+        "afl_cmplog_crashes": len(afl_run.get("crash_files") or []),
         "validated_groups": int(triage.get("validated_group_count") or 0),
         "last_error": state.get("last_error"),
         "updated_at": state.get("updated_at"),

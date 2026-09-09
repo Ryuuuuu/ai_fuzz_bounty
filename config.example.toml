@@ -69,6 +69,8 @@ triage_reproduction_attempts = 3
 triage_max_crashes = 20
 triage_ubsan_enabled = true
 coverage_stall_seconds = 14400
+afl_cmplog_enabled = true
+afl_cmplog_seconds = 3600
 # 0이면 현재 Ubuntu/WSL 자원에 맞춰 자동 계산합니다.
 parallel_workers = 0
 probe_seconds = 60

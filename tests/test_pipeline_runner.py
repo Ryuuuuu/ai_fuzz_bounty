@@ -644,6 +644,251 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(result["state"]["status"], "ready")
             self.assertEqual(result["state"]["fuzz_completed_seconds"], 3)
 
+    def test_coverage_stall_schedules_one_afl_cmplog_lane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "d" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "budgets": {"fuzz_seconds": 20},
+                        "execution": {"parallel_workers": 1},
+                    }
+                )
+            )
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "ready", "attempts": {}})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps(
+                    {
+                        "completed_seconds": 3,
+                        "last_corpus_files": 5,
+                        "stalled_seconds": 3,
+                        "sessions": [],
+                    }
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {
+                "fuzz_checkpoint_seconds": 3,
+                "coverage_stall_seconds": 6,
+                "afl_cmplog_enabled": True,
+            }
+            runner.progress = lambda _message: None
+            with patch.object(runner, "_recheck_policy"), patch.object(
+                runner,
+                "_fuzz_session",
+                return_value={
+                    "fuzz_target": "fuzz_parser",
+                    "elapsed_seconds": 3,
+                    "corpus_files": 5,
+                    "executed_units": 100,
+                },
+            ):
+                result = runner.fuzz(job_id)
+            self.assertEqual(result["state"]["status"], "afl_cmplog_pending")
+            progress = json.loads((artifacts / "fuzz-progress.json").read_text())
+            self.assertTrue(progress["coverage_stalled"])
+
+    def test_cached_afl_result_is_accounted_only_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_dir = root / "org-parser-" / "job"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "afl_cmplog_running", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps(
+                    {
+                        "completed_seconds": 10,
+                        "stalled_seconds": 20,
+                        "coverage_stalled": True,
+                        "sessions": [],
+                    }
+                )
+            )
+            job = {"budgets": {"fuzz_seconds": 100}}
+            result = {
+                "status": "completed",
+                "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "2026-01-01T00:00:05Z",
+                "requested_seconds": 5,
+                "elapsed_seconds": 5,
+                "new_corpus_files": 1,
+                "crash_files": [],
+            }
+            runner = object.__new__(PipelineRunner)
+
+            runner._apply_afl_result(job_dir, job, state_path, state, dict(result))
+            recovered_state = json.loads(state_path.read_text())
+            runner._apply_afl_result(
+                job_dir, job, state_path, recovered_state, dict(result)
+            )
+
+            progress = json.loads((artifacts / "fuzz-progress.json").read_text())
+            self.assertEqual(progress["completed_seconds"], 15)
+            self.assertEqual(len(progress["sessions"]), 1)
+            self.assertFalse(progress["coverage_stalled"])
+            self.assertEqual(recovered_state["attempts"]["afl_cmplog"], 1)
+
+    def test_cached_afl_crash_recovers_into_triage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "e" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps({"budgets": {"fuzz_seconds": 100}})
+            )
+            (job_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "stage": "fuzzing",
+                        "status": "afl_cmplog_running",
+                        "attempts": {},
+                    }
+                )
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps(
+                    {
+                        "completed_seconds": 10,
+                        "coverage_stalled": True,
+                        "sessions": [],
+                    }
+                )
+            )
+            cached_result = {
+                "status": "sanitizer_finding",
+                "started_at": "2026-01-01T00:00:00Z",
+                "completed_at": "2026-01-01T00:00:05Z",
+                "requested_seconds": 5,
+                "elapsed_seconds": 5,
+                "new_corpus_files": 0,
+                "crash_files": ["crashes/sha256-deadbeef"],
+            }
+            (artifacts / "afl-cmplog-run.json").write_text(
+                json.dumps(cached_result)
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+
+            result = runner.afl_cmplog(job_id)
+
+            self.assertEqual(result["state"]["stage"], "triage")
+            self.assertEqual(result["state"]["status"], "triage_pending")
+            self.assertEqual(
+                result["state"]["triage_artifact"], "afl-cmplog-run.json"
+            )
+            progress = json.loads((artifacts / "fuzz-progress.json").read_text())
+            self.assertEqual(progress["completed_seconds"], 15)
+            self.assertTrue(progress["afl_cmplog_accounted"])
+
+    def test_cached_optional_afl_failure_resumes_primary_fuzzer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "f" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text("{}")
+            (job_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "stage": "fuzzing",
+                        "status": "afl_cmplog_running",
+                        "attempts": {},
+                    }
+                )
+            )
+            (artifacts / "afl-cmplog-run.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed_optional_lane",
+                        "error": "builder unavailable",
+                    }
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+
+            result = runner.afl_cmplog(job_id)
+
+            self.assertEqual(result["state"]["status"], "ready")
+            self.assertIn("builder unavailable", result["state"]["last_error"])
+            progress = json.loads((artifacts / "fuzz-progress.json").read_text())
+            self.assertEqual(progress["afl_cmplog_status"], "failed_optional_lane")
+
+    def test_collect_afl_outputs_deduplicates_corpus_crashes_and_hangs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime" / "target_afl_address_out" / "default"
+            corpus = root / "corpus"
+            crashes = root / "crashes"
+            hangs = root / "hangs"
+            for name in ("queue", "crashes", "hangs"):
+                (runtime / name).mkdir(parents=True)
+            corpus.mkdir()
+            crashes.mkdir()
+            hangs.mkdir()
+            (runtime / "queue" / "id:000001").write_bytes(b"queue")
+            (runtime / "queue" / "id:000002").symlink_to("/etc/passwd")
+            (runtime / "crashes" / "id:000001").write_bytes(b"crash")
+            (runtime / "crashes" / "README.txt").write_text("metadata")
+            (runtime / "hangs" / "id:000001").write_bytes(b"hang")
+            result = PipelineRunner._collect_afl_outputs(
+                root / "runtime", corpus, crashes, hangs
+            )
+            self.assertEqual(result["new_corpus_files"], 1)
+            self.assertEqual(len(result["crash_files"]), 1)
+            self.assertEqual(len(result["hang_files"]), 1)
+            self.assertEqual(len(list(corpus.iterdir())), 1)
+            self.assertEqual(len(list(crashes.iterdir())), 1)
+            self.assertEqual(len(list(hangs.iterdir())), 1)
+
+    def test_afl_banner_runs_only_inside_isolated_container(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="afl-fuzz++4 test\n", stderr="help\n"
+        )
+        with patch(
+            "fuzz_target_scout.pipeline_runner.subprocess.run",
+            return_value=completed,
+        ) as run:
+            banner = PipelineRunner._binary_banner(Path("/tmp/afl-output"))
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:2], ["docker", "run"])
+        self.assertIn("--network", command)
+        self.assertIn("none", command)
+        self.assertIn("/tmp/afl-output:/out:ro", command)
+        self.assertEqual(command[-2:], ["/out/afl-fuzz", "-h"])
+        self.assertIn("afl-fuzz++4 test", banner)
+
+    def test_reads_embedded_afl_commit_from_pinned_oss_fuzz(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dockerfile = root / "infra" / "base-images" / "base-builder" / "Dockerfile"
+            dockerfile.parent.mkdir(parents=True)
+            dockerfile.write_text(
+                "RUN git clone https://github.com/AFLplusplus/AFLplusplus.git aflplusplus && \\\n"
+                "    git checkout " + "a" * 40 + "\n"
+            )
+            self.assertEqual(PipelineRunner._embedded_afl_commit(root), "a" * 40)
+
     def test_maps_oss_fuzz_binary_to_upstream_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

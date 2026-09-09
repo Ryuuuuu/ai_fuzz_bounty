@@ -91,6 +91,8 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
     # analyze가 새 하네스를 요구할 때만 실행
     fuzz-pipeline generate --job-id <job-id>
     fuzz-pipeline run --job-id <job-id>
+    # 4시간 정체 뒤 worker가 자동 실행하며, 기록된 정체 작업에는 수동 실행도 가능
+    fuzz-pipeline afl-cmplog --job-id <job-id>
     # run이 끝난 뒤 자동 worker가 수행하며, 수동 실행도 가능
     fuzz-pipeline triage --job-id <job-id>
 
@@ -120,7 +122,8 @@ Quartet 검토를 최대 `max_fuzz_target_attempts`개까지 순서대로 수행
 
 작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. OSS-Fuzz와
 OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게이트로
-적용합니다. AFL++는 커버리지 정체 시에만, VistaFuzz는 Python API 경로를
+적용합니다. AFL++ CmpLog는 4시간 동안 corpus가 늘지 않을 때 한 번 실행하고 새 입력을
+기존 corpus로 되돌립니다. VistaFuzz는 Python API 경로를
 활성화했을 때만 사용합니다. 전체 방법론과 단계별 산출물은
 [`docs/FUZZ_PIPELINE.md`](docs/FUZZ_PIPELINE.md)에 정리되어 있습니다.
 

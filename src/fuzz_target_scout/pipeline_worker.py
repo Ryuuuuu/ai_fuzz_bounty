@@ -110,7 +110,12 @@ class PipelineWorker:
                     action = "analyze"
                     self.runner.analyze(job_id)
                 elif stage == "fuzzing":
-                    if status in {"harness_work_pending", "generation_failed"}:
+                    if status == "afl_cmplog_pending":
+                        if setup_only:
+                            return WorkerResult(job_id, status, stage, "ready")
+                        action = "afl_cmplog"
+                        self.runner.afl_cmplog(job_id)
+                    elif status in {"harness_work_pending", "generation_failed"}:
                         cycles = int((state.get("attempts") or {}).get("harness_generation", 0))
                         if cycles >= int(self.pipeline["max_generation_cycles"]):
                             return WorkerResult(

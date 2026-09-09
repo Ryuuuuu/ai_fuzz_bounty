@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.triage import TriageRunner, extract_signature
 
 
@@ -14,6 +15,27 @@ ASAN_LOG = """ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1234
 
 
 class TriageTests(unittest.TestCase):
+    def test_rejects_unknown_state_triage_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "e" * 12
+            job = root / job_id
+            job.mkdir()
+            (job / "job.json").write_text("{}")
+            (job / "state.json").write_text(
+                json.dumps(
+                    {
+                        "stage": "triage",
+                        "status": "triage_pending",
+                        "triage_artifact": "../escape.json",
+                    }
+                )
+            )
+            runner = object.__new__(TriageRunner)
+            runner.runs_root = root
+            with self.assertRaisesRegex(PipelineError, "unsupported triage artifact"):
+                runner.triage(job_id, use_ai=False)
+
     def test_signature_ignores_process_addresses(self):
         first, frames = extract_signature(ASAN_LOG)
         second, _ = extract_signature(ASAN_LOG.replace("0x1234", "0xabcd"))

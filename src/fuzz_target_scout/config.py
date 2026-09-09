@@ -75,6 +75,8 @@ DEFAULTS: dict[str, Any] = {
         "triage_max_crashes": 20,
         "triage_ubsan_enabled": True,
         "coverage_stall_seconds": 14400,
+        "afl_cmplog_enabled": True,
+        "afl_cmplog_seconds": 3600,
         "parallel_workers": 0,
         "probe_seconds": 60,
         "container_memory_mb": 0,
