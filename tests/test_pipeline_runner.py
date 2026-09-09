@@ -1301,6 +1301,27 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(result["state"]["triage_artifact"], "probe-run.json")
             self.assertEqual(result["state"]["finding_source"], "probe")
 
+    def test_failed_generic_quartet_review_schedules_bounded_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory)
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "generic-integration.json").write_text("{}")
+            state_path = job_dir / "state.json"
+            state = {"stage": "quartet_gate", "status": "quartet_pending", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {"max_generation_cycles": 2}
+            result = runner._apply_quartet_state(
+                job_dir,
+                state_path,
+                state,
+                {"facts": {"fuzz_target": "generic_fuzzer"}, "review": {"execution_ready": False}},
+                count_attempt=True,
+            )
+            self.assertEqual(result["state"]["stage"], "quartet_gate")
+            self.assertEqual(result["state"]["status"], "quartet_repair_pending")
+
     def test_failed_quartet_review_selects_and_archives_alternate_target(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

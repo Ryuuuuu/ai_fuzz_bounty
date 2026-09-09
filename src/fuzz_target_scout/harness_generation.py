@@ -64,7 +64,7 @@ def generation_prompt(
     repair = ""
     if prior_code:
         repair = (
-            "\nThe previous candidate failed the official OSS-Fuzz build. Repair only the "
+            "\nThe previous candidate failed build or quality validation. Repair only the "
             "necessary lines.\n<previous_candidate>\n"
             + prior_code[:24000]
             + "\n</previous_candidate>\n<compressed_build_error>\n"

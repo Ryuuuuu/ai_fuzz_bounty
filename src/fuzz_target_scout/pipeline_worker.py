@@ -174,7 +174,10 @@ class PipelineWorker:
                     action = "smoke"
                     self._serialized(self.runner.smoke, job_id)
                 elif stage == "quartet_gate":
-                    if not self._artifact(job_id, "probe-run.json").is_file():
+                    if status == "quartet_repair_pending":
+                        action = "quartet_repair"
+                        self._serialized(self.runner.repair_quartet_harness, job_id)
+                    elif not self._artifact(job_id, "probe-run.json").is_file():
                         action = "probe"
                         self._serialized(self.runner.probe, job_id)
                     else:
