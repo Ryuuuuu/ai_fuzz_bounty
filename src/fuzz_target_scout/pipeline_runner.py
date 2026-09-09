@@ -415,6 +415,8 @@ class PipelineRunner:
             raise PipelineError(
                 f"coverage plan requires harness work before the full run: {decision}"
             )
+        self.progress(f"{job_id}: rechecking bug-bounty authorization before fuzzing")
+        self._recheck_policy(job_dir, job)
         state["status"] = "running"
         state["updated_at"] = utc_now()
         state["fuzz_started_at"] = state.get("fuzz_started_at") or utc_now()

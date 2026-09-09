@@ -315,6 +315,52 @@ class PipelineRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "coverage analysis is required"):
                 runner.fuzz(job_id)
 
+    def test_full_run_rechecks_authorization_immediately_before_fuzzing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "budgets": {"fuzz_seconds": 10},
+                        "execution": {"parallel_workers": 1},
+                    }
+                )
+            )
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "ready", "attempts": {}})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps(
+                    {
+                        "review": {
+                            "execution_ready": True,
+                            "decision": "baseline_existing",
+                        }
+                    }
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.progress = lambda _message: None
+            calls = []
+            with patch.object(
+                runner, "_recheck_policy", side_effect=lambda *_: calls.append("policy")
+            ), patch.object(
+                runner,
+                "_fuzz_session",
+                return_value={"fuzz_target": "fuzz_parser"},
+            ):
+                result = runner.fuzz(job_id)
+            self.assertEqual(calls, ["policy"])
+            self.assertEqual(result["state"]["stage"], "triage")
+
     def test_maps_oss_fuzz_binary_to_upstream_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

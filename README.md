@@ -85,6 +85,14 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
     fuzz-pipeline generate --job-id <job-id>
     fuzz-pipeline run --job-id <job-id>
 
+준비된 작업을 오래된 순서대로 24시간 실행하고 다음 작업으로 넘기려면:
+
+    fuzz-pipeline worker --max-jobs 0
+
+`--max-jobs 0`은 실행 가능한 큐가 빌 때까지 계속 처리한다. 빌드와 검증까지만 미리
+진행하려면 `--setup-only`를 사용한다. 동시에 두 worker가 실행되지 않도록 잠금 파일을
+사용한다.
+
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
 그룹에 추가한 뒤 WSL을 재시작해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
 

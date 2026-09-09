@@ -14,6 +14,7 @@ from .pipeline import (
     prepare_jobs,
 )
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
+from .pipeline_worker import PipelineWorker
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--job-id", required=True)
     run = commands.add_parser("run", help="Run the full work-order fuzzing budget")
     run.add_argument("--job-id", required=True)
+    worker = commands.add_parser(
+        "worker", help="Advance queued jobs through their 24-hour fuzz budget"
+    )
+    worker.add_argument("--max-jobs", type=int, default=1)
+    worker.add_argument("--setup-only", action="store_true")
     commands.add_parser("doctor", help="Check fuzzing pipeline prerequisites")
     return parser
 
@@ -88,6 +94,8 @@ def main(argv: list[str] | None = None) -> None:
             _generate(config, args)
         elif args.command == "run":
             _run(config, args)
+        elif args.command == "worker":
+            _worker(config, args)
         elif args.command == "doctor":
             _doctor(config)
     except PipelineError as exc:
@@ -219,6 +227,19 @@ def _doctor(config: dict) -> None:
     checks.insert(2, ("docker daemon", daemon))
     for name, value in checks:
         print(f"{name:18} {value}")
+
+
+def _worker(config: dict, args: argparse.Namespace) -> None:
+    worker = PipelineWorker(config, progress=lambda message: print(message, flush=True))
+    results = worker.run(args.max_jobs, setup_only=args.setup_only)
+    if not results:
+        print("worker complete: no runnable jobs")
+        return
+    for result in results:
+        print(
+            f"worker result: job_id={result.job_id} action={result.action} "
+            f"status={result.status} stage={result.stage} error={result.error}"
+        )
 
 
 def _docker_server_status() -> str:
