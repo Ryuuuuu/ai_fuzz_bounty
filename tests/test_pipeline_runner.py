@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 from fuzz_target_scout.quartet_gate import (
     _numbered_source_excerpt,
     find_harness_source,
+    resolve_generic_integration_harness,
     validate_quartet_review,
 )
 
@@ -239,6 +241,31 @@ class PipelineRunnerTests(unittest.TestCase):
             )
             (source / "src" / "parser.cc").write_text("int parse();\n")
             self.assertEqual(find_harness_source(source, "generic_fuzzer"), harness)
+
+    def test_resolves_recorded_upstream_harness_for_generic_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory)
+            artifacts = job_dir / "artifacts"
+            harness = job_dir / "source" / "src" / "fuzzing" / "fuzz.cc"
+            artifacts.mkdir()
+            harness.parent.mkdir(parents=True)
+            code = b'extern "C" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long);\n'
+            harness.write_bytes(code)
+            (artifacts / "generic-integration.json").write_text(
+                json.dumps(
+                    {
+                        "harness_origin": "existing:src/fuzzing/fuzz.cc",
+                        "harness_sha256": hashlib.sha256(code).hexdigest(),
+                    }
+                )
+            )
+            source_root, resolved, origin, generated = resolve_generic_integration_harness(
+                job_dir, {"route": "native_generated"}
+            )
+            self.assertEqual(source_root, (job_dir / "source").resolve())
+            self.assertEqual(resolved, harness.resolve())
+            self.assertEqual(origin, "upstream")
+            self.assertFalse(generated)
 
     def test_seed_corpus_is_content_addressed_and_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -133,6 +133,41 @@ def find_harness_source(source: Path, fuzz_target: str) -> Path:
     return best[0]
 
 
+def resolve_generic_integration_harness(
+    job_dir: Path, integration: dict[str, Any]
+) -> tuple[Path, Path, str, bool] | None:
+    record_path = job_dir / "artifacts" / "generic-integration.json"
+    if not record_path.is_file():
+        return None
+    record = _read_json(record_path)
+    origin = str(record.get("harness_origin") or "")
+    if origin.startswith("existing:"):
+        source_root = (job_dir / "source").resolve()
+        relative = Path(origin.removeprefix("existing:"))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise PipelineError("recorded upstream harness path is unsafe")
+        harness = (source_root / relative).resolve()
+        harness_origin = "upstream"
+        generated = False
+    else:
+        source_root = (
+            job_dir
+            / "integration"
+            / ("native" if integration.get("route") == "native_generated" else "oss-fuzz")
+        ).resolve()
+        harness = (source_root / "generic_harness.cc").resolve()
+        harness_origin = "codex_generated"
+        generated = True
+    if harness != source_root and source_root not in harness.parents:
+        raise PipelineError("recorded generic harness escaped its allowed root")
+    if not harness.is_file():
+        raise PipelineError("recorded generic harness is missing")
+    actual_hash = hashlib.sha256(harness.read_bytes()).hexdigest()
+    if actual_hash != str(record.get("harness_sha256") or ""):
+        raise PipelineError("recorded generic harness hash no longer matches")
+    return source_root, harness, harness_origin, generated
+
+
 def build_quartet_evidence(
     job_dir: Path,
     job: dict[str, Any],
@@ -146,6 +181,7 @@ def build_quartet_evidence(
     source_root = job_dir / "source"
     harness_origin = "upstream"
     generated = False
+    harness: Path | None = None
     if generated_path:
         candidate_path = Path(generated_path).resolve()
         allowed_roots = [(job_dir / "build-source").resolve()]
@@ -169,10 +205,13 @@ def build_quartet_evidence(
             "upstream" if candidate_root.name == "build-source" else "oss_fuzz_project"
         )
         generated = True
-    fuzz_target = str(smoke["fuzz_target"])
-    if generated:
-        harness = Path(generated_path)
+        harness = candidate_path
     else:
+        resolved = resolve_generic_integration_harness(job_dir, integration)
+        if resolved is not None:
+            source_root, harness, harness_origin, generated = resolved
+    fuzz_target = str(smoke["fuzz_target"])
+    if harness is None:
         try:
             harness = find_harness_source(source_root, fuzz_target)
         except PipelineError:
