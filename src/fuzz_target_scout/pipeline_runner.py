@@ -11,6 +11,13 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
+from .coverage_analysis import (
+    CodexCoverageReviewer,
+    IntrospectorClient,
+    analysis_record,
+    build_coverage_evidence,
+    deterministic_review,
+)
 from .github import GitHubClient
 from .pipeline import COMMIT_PATTERN, PipelineError, utc_now
 from .policy import PolicyVerifier
@@ -103,8 +110,8 @@ class PipelineRunner:
         return self._single_stage(
             job_id,
             expected="smoke",
-            next_stage="fuzzing",
-            next_status="ready",
+            next_stage="coverage_analysis",
+            next_status="analysis_pending",
             action=self._smoke_fuzzer,
         )
 
@@ -112,9 +119,9 @@ class PipelineRunner:
         job_dir = self._job_dir(job_id)
         job = self._read_json(job_dir / "job.json")
         state = self._read_json(job_dir / "state.json")
-        if state.get("stage") != "fuzzing":
+        if state.get("stage") not in {"coverage_analysis", "fuzzing"}:
             raise PipelineError(
-                f"job {job_id} is at {state.get('stage')}, expected fuzzing"
+                f"job {job_id} is at {state.get('stage')}, expected coverage_analysis"
             )
         return self._fuzz_session(
             job_dir,
@@ -124,6 +131,58 @@ class PipelineRunner:
             label="probe",
         )
 
+    def analyze(self, job_id: str) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id)
+        job = self._read_json(job_dir / "job.json")
+        state_path = job_dir / "state.json"
+        state = self._read_json(state_path)
+        if state.get("stage") not in {"coverage_analysis", "fuzzing"}:
+            raise PipelineError(
+                f"job {job_id} is at {state.get('stage')}, expected coverage_analysis"
+            )
+        artifact_path = job_dir / "artifacts" / "coverage-plan.json"
+        if artifact_path.is_file():
+            return self._read_json(artifact_path)
+        probe_path = job_dir / "artifacts" / "probe-run.json"
+        if not probe_path.is_file():
+            raise PipelineError("run a probe before coverage analysis")
+        build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
+        probe = self._read_json(probe_path)
+        project = str(build["oss_fuzz_project"])
+        client = IntrospectorClient(
+            str(self.pipeline["introspector_endpoint"]),
+            int(self.pipeline["introspector_timeout_seconds"]),
+        )
+        candidates, errors = client.candidates(project)
+        evidence = build_coverage_evidence(
+            job_dir,
+            job,
+            build,
+            probe,
+            candidates,
+            max_candidates=int(self.pipeline["coverage_candidate_limit"]),
+        )
+        review = deterministic_review(evidence, errors)
+        reviewer = "deterministic_gate"
+        usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
+        if review is None:
+            review, usage = CodexCoverageReviewer(self.pipeline).review(evidence)
+            reviewer = "codex_cli"
+        record = analysis_record(evidence, review, usage, errors, reviewer=reviewer)
+        self._write_json(artifact_path, record)
+        state["stage"] = "fuzzing"
+        state["status"] = (
+            "ready" if record["review"]["execution_ready"] else "harness_work_pending"
+        )
+        state["last_error"] = None
+        state["updated_at"] = utc_now()
+        state.setdefault("attempts", {})["coverage_analysis"] = (
+            int(state.setdefault("attempts", {}).get("coverage_analysis", 0)) + 1
+        )
+        self._write_json(state_path, state)
+        record["state"] = state
+        return record
+
     def fuzz(self, job_id: str) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
         job = self._read_json(job_dir / "job.json")
@@ -132,6 +191,15 @@ class PipelineRunner:
         if state.get("stage") != "fuzzing":
             raise PipelineError(
                 f"job {job_id} is at {state.get('stage')}, expected fuzzing"
+            )
+        plan_path = job_dir / "artifacts" / "coverage-plan.json"
+        if not plan_path.is_file():
+            raise PipelineError("coverage analysis is required before a full fuzz run")
+        plan = self._read_json(plan_path)
+        if not bool((plan.get("review") or {}).get("execution_ready")):
+            decision = (plan.get("review") or {}).get("decision", "unknown")
+            raise PipelineError(
+                f"coverage plan requires harness work before the full run: {decision}"
             )
         state["status"] = "running"
         state["updated_at"] = utc_now()
@@ -522,7 +590,7 @@ class PipelineRunner:
         build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
         smoke = self._read_json(job_dir / "artifacts" / "smoke.json")
         project = str(build["oss_fuzz_project"])
-        fuzzer = str(smoke["fuzz_target"])
+        fuzzer = self._session_target(job_dir, smoke, label)
         if fuzzer not in build.get("fuzz_targets", []):
             raise PipelineError("smoke target is not present in the build manifest")
         out_dir = Path(str(build["output_directory"]))
@@ -620,6 +688,14 @@ class PipelineRunner:
         }
         self._write_json(job_dir / "artifacts" / f"{label}-run.json", result)
         return result
+
+    def _session_target(
+        self, job_dir: Path, smoke: dict[str, Any], label: str
+    ) -> str:
+        if label != "fuzz":
+            return str(smoke["fuzz_target"])
+        plan = self._read_json(job_dir / "artifacts" / "coverage-plan.json")
+        return str((plan.get("review") or {}).get("selected_fuzz_target") or "")
 
     @staticmethod
     def _seed_corpus(out_dir: Path, fuzzer: str, corpus_dir: Path) -> None:

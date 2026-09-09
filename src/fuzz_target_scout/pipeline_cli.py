@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--job-id", required=True)
     probe = commands.add_parser("probe", help="Run a short isolated fuzzing probe")
     probe.add_argument("--job-id", required=True)
+    analyze = commands.add_parser(
+        "analyze", help="Rank pinned-source coverage gaps with one local Codex review"
+    )
+    analyze.add_argument("--job-id", required=True)
     run = commands.add_parser("run", help="Run the full work-order fuzzing budget")
     run.add_argument("--job-id", required=True)
     commands.add_parser("doctor", help="Check fuzzing pipeline prerequisites")
@@ -68,6 +72,8 @@ def main(argv: list[str] | None = None) -> None:
             _smoke(config, args)
         elif args.command == "probe":
             _probe(config, args)
+        elif args.command == "analyze":
+            _analyze(config, args)
         elif args.command == "run":
             _run(config, args)
         elif args.command == "doctor":
@@ -140,6 +146,17 @@ def _probe(config: dict, args: argparse.Namespace) -> None:
     print(
         f"probe complete: target={result['fuzz_target']} "
         f"corpus={result['corpus_files']} crashes={len(result['crash_files'])}"
+    )
+
+
+def _analyze(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.analyze(args.job_id)
+    review = result["review"]
+    print(
+        f"analysis complete: decision={review['decision']} "
+        f"target={review['selected_fuzz_target']} "
+        f"execution_ready={review['execution_ready']}"
     )
 
 

@@ -5,6 +5,12 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from fuzz_target_scout.coverage_analysis import (
+    analysis_record,
+    build_coverage_evidence,
+    deterministic_review,
+    validate_review,
+)
 from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
 
@@ -118,6 +124,157 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(records[0]["number_of_executed_units"], 120)
             self.assertEqual(records[0]["peak_rss_mb"], 42)
             self.assertTrue((logs / "probe-worker-0.log").is_file())
+
+    def test_coverage_evidence_keeps_only_pinned_source_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_dir = root / "job"
+            source = job_dir / "source" / "lib"
+            source.mkdir(parents=True)
+            (source / "parser.cc").write_text("int parse();\n", encoding="utf-8")
+            (source / "fuzz_parser.cc").write_text(
+                "int LLVMFuzzerTestOneInput();\n", encoding="utf-8"
+            )
+            evidence = build_coverage_evidence(
+                job_dir,
+                {"source": {"repository": "org/parser", "commit": "a" * 40}},
+                {
+                    "oss_fuzz_project": "parser",
+                    "fuzz_targets": ["fuzz_parser"],
+                },
+                {
+                    "fuzz_target": "fuzz_parser",
+                    "elapsed_seconds": 60,
+                    "corpus_files": 2,
+                    "crash_files": [],
+                    "worker_stats": [{"average_exec_per_sec": 100}],
+                },
+                [
+                    {
+                        "function_signature": "int parse(std::string data)",
+                        "function_name": "parse",
+                        "function_filename": "/src/parser/lib/parser.cc",
+                        "function_arguments": ["std::string"],
+                        "accummulated_complexity": 200,
+                        "source_line_begin": 1,
+                        "oracles": ["optimal-targets"],
+                    },
+                    {
+                        "function_signature": "void missing()",
+                        "function_filename": "/src/parser/lib/missing.cc",
+                    },
+                ],
+                max_candidates=10,
+            )
+            self.assertEqual(len(evidence["gap_candidates"]), 1)
+            self.assertEqual(evidence["gap_candidates"][0]["file"], "lib/parser.cc")
+            self.assertEqual(evidence["gap_candidates"][0]["local_symbol_line"], 1)
+            self.assertTrue(evidence["gap_candidates"][0]["direct_byte_input"])
+            self.assertEqual(evidence["source_harnesses"], ["lib/fuzz_parser.cc"])
+            self.assertEqual(evidence["probe"]["worker_exec_per_sec"], [100])
+
+    def test_coverage_review_must_reference_known_target_and_candidate(self):
+        evidence = {
+            "built_fuzz_targets": ["fuzz_parser"],
+            "gap_candidates": [{"id": "abc123"}],
+        }
+        review = validate_review(
+            {
+                "decision": "baseline_existing",
+                "selected_fuzz_target": "fuzz_parser",
+                "candidate_ids": ["abc123"],
+                "rationale": "stateful gaps are not suitable",
+                "next_actions": ["run the pinned target"],
+            },
+            evidence,
+        )
+        self.assertTrue(review["execution_ready"])
+        with self.assertRaises(PipelineError):
+            validate_review(
+                {
+                    "decision": "baseline_existing",
+                    "selected_fuzz_target": "unknown",
+                    "candidate_ids": [],
+                },
+                evidence,
+            )
+
+    def test_non_baseline_analysis_blocks_full_execution(self):
+        record = analysis_record(
+            {
+                "built_fuzz_targets": ["fuzz_parser"],
+                "gap_candidates": [{"id": "abc123"}],
+            },
+            {
+                "decision": "generate_new_harness",
+                "selected_fuzz_target": "fuzz_parser",
+                "candidate_ids": ["abc123"],
+                "rationale": "a deterministic parser boundary exists",
+                "next_actions": ["generate a focused harness"],
+            },
+            {"input_tokens": 10, "cached_tokens": 0, "output_tokens": 5},
+            [],
+        )
+        self.assertFalse(record["review"]["execution_ready"])
+
+    def test_deterministic_gate_skips_ai_for_stateful_candidates(self):
+        review = deterministic_review(
+            {
+                "probe": {"target": "fuzz_parser"},
+                "gap_candidates": [
+                    {"id": "stateful", "direct_byte_input": False}
+                ],
+            },
+            [],
+        )
+        self.assertIsNotNone(review)
+        self.assertEqual(review["decision"], "baseline_existing")
+        self.assertIsNone(
+            deterministic_review(
+                {
+                    "probe": {"target": "fuzz_parser"},
+                    "gap_candidates": [
+                        {"id": "bytes", "direct_byte_input": True}
+                    ],
+                },
+                [],
+            )
+        )
+
+    def test_full_session_uses_coverage_plan_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps(
+                    {"review": {"selected_fuzz_target": "fuzz_selected"}}
+                ),
+                encoding="utf-8",
+            )
+            runner = object.__new__(PipelineRunner)
+            smoke = {"fuzz_target": "fuzz_smoke"}
+            self.assertEqual(runner._session_target(root, smoke, "probe"), "fuzz_smoke")
+            self.assertEqual(
+                runner._session_target(root, smoke, "fuzz"), "fuzz_selected"
+            )
+
+    def test_full_run_requires_approved_coverage_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            job_dir.mkdir()
+            (job_dir / "artifacts").mkdir()
+            (job_dir / "job.json").write_text("{}", encoding="utf-8")
+            (job_dir / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "ready"}),
+                encoding="utf-8",
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            with self.assertRaisesRegex(PipelineError, "coverage analysis is required"):
+                runner.fuzz(job_id)
 
 
 if __name__ == "__main__":

@@ -79,6 +79,7 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
     fuzz-pipeline build --job-id <job-id>
     fuzz-pipeline smoke --job-id <job-id>
     fuzz-pipeline probe --job-id <job-id>
+    fuzz-pipeline analyze --job-id <job-id>
     fuzz-pipeline run --job-id <job-id>
 
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker

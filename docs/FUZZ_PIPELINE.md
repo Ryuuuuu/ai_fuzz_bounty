@@ -39,6 +39,7 @@ queued
   → integration
   → quartet_gate
   → smoke
+  → coverage_analysis
   → fuzzing_asan_24h
   → triage
   → ready_for_human | exhausted | failed
@@ -51,9 +52,13 @@ queued
 4. **quartet_gate**: P1–P4와 입력 도달 여부를 검사한다. 하네스 자체 오류는 여기서
    탈락시킨다.
 5. **smoke**: ASan 빌드로 5분 실행하고 같은 입력에서 결과가 결정적인지 확인한다.
-6. **fuzzing**: ASan/libFuzzer를 기본 6개 worker로 86,400초 실행한다. 4시간 동안
+6. **coverage_analysis**: 60초 probe 결과와 공개 Fuzz Introspector 후보를 고정
+   커밋의 파일에 대조한다. 직접 바이트 입력이 가능한 후보가 있을 때만 시그니처와
+   수치를 한 번의 Codex 호출에 보내 기존 하네스 실행, 확장, 새 하네스 생성 중
+   하나를 고른다. 후보가 모두 상태 의존적이면 규칙 기반 게이트가 호출을 생략한다.
+7. **fuzzing**: ASan/libFuzzer를 기본 6개 worker로 86,400초 실행한다. 4시간 동안
    커버리지가 늘지 않고 입력 형태가 맞을 때만 AFL++ CmpLog를 추가한다.
-7. **triage**: 입력 최소화, 깨끗한 컨테이너에서 3/3 재현, 심볼화, 스택 기준 중복 제거,
+8. **triage**: 입력 최소화, 깨끗한 컨테이너에서 3/3 재현, 심볼화, 스택 기준 중복 제거,
    UBSan 교차 확인을 거친다.
 
 준비는 최대 90분, 마지막 triage는 최대 60분이다. 준비 실패 시간을 24시간 퍼징
@@ -113,13 +118,17 @@ fuzz-pipeline integrate --job-id <id>
 fuzz-pipeline build --job-id <id>
 fuzz-pipeline smoke --job-id <id>
 fuzz-pipeline probe --job-id <id>
+fuzz-pipeline analyze --job-id <id>
 fuzz-pipeline run --job-id <id>
 ```
 
 원본 checkout은 증거용으로 깨끗하게 유지하고 별도 Git worktree에서만 빌드한다.
 빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 새 OSS-Fuzz
 프로젝트를 만들어야 하는 경로와 여러 작업을 차례로 넘기는 스케줄러는 다음 구현
-단위다. `probe`는 격리 구성을 60초 확인하고 상태를 진행시키지 않는다. `run`은
+단위다. `probe`는 격리 구성과 처리량을 60초 확인한다. `analyze`는 공개 Introspector
+자료가 고정 커밋에 실제 존재하는지 확인하고, 직접 바이트 입력 경계가 있는 경우에만
+최대 10개의 압축된 후보를 로컬 Codex에 한 번 전달한다. 분석이 기존 하네스 실행을
+승인해야만 `run`이 시작된다. `run`은
 작업 주문의 86,400초를 임의로 줄이지 않고 실행한 뒤 `triage` 단계로 넘긴다.
 실행 컨테이너에는 작업용 빌드 산출물 복사본만 쓰기 가능하게 마운트하며, 고정 소스와
 원본 빌드 산출물은 수정하지 않는다.

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": [
+        "baseline_existing",
+        "extend_existing",
+        "generate_new_harness",
+        "manual_review"
+      ]
+    },
+    "selected_fuzz_target": {
+      "type": "string"
+    },
+    "candidate_ids": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "string"
+      }
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "next_actions": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "decision",
+    "selected_fuzz_target",
+    "candidate_ids",
+    "rationale",
+    "next_actions"
+  ],
+  "additionalProperties": false
+}
