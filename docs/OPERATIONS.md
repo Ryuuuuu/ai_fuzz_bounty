@@ -5,6 +5,11 @@
 중단돼도 같은 세션 시간을 두 번 합산하지 않는다. 재시작할 때 남아 있는 작업 컨테이너는
 이름과 라벨로 정리한 뒤 남은 예산만 실행한다.
 
+각 실행은 호스트의 `corpus/<fuzz-target>/`를 컨테이너에 마운트하고 같은 경로를
+`CORPUS_DIR`로 전달한다. 로그에서 체크포인트마다 corpus가 seed 개수로 되돌아가거나
+`rm: cannot remove ..._corpus`가 반복되면 장기 실행을 중단하고 corpus 연속성을 먼저
+점검한다. `fuzz-progress.json`의 corpus 수는 호스트 디렉터리의 실제 파일 수와 같아야 한다.
+
 ```bash
 fuzz-pipeline migrate --dry-run
 fuzz-pipeline migrate

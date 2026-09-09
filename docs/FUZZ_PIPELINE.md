@@ -68,6 +68,9 @@ queued
 7. **fuzzing**: ASan/libFuzzer를 자동 계산된 worker 수로 총 86,400초 실행한다.
    기본 한 시간 체크포인트마다 corpus 성장과 실행량을 기록하고, 4시간 동안 corpus가
    늘지 않으면 고정 OSS-Fuzz가 제공하는 AFL++ CmpLog를 기본 3,600초 한 번 실행한다.
+   실행 컨테이너에는 마운트한 corpus 경로를 `CORPUS_DIR`로 명시한다. OSS-Fuzz의
+   `run_fuzzer`가 체크포인트마다 기본 corpus를 초기화하지 않으므로 앞 세션의 입력을
+   다음 세션과 AFL++ 보조 실행이 그대로 이어받는다.
    AFL queue는 SHA-256으로 중복 제거해 libFuzzer corpus로 환류한다. AFL에서 나온
    crash는 원래 ASan/libFuzzer 빌드로 triage한다. 보조 빌드나 실행이 실패하면 오류
    산출물을 남기고 libFuzzer 실행을 계속한다. 본 퍼징 체크포인트에서 crash가 나오면

@@ -276,6 +276,58 @@ class PipelineRunnerTests(unittest.TestCase):
                     label="probe",
                 )
 
+    def test_fuzz_session_preserves_the_mounted_corpus_between_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory) / "job"
+            artifacts = job / "artifacts"
+            output = job / "build-output" / "asan"
+            for path in (artifacts, output, job / "logs"):
+                path.mkdir(parents=True)
+            (output / "fuzz_parser").write_bytes(b"fuzzer")
+            (artifacts / "build-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "oss_fuzz_project": "parser",
+                        "fuzz_targets": ["fuzz_parser"],
+                        "output_directory": str(output),
+                    }
+                )
+            )
+            (artifacts / "smoke.json").write_text(
+                json.dumps({"fuzz_target": "fuzz_parser"})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "container_memory_mb": 1024,
+                "fuzzer_rss_limit_mb": 512,
+                "input_timeout_seconds": 10,
+            }
+            captured = {}
+
+            def fake_run(command, log_path, **_kwargs):
+                captured["command"] = command
+                log_path.write_text("", encoding="utf-8")
+                return 0
+
+            with patch.object(runner, "_run_streaming", side_effect=fake_run):
+                runner._fuzz_session(
+                    job,
+                    {},
+                    seconds=1,
+                    workers=1,
+                    label="probe",
+                )
+
+            command = captured["command"]
+            corpus_mount = (
+                f"{job / 'corpus' / 'fuzz_parser'}:/tmp/fuzz_parser_corpus:rw"
+            )
+            self.assertIn("CORPUS_DIR=/tmp/fuzz_parser_corpus", command)
+            self.assertLess(
+                command.index("CORPUS_DIR=/tmp/fuzz_parser_corpus"),
+                command.index(corpus_mount),
+            )
+
     def test_collects_worker_stats_and_copies_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -988,6 +1040,53 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(len(list(corpus.iterdir())), 1)
             self.assertEqual(len(list(crashes.iterdir())), 1)
             self.assertEqual(len(list(hangs.iterdir())), 1)
+
+    def test_afl_session_preserves_the_mounted_corpus_between_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "job"
+            artifacts = job_dir / "artifacts"
+            snapshot = job_dir / "build-output" / "afl"
+            for path in (artifacts, snapshot, job_dir / "logs"):
+                path.mkdir(parents=True)
+            (snapshot / "fuzz_parser").write_bytes(b"fuzzer")
+            (artifacts / "build-manifest.json").write_text(
+                json.dumps({"output_directory": str(snapshot)})
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 0})
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "container_memory_mb": 1024,
+                "afl_cmplog_seconds": 10,
+            }
+            captured = {}
+
+            def fake_run(command, log_path, **_kwargs):
+                captured["command"] = command
+                log_path.write_text("", encoding="utf-8")
+                return 0
+
+            with patch.object(runner, "_run_streaming", side_effect=fake_run):
+                runner._afl_session(
+                    job_dir,
+                    {"budgets": {"fuzz_seconds": 100, "afl_cmplog_seconds": 10}},
+                    snapshot,
+                    "parser",
+                    "fuzz_parser",
+                    "a" * 40,
+                    "fts-afl-test",
+                )
+
+            command = captured["command"]
+            corpus_mount = (
+                f"{job_dir / 'corpus' / 'fuzz_parser'}:/tmp/fuzz_parser_corpus:rw"
+            )
+            self.assertIn("CORPUS_DIR=/tmp/fuzz_parser_corpus", command)
+            self.assertLess(
+                command.index("CORPUS_DIR=/tmp/fuzz_parser_corpus"),
+                command.index(corpus_mount),
+            )
 
     def test_afl_banner_runs_only_inside_isolated_container(self):
         completed = subprocess.CompletedProcess(
