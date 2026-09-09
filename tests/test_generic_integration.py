@@ -23,6 +23,7 @@ class GenericIntegrationTests(unittest.TestCase):
         dockerfile = _dockerfile("cmake", "ubuntu:24.04")
         self.assertIn("FROM ubuntu:24.04", dockerfile)
         self.assertIn("clang lld llvm", dockerfile)
+        self.assertIn("COPY --chmod=0644 generic_harness.cc", dockerfile)
         self.assertNotIn("gcr.io/oss-fuzz-base", dockerfile)
 
     def test_detects_all_supported_build_families(self):
@@ -59,6 +60,9 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(result["build_system"], "cmake")
             self.assertTrue(result["harness_origin"].startswith("existing:"))
+            self.assertEqual(
+                (project / "generic_harness.cc").stat().st_mode & 0o777, 0o644
+            )
             for name in ("Dockerfile", "build.sh", "project.yaml", "generic_harness.cc"):
                 self.assertTrue((project / name).is_file())
 

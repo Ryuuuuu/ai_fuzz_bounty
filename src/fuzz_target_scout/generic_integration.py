@@ -51,7 +51,9 @@ def create_generic_project(
     harness, origin, usage, candidate = _obtain_harness(
         job_dir, source, project_name, pipeline, progress
     )
-    (project_dir / "generic_harness.cc").write_text(harness, encoding="utf-8")
+    harness_path = project_dir / "generic_harness.cc"
+    harness_path.write_text(harness, encoding="utf-8")
+    harness_path.chmod(0o644)
     (project_dir / "Dockerfile").write_text(
         _dockerfile(build_system, base_image if native else None),
         encoding="utf-8",
@@ -112,10 +114,12 @@ def repair_generic_harness(
     code = extract_harness_code(response)
     validation = validate_generated_harness(code, candidate)
     harness_path.write_text(code, encoding="utf-8")
+    harness_path.chmod(0o644)
     for integration_name in ("oss-fuzz", "native"):
         mirror = job_dir / "integration" / integration_name / "generic_harness.cc"
         if mirror.parent.is_dir():
             mirror.write_text(code, encoding="utf-8")
+            mirror.chmod(0o644)
     item = {
         "attempt": attempt,
         "created_at": utc_now(),
@@ -220,7 +224,8 @@ def _dockerfile(build_system: str, native_base_image: str | None = None) -> str:
 RUN apt-get update && apt-get install -y --no-install-recommends \
     {packages} \
     && rm -rf /var/lib/apt/lists/*
-COPY build.sh generic_harness.cc $SRC/
+COPY --chmod=0755 build.sh $SRC/build.sh
+COPY --chmod=0644 generic_harness.cc $SRC/generic_harness.cc
 WORKDIR $SRC/project
 """
     if not re.fullmatch(r"[A-Za-z0-9./:_-]{3,200}", native_base_image):
@@ -236,7 +241,8 @@ ENV SRC=/src WORK=/work OUT=/out \
     CXXFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
     LIB_FUZZING_ENGINE="-fsanitize=fuzzer,address"
 RUN mkdir -p /src/project /work /out
-COPY build.sh generic_harness.cc /src/
+COPY --chmod=0755 build.sh /src/build.sh
+COPY --chmod=0644 generic_harness.cc /src/generic_harness.cc
 WORKDIR /src/project
 """
 
