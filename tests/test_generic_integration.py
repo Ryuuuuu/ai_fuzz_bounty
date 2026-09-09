@@ -41,6 +41,10 @@ class GenericIntegrationTests(unittest.TestCase):
                 script = _build_script(expected)
                 self.assertIn("$LIB_FUZZING_ENGINE", script)
                 self.assertIn("$OUT/generic_fuzzer", script)
+                self.assertNotIn("-type f -regex '.*[.](h|hh|hpp|hxx)'", script)
+                if expected == "cmake":
+                    self.assertIn("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)", script)
+                    self.assertIn('ninja -C "$WORK/build" -t commands', script)
                 harness_line = next(
                     line for line in script.splitlines()
                     if '"$SRC/generic_harness.cc"' in line

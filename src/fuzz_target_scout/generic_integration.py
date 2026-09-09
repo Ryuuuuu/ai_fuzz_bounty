@@ -266,8 +266,15 @@ rm -rf "$WORK/build"
 mkdir -p "$WORK/build" "$OUT"
 """
     builds = {
-        "cmake": """cmake -S . -B "$WORK/build" -G Ninja \\
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_SHARED_LIBS=OFF \\
+        "cmake": """cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)
+while IFS= read -r option; do
+  cmake_shared_args+=("-D${option}=OFF")
+done < <(
+  grep -rhoE 'option[(][A-Za-z_][A-Za-z0-9_]*BUILD_SHARED[A-Za-z0-9_]*' \
+    CMakeLists.txt cmake 2>/dev/null | sed 's/^option(//' | sort -u
+)
+cmake -S . -B "$WORK/build" -G Ninja \\
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo "${cmake_shared_args[@]}" \\
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \\
   -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS"
 cmake --build "$WORK/build" --parallel "$(nproc)"
@@ -287,11 +294,26 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
 """,
     }
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
-mapfile -t header_dirs < <(find "$SRC/project" -regextype posix-extended -type f -regex '.*[.](h|hh|hpp|hxx)' -print0 | xargs -0 -r -n1 dirname | sort -u | head -n 200)
-include_flags=()
-for directory in "${header_dirs[@]}"; do
-  include_flags+=("-I$directory")
-done
+include_flags=("-I$SRC/project")
+if [[ -f "$WORK/build/build.ninja" ]]; then
+  while IFS= read -r flag; do
+    include_flags+=("$flag")
+  done < <(
+    ninja -C "$WORK/build" -t commands 2>/dev/null |
+      awk '{for (i=1; i<=NF; i++) {
+        if ($i ~ /^-I.+/) print $i;
+        else if (($i == "-isystem" || $i == "-iquote") && i < NF) print $i $(i+1);
+      }}' | sort -u
+  )
+fi
+if (( ${#include_flags[@]} == 1 )); then
+  while IFS= read -r directory; do
+    include_flags+=("-I$directory")
+  done < <(
+    find "$SRC/project" "$WORK/build" -regextype posix-extended -type d \\
+      -regex '.*/(include|inc)' -print 2>/dev/null | sort -u | head -n 100
+  )
+fi
 if (( ${#archives[@]} == 0 )); then
   echo 'generic integration found no static libraries' >&2
   exit 1
