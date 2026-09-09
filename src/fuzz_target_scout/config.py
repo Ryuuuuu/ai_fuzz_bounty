@@ -41,6 +41,21 @@ DEFAULTS: dict[str, Any] = {
         "database_path": "data/scout.sqlite3",
         "export_path": "data/verified-candidates.jsonl",
     },
+    "pipeline": {
+        "input_path": "data/verified-candidates.jsonl",
+        "runs_path": "data/runs",
+        "toolchain_lock_path": "toolchain.lock.json",
+        "languages": ["C", "C++"],
+        "ai_model": "gpt-daybreak-blue-latest",
+        "ai_reasoning_effort": "high",
+        "max_harness_attempts": 3,
+        "setup_timeout_seconds": 5400,
+        "smoke_seconds": 300,
+        "fuzz_seconds": 86400,
+        "triage_timeout_seconds": 3600,
+        "coverage_stall_seconds": 14400,
+        "parallel_workers": 6,
+    },
     "daemon": {"interval_seconds": 21600},
 }
 
@@ -68,6 +83,9 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("ai", "schema_path"),
         ("storage", "database_path"),
         ("storage", "export_path"),
+        ("pipeline", "input_path"),
+        ("pipeline", "runs_path"),
+        ("pipeline", "toolchain_lock_path"),
     ):
         value = Path(config[section][key]).expanduser()
         if not value.is_absolute():

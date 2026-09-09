@@ -67,6 +67,27 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
 정책 URL, 점수, 재현 난이도, 추천 진입 형태가 들어갑니다. 후속 AI-Fuzz
 파이프라인은 이 파일에서 한 줄씩 가져가 24시간 작업 단위를 만들 수 있습니다.
 
+## 다음 AI-Fuzz 파이프라인
+
+정책이 확인된 C/C++ 후보를 고정된 24시간 작업 주문으로 만들 수 있습니다.
+
+    fuzz-pipeline doctor
+    fuzz-pipeline plan --limit 1
+    fuzz-pipeline list
+
+`fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
+그룹에 추가한 뒤 WSL을 재시작해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
+
+작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. OSS-Fuzz와
+OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게이트로
+적용합니다. AFL++는 커버리지 정체 시에만, VistaFuzz는 Python API 경로를
+활성화했을 때만 사용합니다. 전체 방법론과 단계별 산출물은
+[`docs/FUZZ_PIPELINE.md`](docs/FUZZ_PIPELINE.md)에 정리되어 있습니다.
+
+OSS-Fuzz-Gen의 `--ai-binary`에는 로컬 Codex 어댑터를 지정합니다.
+
+    --ai-binary "$(command -v oss-fuzz-gen-codex)"
+
 초대제 후보까지 의도적으로 포함하려면 다음 옵션을 사용합니다.
 
     fts export --include-conditional

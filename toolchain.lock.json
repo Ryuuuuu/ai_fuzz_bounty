@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "resolved_at": "2026-09-09",
+  "tools": {
+    "oss-fuzz": {
+      "url": "https://github.com/google/oss-fuzz.git",
+      "ref": "master",
+      "commit": "6f96dc4ca0805f56c1405e7c1606e8b73099f8b7",
+      "integration": "container build, libFuzzer/ASan execution, coverage and crash minimization"
+    },
+    "oss-fuzz-gen": {
+      "url": "https://github.com/google/oss-fuzz-gen.git",
+      "ref": "main",
+      "commit": "c0982c5d40a7e93ce70fd319705804b9a29954d0",
+      "integration": "entry selection, harness generation pattern, compile-feedback repair and coverage evaluation"
+    },
+    "quartetfuzz": {
+      "url": "https://github.com/OwenSanzas/QuartetFuzz.git",
+      "ref": "main",
+      "commit": "84a4f4ea1e586dce28f69a28fd997139fe68de32",
+      "integration": "P1-P4 harness quality checks and adversarial smoke probes"
+    },
+    "vistafuzz": {
+      "url": "https://github.com/beanduan22/VistaFuzz.git",
+      "ref": "main",
+      "commit": "1bdc98c9de55a8922e3c3b19edc548024246360e",
+      "integration": "optional document-guided constraint extraction for Python API targets"
+    },
+    "aflplusplus": {
+      "url": "https://github.com/AFLplusplus/AFLplusplus.git",
+      "ref": "stable",
+      "commit": "dbaf11913c1b2702dee5b4d3dcfffd52f1defe50",
+      "integration": "optional CmpLog lane after sustained coverage stagnation"
+    },
+    "fuzz-introspector": {
+      "url": "https://github.com/ossf/fuzz-introspector.git",
+      "ref": "main",
+      "commit": "8bc858d7dd66f390e5bbd38c44d31fce41b72103",
+      "integration": "coverage gaps, reachable functions and entry-point evidence"
+    }
+  }
+}

@@ -5,5 +5,7 @@ __pycache__/
 *.jsonl
 config.toml
 .pytest_cache/
+.tools/
+data/runs/
 !.codex/
 !.codex/config.toml

@@ -14,6 +14,8 @@ dependencies = []
 [project.scripts]
 fuzz-target-scout = "fuzz_target_scout.cli:main"
 fts = "fuzz_target_scout.cli:main"
+fuzz-pipeline = "fuzz_target_scout.pipeline_cli:main"
+oss-fuzz-gen-codex = "fuzz_target_scout.oss_fuzz_gen_codex:cli_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

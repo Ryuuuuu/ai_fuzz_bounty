@@ -36,5 +36,21 @@ schema_path = "schemas/candidate-assessment.schema.json"
 database_path = "data/scout.sqlite3"
 export_path = "data/verified-candidates.jsonl"
 
+[pipeline]
+input_path = "data/verified-candidates.jsonl"
+runs_path = "data/runs"
+toolchain_lock_path = "toolchain.lock.json"
+languages = ["C", "C++"]
+ai_model = "gpt-daybreak-blue-latest"
+ai_reasoning_effort = "high"
+max_harness_attempts = 3
+setup_timeout_seconds = 5400
+smoke_seconds = 300
+fuzz_seconds = 86400
+triage_timeout_seconds = 3600
+coverage_stall_seconds = 14400
+# 12코어/8GB WSL 기준. 메모리가 부족하면 4로 낮추세요.
+parallel_workers = 6
+
 [daemon]
 interval_seconds = 21600
