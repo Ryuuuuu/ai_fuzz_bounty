@@ -143,7 +143,9 @@ PoC, 트리거 경로, 영향도 근거와 사람 검토용 보고서 초안으�
 Quartet 검토를 최대 `max_fuzz_target_attempts`개까지 순서대로 수행한다. 실패한 하네스의
 증거는 `artifacts/target-history/`에 보존하고 다음 하네스를 시도한다. 프로브 중 sanitizer
 발견이 생기면 정상 결과로 숨기지 않고 장기 실행을 차단한다. 긴 하네스의 AI 입력은
-원래 줄 번호를 유지한 핵심 구간 700줄 이하로 제한한다.
+원래 줄 번호를 유지한 핵심 구간 700줄 이하로 제한한다. 생성 통합의 유일한 하네스가
+Quartet에서 구체적인 품질 결함으로 실패하면 원본 checkout은 보존한 채 통합 사본을
+최대 `max_generation_cycles`회 자동 수정하고 빌드, probe, Quartet을 다시 수행한다.
 
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
 그룹에 추가한 뒤 다시 로그인해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
