@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--job-id", required=True)
     probe = commands.add_parser("probe", help="Run a short isolated fuzzing probe")
     probe.add_argument("--job-id", required=True)
+    quartet = commands.add_parser(
+        "quartet", help="Audit the selected harness against QuartetFuzz P1-P4"
+    )
+    quartet.add_argument("--job-id", required=True)
     analyze = commands.add_parser(
         "analyze", help="Rank pinned-source coverage gaps with one local Codex review"
     )
@@ -72,6 +76,8 @@ def main(argv: list[str] | None = None) -> None:
             _smoke(config, args)
         elif args.command == "probe":
             _probe(config, args)
+        elif args.command == "quartet":
+            _quartet(config, args)
         elif args.command == "analyze":
             _analyze(config, args)
         elif args.command == "run":
@@ -157,6 +163,17 @@ def _analyze(config: dict, args: argparse.Namespace) -> None:
         f"analysis complete: decision={review['decision']} "
         f"target={review['selected_fuzz_target']} "
         f"execution_ready={review['execution_ready']}"
+    )
+
+
+def _quartet(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.quartet(args.job_id)
+    review = result["review"]
+    print(
+        f"quartet complete: verdict={review['overall_verdict']} "
+        f"execution_ready={review['execution_ready']} "
+        f"reach_confidence={review['reach_confidence']}"
     )
 
 

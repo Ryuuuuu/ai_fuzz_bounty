@@ -51,7 +51,9 @@ DEFAULTS: dict[str, Any] = {
         "ai_reasoning_effort": "high",
         "ai_executable": "codex",
         "coverage_schema_path": "schemas/coverage-review.schema.json",
+        "quartet_schema_path": "schemas/quartet-review.schema.json",
         "coverage_ai_timeout_seconds": 180,
+        "quartet_ai_timeout_seconds": 180,
         "introspector_endpoint": "https://introspector.oss-fuzz.com/api",
         "introspector_timeout_seconds": 30,
         "coverage_candidate_limit": 10,
@@ -99,6 +101,7 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("pipeline", "tools_path"),
         ("pipeline", "toolchain_lock_path"),
         ("pipeline", "coverage_schema_path"),
+        ("pipeline", "quartet_schema_path"),
     ):
         value = Path(config[section][key]).expanduser()
         if not value.is_absolute():

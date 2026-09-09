@@ -118,6 +118,7 @@ fuzz-pipeline integrate --job-id <id>
 fuzz-pipeline build --job-id <id>
 fuzz-pipeline smoke --job-id <id>
 fuzz-pipeline probe --job-id <id>
+fuzz-pipeline quartet --job-id <id>
 fuzz-pipeline analyze --job-id <id>
 fuzz-pipeline run --job-id <id>
 ```
@@ -125,7 +126,10 @@ fuzz-pipeline run --job-id <id>
 원본 checkout은 증거용으로 깨끗하게 유지하고 별도 Git worktree에서만 빌드한다.
 빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 새 OSS-Fuzz
 프로젝트를 만들어야 하는 경로와 여러 작업을 차례로 넘기는 스케줄러는 다음 구현
-단위다. `probe`는 격리 구성과 처리량을 60초 확인한다. `analyze`는 공개 Introspector
+단위다. `probe`는 격리 구성과 처리량을 60초 확인한다. `quartet`은 고정된
+QuartetFuzz 매뉴얼의 P1–P4 기준으로 하네스를 한 번 구조화 검토하고 기존 ASan 빌드,
+smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으면 P4 함수 도달은
+중간 신뢰도로 명시하며, 디버거로 확인했다고 기록하지 않는다. `analyze`는 공개 Introspector
 자료가 고정 커밋에 실제 존재하는지 확인하고, 직접 바이트 입력 경계가 있는 경우에만
 최대 10개의 압축된 후보를 로컬 Codex에 한 번 전달한다. 분석이 기존 하네스 실행을
 승인해야만 `run`이 시작된다. `run`은

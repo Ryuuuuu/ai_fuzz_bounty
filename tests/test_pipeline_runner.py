@@ -13,6 +13,7 @@ from fuzz_target_scout.coverage_analysis import (
 )
 from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
+from fuzz_target_scout.quartet_gate import find_harness_source, validate_quartet_review
 
 
 class PipelineRunnerTests(unittest.TestCase):
@@ -271,10 +272,59 @@ class PipelineRunnerTests(unittest.TestCase):
                 json.dumps({"stage": "fuzzing", "status": "ready"}),
                 encoding="utf-8",
             )
+            (job_dir / "artifacts" / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}}),
+                encoding="utf-8",
+            )
             runner = object.__new__(PipelineRunner)
             runner.runs_root = root
             with self.assertRaisesRegex(PipelineError, "coverage analysis is required"):
                 runner.fuzz(job_id)
+
+    def test_maps_oss_fuzz_binary_to_upstream_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            harness = source / "pdns" / "fuzz_moadnsparser.cc"
+            harness.parent.mkdir()
+            harness.write_text(
+                "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char* data, "
+                "unsigned long size) { return data && size; }\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                find_harness_source(source, "fuzz_target_moadnsparser"), harness
+            )
+
+    def test_quartet_review_combines_ai_and_dynamic_evidence(self):
+        principle = {
+            "verdict": "pass",
+            "rationale": "supported by the harness",
+            "evidence_lines": [1],
+        }
+        facts = {
+            "line_count": 10,
+            "entrypoint_count": 1,
+            "data_reference_count": 2,
+            "size_reference_count": 2,
+            "unaligned_read_lines": [],
+            "called_symbols": ["parse"],
+            "dynamic_evidence": {
+                "asan_build": True,
+                "smoke_status": "passed",
+                "probe_corpus_files": 3,
+            },
+        }
+        review = validate_quartet_review(
+            {
+                "principles": {name: principle for name in ("p1", "p2", "p3", "p4")},
+                "overall_verdict": "pass",
+                "target_symbols": ["parse"],
+                "summary": "all checks passed",
+            },
+            facts,
+        )
+        self.assertTrue(review["execution_ready"])
+        self.assertEqual(review["reach_confidence"], "medium")
 
 
 if __name__ == "__main__":

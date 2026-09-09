@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "principles": {
+      "type": "object",
+      "properties": {
+        "p1": { "$ref": "#/$defs/principle" },
+        "p2": { "$ref": "#/$defs/principle" },
+        "p3": { "$ref": "#/$defs/principle" },
+        "p4": { "$ref": "#/$defs/principle" }
+      },
+      "required": ["p1", "p2", "p3", "p4"],
+      "additionalProperties": false
+    },
+    "overall_verdict": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail"]
+    },
+    "target_symbols": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string" }
+    },
+    "summary": { "type": "string" }
+  },
+  "required": ["principles", "overall_verdict", "target_symbols", "summary"],
+  "additionalProperties": false,
+  "$defs": {
+    "principle": {
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["pass", "warn", "fail"]
+        },
+        "rationale": { "type": "string" },
+        "evidence_lines": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "required": ["verdict", "rationale", "evidence_lines"],
+      "additionalProperties": false
+    }
+  }
+}

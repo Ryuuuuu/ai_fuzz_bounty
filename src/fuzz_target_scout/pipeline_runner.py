@@ -21,6 +21,11 @@ from .coverage_analysis import (
 from .github import GitHubClient
 from .pipeline import COMMIT_PATTERN, PipelineError, utc_now
 from .policy import PolicyVerifier
+from .quartet_gate import (
+    CodexQuartetReviewer,
+    build_quartet_evidence,
+    quartet_record,
+)
 
 
 Progress = Callable[[str], None]
@@ -110,8 +115,8 @@ class PipelineRunner:
         return self._single_stage(
             job_id,
             expected="smoke",
-            next_stage="coverage_analysis",
-            next_status="analysis_pending",
+            next_stage="quartet_gate",
+            next_status="quartet_pending",
             action=self._smoke_fuzzer,
         )
 
@@ -119,7 +124,7 @@ class PipelineRunner:
         job_dir = self._job_dir(job_id)
         job = self._read_json(job_dir / "job.json")
         state = self._read_json(job_dir / "state.json")
-        if state.get("stage") not in {"coverage_analysis", "fuzzing"}:
+        if state.get("stage") not in {"quartet_gate", "coverage_analysis", "fuzzing"}:
             raise PipelineError(
                 f"job {job_id} is at {state.get('stage')}, expected coverage_analysis"
             )
@@ -131,6 +136,50 @@ class PipelineRunner:
             label="probe",
         )
 
+    def quartet(self, job_id: str) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id)
+        job = self._read_json(job_dir / "job.json")
+        state_path = job_dir / "state.json"
+        state = self._read_json(state_path)
+        if state.get("stage") not in {"quartet_gate", "fuzzing"}:
+            raise PipelineError(
+                f"job {job_id} is at {state.get('stage')}, expected quartet_gate"
+            )
+        artifact_path = job_dir / "artifacts" / "quartet-review.json"
+        if artifact_path.is_file():
+            return self._read_json(artifact_path)
+        probe_path = job_dir / "artifacts" / "probe-run.json"
+        if not probe_path.is_file():
+            raise PipelineError("run a probe before the Quartet gate")
+        build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
+        smoke = self._read_json(job_dir / "artifacts" / "smoke.json")
+        probe = self._read_json(probe_path)
+        quartet_root = self.tools_root / "quartetfuzz"
+        facts, ai_evidence = build_quartet_evidence(
+            job_dir, job, build, smoke, probe, quartet_root
+        )
+        review, usage = CodexQuartetReviewer(self.pipeline).review(ai_evidence)
+        record = quartet_record(facts, review, usage)
+        self._write_json(artifact_path, record)
+        ready = bool(record["review"]["execution_ready"])
+        if ready and (job_dir / "artifacts" / "coverage-plan.json").is_file():
+            state["stage"] = "fuzzing"
+            state["status"] = "ready"
+        elif ready:
+            state["stage"] = "coverage_analysis"
+            state["status"] = "analysis_pending"
+        else:
+            state["stage"] = "quartet_gate"
+            state["status"] = "quartet_review_required"
+        state["last_error"] = None
+        state["updated_at"] = utc_now()
+        state.setdefault("attempts", {})["quartet_gate"] = (
+            int(state.setdefault("attempts", {}).get("quartet_gate", 0)) + 1
+        )
+        self._write_json(state_path, state)
+        record["state"] = state
+        return record
+
     def analyze(self, job_id: str) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
         job = self._read_json(job_dir / "job.json")
@@ -140,6 +189,12 @@ class PipelineRunner:
             raise PipelineError(
                 f"job {job_id} is at {state.get('stage')}, expected coverage_analysis"
             )
+        quartet_path = job_dir / "artifacts" / "quartet-review.json"
+        if not quartet_path.is_file():
+            raise PipelineError("the Quartet gate is required before coverage analysis")
+        quartet = self._read_json(quartet_path)
+        if not bool((quartet.get("review") or {}).get("execution_ready")):
+            raise PipelineError("the Quartet gate requires review before coverage analysis")
         artifact_path = job_dir / "artifacts" / "coverage-plan.json"
         if artifact_path.is_file():
             return self._read_json(artifact_path)
@@ -192,6 +247,12 @@ class PipelineRunner:
             raise PipelineError(
                 f"job {job_id} is at {state.get('stage')}, expected fuzzing"
             )
+        quartet_path = job_dir / "artifacts" / "quartet-review.json"
+        if not quartet_path.is_file():
+            raise PipelineError("the Quartet gate is required before a full fuzz run")
+        quartet = self._read_json(quartet_path)
+        if not bool((quartet.get("review") or {}).get("execution_ready")):
+            raise PipelineError("the Quartet gate did not approve this harness")
         plan_path = job_dir / "artifacts" / "coverage-plan.json"
         if not plan_path.is_file():
             raise PipelineError("coverage analysis is required before a full fuzz run")
