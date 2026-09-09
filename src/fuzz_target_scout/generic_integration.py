@@ -276,12 +276,16 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
 """,
     }
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
+mapfile -t header_dirs < <(find "$SRC/project" -regextype posix-extended -type f -regex '.*[.](h|hh|hpp|hxx)' -print0 | xargs -0 -r -n1 dirname | sort -u | head -n 200)
+include_flags=()
+for directory in "${header_dirs[@]}"; do
+  include_flags+=("-I$directory")
+done
 if (( ${#archives[@]} == 0 )); then
   echo 'generic integration found no static libraries' >&2
   exit 1
 fi
-"$CXX" $CXXFLAGS -std=c++17 -I. -Iinclude -Isrc "$SRC/generic_harness.cc" \\
-  -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
+"$CXX" $CXXFLAGS -std=c++17 "${include_flags[@]}" "$SRC/generic_harness.cc" \\n  -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
   $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
     return prelude + builds[build_system] + link

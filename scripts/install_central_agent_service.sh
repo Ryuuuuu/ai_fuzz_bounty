@@ -48,6 +48,7 @@ systemd_quote() {
 
 working_directory="$project_root"
 environment_file="$environment_path"
+runtime_path="$project_root/.venv/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 exec_start="$(systemd_quote "$launcher") --config $(systemd_quote "$config_path") agent"
 cat >"$unit_path" <<EOF
 [Unit]
@@ -58,6 +59,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$working_directory
+Environment=PATH=$runtime_path
 EnvironmentFile=$environment_file
 ExecStart=$exec_start
 Restart=on-failure
