@@ -77,7 +77,14 @@ def prepare_jobs(
             existing += 1
             continue
         job_dir.mkdir(parents=False, exist_ok=False)
-        for name in ("artifacts", "corpus", "crashes", "integration", "logs"):
+        for name in (
+            "artifacts",
+            "corpus",
+            "crashes",
+            "integration",
+            "logs",
+            "validation",
+        ):
             (job_dir / name).mkdir()
         _write_json(job_dir / "job.json", work_order)
         _write_json(
@@ -213,6 +220,29 @@ def make_work_order(
                 "crash_reproduces_at_least_3_of_3_runs",
             ],
             "candidate_assessment": assessment,
+            "validation_handoff": {
+                "required_inputs": [
+                    "minimal_reproducer",
+                    "reproducer_sha256",
+                    "symbolized_sanitizer_stack",
+                    "source_and_toolchain_commits",
+                    "three_of_three_clean_reproductions",
+                    "affected_public_api_or_cli_path",
+                ],
+                "expected_outputs": [
+                    "reproduction_steps",
+                    "non_weaponized_poc",
+                    "trigger_conditions",
+                    "impact_analysis",
+                    "duplicate_search_notes",
+                    "human_review_report_draft",
+                ],
+                "restrictions": [
+                    "do_not_submit_automatically",
+                    "do_not_generate_deployment_or_persistence",
+                    "do_not_claim_impact_without_evidence",
+                ],
+            },
         },
         "",
     )

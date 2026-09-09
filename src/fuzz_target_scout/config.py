@@ -44,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "pipeline": {
         "input_path": "data/verified-candidates.jsonl",
         "runs_path": "data/runs",
+        "tools_path": ".tools",
         "toolchain_lock_path": "toolchain.lock.json",
         "languages": ["C", "C++"],
         "ai_model": "gpt-daybreak-blue-latest",
@@ -55,6 +56,10 @@ DEFAULTS: dict[str, Any] = {
         "triage_timeout_seconds": 3600,
         "coverage_stall_seconds": 14400,
         "parallel_workers": 6,
+        "probe_seconds": 60,
+        "container_memory_mb": 6144,
+        "fuzzer_rss_limit_mb": 1024,
+        "input_timeout_seconds": 10,
     },
     "daemon": {"interval_seconds": 21600},
 }
@@ -85,6 +90,7 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         ("storage", "export_path"),
         ("pipeline", "input_path"),
         ("pipeline", "runs_path"),
+        ("pipeline", "tools_path"),
         ("pipeline", "toolchain_lock_path"),
     ):
         value = Path(config[section][key]).expanduser()

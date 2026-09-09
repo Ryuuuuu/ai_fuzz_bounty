@@ -13,6 +13,7 @@ from .pipeline import (
     load_toolchain_lock,
     prepare_jobs,
 )
+from .pipeline_runner import PipelineRunner, STAGE_ORDER
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +29,23 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--limit", type=int)
     listing = commands.add_parser("list", help="List prepared work orders")
     listing.add_argument("--runs-root")
+    prepare = commands.add_parser(
+        "prepare", help="Recheck policy, checkout source and sync pinned tools"
+    )
+    prepare.add_argument("--job-id", required=True)
+    prepare.add_argument("--until", choices=STAGE_ORDER, default="integration")
+    integrate = commands.add_parser(
+        "integrate", help="Reuse a matching pinned OSS-Fuzz project definition"
+    )
+    integrate.add_argument("--job-id", required=True)
+    build = commands.add_parser("build", help="Build ASan/libFuzzer targets")
+    build.add_argument("--job-id", required=True)
+    smoke = commands.add_parser("smoke", help="Run a short OSS-Fuzz build check")
+    smoke.add_argument("--job-id", required=True)
+    probe = commands.add_parser("probe", help="Run a short isolated fuzzing probe")
+    probe.add_argument("--job-id", required=True)
+    run = commands.add_parser("run", help="Run the full work-order fuzzing budget")
+    run.add_argument("--job-id", required=True)
     commands.add_parser("doctor", help="Check fuzzing pipeline prerequisites")
     return parser
 
@@ -40,6 +58,18 @@ def main(argv: list[str] | None = None) -> None:
             _plan(config, args)
         elif args.command == "list":
             _list(config, args)
+        elif args.command == "prepare":
+            _prepare(config, args)
+        elif args.command == "integrate":
+            _integrate(config, args)
+        elif args.command == "build":
+            _build(config, args)
+        elif args.command == "smoke":
+            _smoke(config, args)
+        elif args.command == "probe":
+            _probe(config, args)
+        elif args.command == "run":
+            _run(config, args)
         elif args.command == "doctor":
             _doctor(config)
     except PipelineError as exc:
@@ -77,6 +107,51 @@ def _list(config: dict, args: argparse.Namespace) -> None:
         )
 
 
+def _prepare(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    state = runner.prepare(args.job_id, args.until)
+    print(
+        f"prepare complete: job_id={args.job_id} status={state['status']} "
+        f"stage={state['stage']}"
+    )
+
+
+def _integrate(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    state = runner.integrate(args.job_id)
+    print(f"integration complete: job_id={args.job_id} stage={state['stage']}")
+
+
+def _build(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    state = runner.build(args.job_id)
+    print(f"build complete: job_id={args.job_id} stage={state['stage']}")
+
+
+def _smoke(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    state = runner.smoke(args.job_id)
+    print(f"smoke complete: job_id={args.job_id} stage={state['stage']}")
+
+
+def _probe(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.probe(args.job_id)
+    print(
+        f"probe complete: target={result['fuzz_target']} "
+        f"corpus={result['corpus_files']} crashes={len(result['crash_files'])}"
+    )
+
+
+def _run(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.fuzz(args.job_id)
+    print(
+        f"fuzz complete: target={result['fuzz_target']} "
+        f"seconds={result['elapsed_seconds']} crashes={len(result['crash_files'])}"
+    )
+
+
 def _doctor(config: dict) -> None:
     pipeline = config["pipeline"]
     checks = [
@@ -88,6 +163,7 @@ def _doctor(config: dict) -> None:
             "ok" if Path(pipeline["toolchain_lock_path"]).is_file() else "missing",
         ),
         ("runs root", str(Path(pipeline["runs_path"]))),
+        ("tools root", str(Path(pipeline["tools_path"]))),
         ("AI model", f"{pipeline['ai_model']} ({pipeline['ai_reasoning_effort']})"),
     ]
     daemon = _docker_server_status()

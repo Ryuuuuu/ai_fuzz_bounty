@@ -39,6 +39,7 @@ export_path = "data/verified-candidates.jsonl"
 [pipeline]
 input_path = "data/verified-candidates.jsonl"
 runs_path = "data/runs"
+tools_path = ".tools"
 toolchain_lock_path = "toolchain.lock.json"
 languages = ["C", "C++"]
 ai_model = "gpt-daybreak-blue-latest"
@@ -51,6 +52,10 @@ triage_timeout_seconds = 3600
 coverage_stall_seconds = 14400
 # 12코어/8GB WSL 기준. 메모리가 부족하면 4로 낮추세요.
 parallel_workers = 6
+probe_seconds = 60
+container_memory_mb = 6144
+fuzzer_rss_limit_mb = 1024
+input_timeout_seconds = 10
 
 [daemon]
 interval_seconds = 21600

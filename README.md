@@ -74,6 +74,12 @@ GitHub를 검색하고 상위 후보만 AI로 재평가하려면:
     fuzz-pipeline doctor
     fuzz-pipeline plan --limit 1
     fuzz-pipeline list
+    fuzz-pipeline prepare --job-id <job-id>
+    fuzz-pipeline integrate --job-id <job-id>
+    fuzz-pipeline build --job-id <job-id>
+    fuzz-pipeline smoke --job-id <job-id>
+    fuzz-pipeline probe --job-id <job-id>
+    fuzz-pipeline run --job-id <job-id>
 
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
 그룹에 추가한 뒤 WSL을 재시작해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.

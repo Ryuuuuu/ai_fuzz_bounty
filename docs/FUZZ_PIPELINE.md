@@ -103,8 +103,31 @@ logs/             빌드와 실행 로그
 ## 현재 구현된 경계
 
 `fuzz-pipeline plan`은 정책·커밋·언어 게이트를 다시 검사하고 위 계약의 작업 폴더를
-멱등적으로 만든다. 다음 구현 단위는 고정 커밋 checkout, 도구 동기화, OSS-Fuzz
-외부 프로젝트 생성과 ASan smoke 실행이다.
+멱등적으로 만든다. `fuzz-pipeline prepare --job-id <id>`는 현재 정책을 다시
+확인하고, 고정 커밋만 checkout하고, 작업 주문에 기록된 공식 도구 커밋을 동기화한
+뒤 `integration` 단계에서 멈춘다. 이 준비 단계는 내려받은 코드를 실행하지 않는다.
+기존 OSS-Fuzz 프로젝트가 있으면 다음 단계도 실행할 수 있다.
+
+```bash
+fuzz-pipeline integrate --job-id <id>
+fuzz-pipeline build --job-id <id>
+fuzz-pipeline smoke --job-id <id>
+fuzz-pipeline probe --job-id <id>
+fuzz-pipeline run --job-id <id>
+```
+
+원본 checkout은 증거용으로 깨끗하게 유지하고 별도 Git worktree에서만 빌드한다.
+빌드 이미지 ID, 생성된 fuzzer 목록과 smoke 대상은 artifacts에 기록한다. 새 OSS-Fuzz
+프로젝트를 만들어야 하는 경로와 여러 작업을 차례로 넘기는 스케줄러는 다음 구현
+단위다. `probe`는 격리 구성을 60초 확인하고 상태를 진행시키지 않는다. `run`은
+작업 주문의 86,400초를 임의로 줄이지 않고 실행한 뒤 `triage` 단계로 넘긴다.
+실행 컨테이너에는 작업용 빌드 산출물 복사본만 쓰기 가능하게 마운트하며, 고정 소스와
+원본 빌드 산출물은 수정하지 않는다.
+
+후속 검증 에이전트를 위해 각 `job.json`에는 `validation_handoff` 계약이 들어간다.
+최소화 입력과 SHA-256, 심볼화 스택, 소스·도구 커밋, 깨끗한 환경의 3/3 재현 자료가
+모두 있어야 넘길 수 있다. 후속 출력은 비무기화 PoC, 재현 순서, 트리거 조건,
+근거 기반 영향도, 중복 조사 기록과 사람 검토용 보고서 초안이다.
 
 현재 WSL 사용자가 Docker 소켓을 사용할 수 없으면 한 번만 다음을 실행하고 Windows
 터미널에서 WSL을 재시작한다.
