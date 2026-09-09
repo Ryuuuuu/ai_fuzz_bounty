@@ -54,6 +54,8 @@ DEFAULTS: dict[str, Any] = {
         "quartet_schema_path": "schemas/quartet-review.schema.json",
         "coverage_ai_timeout_seconds": 180,
         "quartet_ai_timeout_seconds": 180,
+        "generation_ai_timeout_seconds": 240,
+        "generation_max_tokens": 4096,
         "introspector_endpoint": "https://introspector.oss-fuzz.com/api",
         "introspector_timeout_seconds": 30,
         "coverage_candidate_limit": 10,

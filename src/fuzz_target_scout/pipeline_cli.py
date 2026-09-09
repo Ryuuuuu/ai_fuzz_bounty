@@ -52,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
         "analyze", help="Rank pinned-source coverage gaps with one local Codex review"
     )
     analyze.add_argument("--job-id", required=True)
+    generate = commands.add_parser(
+        "generate", help="Generate and build a focused harness through OSS-Fuzz-Gen"
+    )
+    generate.add_argument("--job-id", required=True)
     run = commands.add_parser("run", help="Run the full work-order fuzzing budget")
     run.add_argument("--job-id", required=True)
     commands.add_parser("doctor", help="Check fuzzing pipeline prerequisites")
@@ -80,6 +84,8 @@ def main(argv: list[str] | None = None) -> None:
             _quartet(config, args)
         elif args.command == "analyze":
             _analyze(config, args)
+        elif args.command == "generate":
+            _generate(config, args)
         elif args.command == "run":
             _run(config, args)
         elif args.command == "doctor":
@@ -174,6 +180,15 @@ def _quartet(config: dict, args: argparse.Namespace) -> None:
         f"quartet complete: verdict={review['overall_verdict']} "
         f"execution_ready={review['execution_ready']} "
         f"reach_confidence={review['reach_confidence']}"
+    )
+
+
+def _generate(config: dict, args: argparse.Namespace) -> None:
+    runner = PipelineRunner(config, progress=lambda message: print(message, flush=True))
+    result = runner.generate(args.job_id)
+    print(
+        f"generation complete: target={result['fuzz_target']} "
+        f"attempts={len(result['attempts'])} stage={result['state']['stage']}"
     )
 
 

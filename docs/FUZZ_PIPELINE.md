@@ -120,6 +120,8 @@ fuzz-pipeline smoke --job-id <id>
 fuzz-pipeline probe --job-id <id>
 fuzz-pipeline quartet --job-id <id>
 fuzz-pipeline analyze --job-id <id>
+# analyze 결과가 extend_existing 또는 generate_new_harness일 때만
+fuzz-pipeline generate --job-id <id>
 fuzz-pipeline run --job-id <id>
 ```
 
@@ -136,6 +138,12 @@ smoke와 probe 결과를 함께 기록한다. 빌더 이미지에 GDB가 없으�
 작업 주문의 86,400초를 임의로 줄이지 않고 실행한 뒤 `triage` 단계로 넘긴다.
 실행 컨테이너에는 작업용 빌드 산출물 복사본만 쓰기 가능하게 마운트하며, 고정 소스와
 원본 빌드 산출물은 수정하지 않는다.
+
+`generate`는 분석이 기존 하네스 확장이나 새 하네스를 명시적으로 요구한 작업에서만
+동작한다. 고정 OSS-Fuzz-Gen의 `--ai-binary`/`.rawoutput` 계약으로 로컬 Codex를 한 번
+호출하고, 공식 OSS-Fuzz 빌드가 실패하면 압축된 오류만 넘겨 최대 3회 수정한다. 생성
+코드는 증거용 checkout이 아니라 빌드 worktree의 기존 하네스 위치에만 적용한다.
+성공 후 smoke, probe, Quartet, coverage 분석을 새 하네스에 다시 수행한다.
 
 후속 검증 에이전트를 위해 각 `job.json`에는 `validation_handoff` 계약이 들어간다.
 최소화 입력과 SHA-256, 심볼화 스택, 소스·도구 커밋, 깨끗한 환경의 3/3 재현 자료가

@@ -88,7 +88,9 @@ class CodexCoverageReviewer:
             "Choose baseline_existing when the listed gaps are stateful service paths, need network "
             "or global setup, or cannot be reached from deterministic bytes. Choose extend_existing "
             "when a built target is close to a viable gap. Choose generate_new_harness only for a "
-            "specific deterministic library/API boundary. Do not discuss exploitability, attacks, "
+            "specific deterministic library/API boundary. When generated_harness is present and its "
+            "Quartet gate passed, prefer baseline_existing unless the evidence shows a concrete gap. "
+            "Do not discuss exploitability, attacks, "
             "or bug likelihood. selected_fuzz_target must be one of built_fuzz_targets even when "
             "you recommend a new harness. Return only the required JSON object.\n\nEvidence:\n"
             + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
@@ -190,7 +192,14 @@ def build_coverage_evidence(
         )
     compact.sort(key=lambda value: (-int(value["rank_score"]), value["signature"]))
     compact = compact[:max_candidates]
-    harnesses = _harness_inventory(source)
+    harness_root = source
+    generated_path = str(build.get("generated_harness_path") or "")
+    if generated_path:
+        candidate_root = (job_dir / "build-source").resolve()
+        candidate_path = Path(generated_path).resolve()
+        if candidate_root in candidate_path.parents and candidate_path.is_file():
+            harness_root = candidate_root
+    harnesses = _harness_inventory(harness_root)
     stats = probe.get("worker_stats") or []
     evidence = {
         "schema_version": 1,
@@ -199,6 +208,14 @@ def build_coverage_evidence(
         "oss_fuzz_project": project,
         "built_fuzz_targets": list(build.get("fuzz_targets") or []),
         "source_harnesses": harnesses,
+        "generated_harness": (
+            {
+                "fuzz_target": build.get("generated_fuzz_target"),
+                "sha256": build.get("generated_harness_sha256"),
+            }
+            if generated_path
+            else None
+        ),
         "probe": {
             "target": probe.get("fuzz_target"),
             "seconds": probe.get("elapsed_seconds"),
@@ -216,11 +233,16 @@ def build_coverage_evidence(
             "no_source_bodies_are_sent_to_the_ai_reviewer",
         ],
     }
+    refresh_evidence_hash(evidence)
+    return evidence
+
+
+def refresh_evidence_hash(evidence: dict[str, Any]) -> None:
+    evidence.pop("evidence_sha256", None)
     encoded = json.dumps(
         evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
     evidence["evidence_sha256"] = hashlib.sha256(encoded).hexdigest()
-    return evidence
 
 
 def validate_review(

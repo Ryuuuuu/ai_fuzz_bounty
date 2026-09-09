@@ -138,9 +138,20 @@ def build_quartet_evidence(
     probe: dict[str, Any],
     quartet_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    generated_path = str(build.get("generated_harness_path") or "")
     source_root = job_dir / "source"
+    generated = False
+    if generated_path:
+        candidate_root = (job_dir / "build-source").resolve()
+        candidate_path = Path(generated_path).resolve()
+        if candidate_path.parent != candidate_root and candidate_root not in candidate_path.parents:
+            raise PipelineError("generated harness escaped the build worktree")
+        if not candidate_path.is_file():
+            raise PipelineError("generated harness recorded by the build is missing")
+        source_root = candidate_root
+        generated = True
     fuzz_target = str(smoke["fuzz_target"])
-    harness = find_harness_source(source_root, fuzz_target)
+    harness = Path(generated_path) if generated else find_harness_source(source_root, fuzz_target)
     source_code = harness.read_text(encoding="utf-8", errors="replace")
     lines = source_code.splitlines()
     includes = [
@@ -189,6 +200,7 @@ def build_quartet_evidence(
         "oss_fuzz_project": build.get("oss_fuzz_project"),
         "fuzz_target": fuzz_target,
         "harness_path": harness.relative_to(source_root).as_posix(),
+        "generated_harness": generated,
         "harness_sha256": hashlib.sha256(source_code.encode("utf-8")).hexdigest(),
         "line_count": len(lines),
         "includes": includes,

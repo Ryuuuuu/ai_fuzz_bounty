@@ -17,13 +17,24 @@ from .coverage_analysis import (
     analysis_record,
     build_coverage_evidence,
     deterministic_review,
+    refresh_evidence_hash,
 )
 from .github import GitHubClient
+from .harness_generation import (
+    extract_harness_code,
+    generation_prompt,
+    generation_record,
+    invoke_oss_fuzz_gen_adapter,
+    select_generation_candidate,
+    source_context,
+    validate_generated_harness,
+)
 from .pipeline import COMMIT_PATTERN, PipelineError, utc_now
 from .policy import PolicyVerifier
 from .quartet_gate import (
     CodexQuartetReviewer,
     build_quartet_evidence,
+    find_harness_source,
     quartet_record,
 )
 
@@ -217,6 +228,13 @@ class PipelineRunner:
             candidates,
             max_candidates=int(self.pipeline["coverage_candidate_limit"]),
         )
+        evidence["quartet_review"] = {
+            "overall_verdict": (quartet.get("review") or {}).get("overall_verdict"),
+            "execution_ready": (quartet.get("review") or {}).get("execution_ready"),
+            "target_symbols": (quartet.get("review") or {}).get("target_symbols", []),
+            "reach_confidence": (quartet.get("review") or {}).get("reach_confidence"),
+        }
+        refresh_evidence_hash(evidence)
         review = deterministic_review(evidence, errors)
         reviewer = "deterministic_gate"
         usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
@@ -233,6 +251,141 @@ class PipelineRunner:
         state["updated_at"] = utc_now()
         state.setdefault("attempts", {})["coverage_analysis"] = (
             int(state.setdefault("attempts", {}).get("coverage_analysis", 0)) + 1
+        )
+        self._write_json(state_path, state)
+        record["state"] = state
+        return record
+
+    def generate(self, job_id: str) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id)
+        job = self._read_json(job_dir / "job.json")
+        state_path = job_dir / "state.json"
+        state = self._read_json(state_path)
+        if state.get("stage") != "fuzzing" or state.get("status") not in {
+            "harness_work_pending",
+            "generation_failed",
+        }:
+            raise PipelineError("job does not currently require harness generation")
+        plan = self._read_json(job_dir / "artifacts" / "coverage-plan.json")
+        candidate = select_generation_candidate(plan)
+        build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
+        fuzz_target = str((plan.get("review") or {})["selected_fuzz_target"])
+        if fuzz_target not in build.get("fuzz_targets", []):
+            raise PipelineError("generation plan selected an unknown fuzz target")
+        source_root = job_dir / "source"
+        evidence_harness = find_harness_source(source_root, fuzz_target)
+        relative_harness = evidence_harness.relative_to(source_root)
+        build_harness = job_dir / "build-source" / relative_harness
+        if not build_harness.is_file():
+            raise PipelineError("build worktree does not contain the selected harness")
+        original_code = evidence_harness.read_text(encoding="utf-8", errors="replace")
+        if build_harness.read_text(encoding="utf-8", errors="replace") != original_code:
+            raise PipelineError("build harness differs from the pinned evidence source")
+        context = source_context(source_root, candidate)
+        expected_tools = {
+            str(item.get("name")): str(item.get("commit"))
+            for item in (job.get("route") or {}).get("required_tools") or []
+        }
+        oss_fuzz_gen = self.tools_root / "oss-fuzz-gen"
+        actual_tool_commit = self._capture(
+            ["git", "-C", str(oss_fuzz_gen), "rev-parse", "HEAD"]
+        )
+        if actual_tool_commit.casefold() != expected_tools.get("oss-fuzz-gen", "").casefold():
+            raise PipelineError("OSS-Fuzz-Gen checkout no longer matches the work order")
+
+        generation_root = job_dir / "integration" / "generated" / str(time.time_ns())
+        generation_root.mkdir(parents=True)
+        attempts: list[dict[str, Any]] = []
+        prior_code = ""
+        build_error = ""
+        max_attempts = int((job.get("ai") or {})["max_harness_attempts"])
+        final_validation: dict[str, Any] = {}
+        try:
+            for attempt in range(1, max_attempts + 1):
+                code = ""
+                usage: dict[str, int] = {}
+                prompt = generation_prompt(
+                    project=str(build["oss_fuzz_project"]),
+                    language=str((job.get("source") or {}).get("language") or "C++"),
+                    fuzz_target=fuzz_target,
+                    candidate=candidate,
+                    context=context,
+                    existing_harness=original_code,
+                    prior_code=prior_code,
+                    build_error=build_error,
+                )
+                attempt_dir = generation_root / f"attempt-{attempt}"
+                try:
+                    response, usage = invoke_oss_fuzz_gen_adapter(
+                        self.pipeline, prompt, attempt_dir
+                    )
+                    code = extract_harness_code(response)
+                    validation = validate_generated_harness(code, candidate)
+                    build_harness.write_text(code, encoding="utf-8")
+                    self._build_fuzzers(job_dir, job)
+                except PipelineError as exc:
+                    build_error = str(exc)
+                    build_log = job_dir / "logs" / "oss-fuzz-build.log"
+                    if build_log.is_file():
+                        build_error += "\n" + build_log.read_text(
+                            encoding="utf-8", errors="replace"
+                        )[-8000:]
+                    attempts.append(
+                        {
+                            "attempt": attempt,
+                            "success": False,
+                            "error": str(exc)[:2000],
+                            "usage": usage,
+                        }
+                    )
+                    prior_code = code
+                    if attempt == max_attempts:
+                        raise PipelineError(
+                            f"harness generation failed after {max_attempts} attempts: {exc}"
+                        ) from exc
+                    continue
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "success": True,
+                        "error": "",
+                        "usage": usage,
+                    }
+                )
+                final_validation = validation
+                break
+        except Exception as exc:
+            build_harness.write_text(original_code, encoding="utf-8")
+            state["status"] = "generation_failed"
+            state["last_error"] = str(exc)[:2000]
+            state["updated_at"] = utc_now()
+            self._write_json(state_path, state)
+            if isinstance(exc, PipelineError):
+                raise
+            raise PipelineError(f"harness generation failed: {exc}") from exc
+
+        manifest_path = job_dir / "artifacts" / "build-manifest.json"
+        manifest = self._read_json(manifest_path)
+        manifest["generated_fuzz_target"] = fuzz_target
+        manifest["generated_harness_path"] = str(build_harness)
+        manifest["generated_harness_sha256"] = final_validation["sha256"]
+        self._write_json(manifest_path, manifest)
+        record = generation_record(
+            candidate=candidate,
+            fuzz_target=fuzz_target,
+            harness_path=relative_harness.as_posix(),
+            validation=final_validation,
+            attempts=attempts,
+            oss_fuzz_gen_commit=actual_tool_commit,
+        )
+        self._archive_pre_generation_results(job_dir, fuzz_target)
+        self._write_json(job_dir / "artifacts" / "harness-generation.json", record)
+        state["stage"] = "smoke"
+        state["status"] = "generated"
+        state["last_error"] = None
+        state["updated_at"] = utc_now()
+        state.setdefault("attempts", {})["harness_generation"] = (
+            int(state.setdefault("attempts", {}).get("harness_generation", 0)) + 1
         )
         self._write_json(state_path, state)
         record["state"] = state
@@ -796,7 +949,8 @@ class PipelineRunner:
         fuzzers = [str(value) for value in manifest.get("fuzz_targets") or []]
         if not fuzzers:
             raise PipelineError("build manifest has no fuzz targets")
-        selected = _select_smoke_target(fuzzers)
+        preferred = str(manifest.get("generated_fuzz_target") or "")
+        selected = preferred if preferred in fuzzers else _select_smoke_target(fuzzers)
         project = str(manifest["oss_fuzz_project"])
         helper = self.tools_root / "oss-fuzz" / "infra" / "helper.py"
         self._run(
@@ -822,6 +976,27 @@ class PipelineRunner:
                 "status": "passed",
             },
         )
+
+    @staticmethod
+    def _archive_pre_generation_results(job_dir: Path, fuzz_target: str) -> None:
+        stamp = str(time.time_ns())
+        history = job_dir / "artifacts" / "history" / f"generation-{stamp}"
+        history.mkdir(parents=True)
+        for name in ("smoke.json", "probe-run.json", "quartet-review.json", "coverage-plan.json"):
+            path = job_dir / "artifacts" / name
+            if path.is_file():
+                shutil.move(str(path), history / name)
+        runtime_probe = job_dir / "runtime-out" / "probe"
+        if runtime_probe.exists():
+            runtime_probe.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(runtime_probe), runtime_probe.parent / f"probe-{stamp}")
+        for category in ("corpus", "crashes"):
+            root = job_dir / category
+            selected = root / fuzz_target
+            if selected.exists():
+                destination = job_dir / f"{category}-history" / stamp / fuzz_target
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(selected), destination)
 
     @staticmethod
     def _find_oss_fuzz_project(
