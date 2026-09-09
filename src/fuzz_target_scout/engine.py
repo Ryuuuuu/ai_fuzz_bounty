@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from typing import Any, Callable
 
 from .ai import AIError, CodexReviewer, compact_evidence, evidence_hash
+from .architecture import assess_architecture
 from .github import GitHubClient, GitHubError
 from .models import Candidate, RepoSnapshot
 from .policy import PolicyVerifier
@@ -26,13 +27,19 @@ class ScanSummary:
     ai_calls: int
     ai_cache_hits: int
     errors: int
+    architecture_compatible: int = 0
+    architecture_rejected: int = 0
 
 
 class ScoutEngine:
     def __init__(self, config: dict[str, Any], progress: Progress | None = None):
         self.config = config
         self.progress = progress or (lambda _: None)
-        self.github = GitHubClient(config["github"])
+        github_config = {
+            **config["github"],
+            "max_architecture_files": config["architecture"]["max_evidence_files"],
+        }
+        self.github = GitHubClient(github_config)
         self.policy = PolicyVerifier(
             config["policy"]["catalog_path"],
             int(config["policy"]["max_catalog_age_days"]),
@@ -65,13 +72,26 @@ class ScoutEngine:
                     if policy.status in {"verified", "conditional"}:
                         self.progress(f"[{index}/{len(repos)}] code evidence {repo.full_name}")
                         with_policy = self.github.hydrate_code_evidence(with_policy)
+                    architecture = assess_architecture(
+                        with_policy, self.config["architecture"]
+                    )
                     static = assess_static(with_policy)
+                    if not architecture.compatible:
+                        static.blockers.extend(
+                            value for value in architecture.blockers
+                            if value not in static.blockers
+                        )
+                    else:
+                        static.signals.append(
+                            f"host_arch_compatible:{architecture.host_arch}"
+                        )
                     candidates.append(
                         Candidate(
                             repo=with_policy,
                             static=static,
                             policy=policy,
                             final_score=final_score(static),
+                            architecture=architecture,
                         )
                     )
                 except GitHubError as exc:
@@ -104,6 +124,14 @@ class ScoutEngine:
                 ai_calls=ai_calls,
                 ai_cache_hits=ai_cache_hits,
                 errors=errors,
+                architecture_compatible=sum(
+                    bool(c.architecture and c.architecture.compatible)
+                    for c in candidates
+                ),
+                architecture_rejected=sum(
+                    bool(c.architecture and not c.architecture.compatible)
+                    for c in candidates
+                ),
             )
         except Exception as exc:
             self.store.finish_scan(
@@ -130,6 +158,17 @@ class ScoutEngine:
                     unique[repo.full_name.casefold()] = repo
             return list(unique.values())
 
+        if bool(self.config["github"].get("seed_policy_catalog", True)):
+            for name in self.policy.catalog_names:
+                try:
+                    repo = self.github.get_repository(name)
+                except GitHubError as exc:
+                    self.progress(f"warning: catalog seed {name}: {exc}")
+                    continue
+                if repo:
+                    unique.setdefault(repo.full_name.casefold(), repo)
+                if limit and len(unique) >= limit:
+                    return list(unique.values())
         selected_queries = queries or list(self.config["github"]["queries"])
         per_query = int(self.config["github"]["per_query"])
         pushed_after = (date.today() - timedelta(days=365)).isoformat()
@@ -160,6 +199,7 @@ class ScoutEngine:
             candidate
             for candidate in candidates
             if candidate.policy.status == "verified"
+            and bool(candidate.architecture and candidate.architecture.compatible)
             and candidate.static.fuzz_score >= int(ai_config["minimum_static_score"])
         ]
         eligible.sort(key=lambda item: item.static.fuzz_score, reverse=True)
@@ -171,7 +211,10 @@ class ScoutEngine:
 
         for candidate in eligible:
             evidence = compact_evidence(
-                candidate.repo, candidate.static, candidate.policy.status
+                candidate.repo,
+                candidate.static,
+                candidate.policy.status,
+                candidate.architecture,
             )
             digest = evidence_hash(evidence)
             cache_key = make_ai_cache_key(

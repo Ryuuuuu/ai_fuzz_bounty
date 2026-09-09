@@ -22,6 +22,7 @@ class GitHubClient:
         self.api_url = str(config["api_url"]).rstrip("/")
         self.timeout = int(config["timeout_seconds"])
         self.max_tree_paths = int(config["max_tree_paths"])
+        self.max_architecture_files = int(config.get("max_architecture_files", 8))
         self.token = os.environ.get("GITHUB_TOKEN", "").strip()
         self.rate_remaining: int | None = None
         self.rate_reset: str | None = None
@@ -136,18 +137,51 @@ class GitHubClient:
         )
         branch = urllib.parse.quote(repo.default_branch, safe="")
         tree = self._request(f"/repos/{encoded}/git/trees/{branch}?recursive=1") or {}
-        paths = [
-            item["path"]
+        blobs = [
+            item
             for item in (tree.get("tree") or [])
             if item.get("type") == "blob" and isinstance(item.get("path"), str)
         ][: self.max_tree_paths]
+        paths = [str(item["path"]) for item in blobs]
         readme = self._request(f"/repos/{encoded}/readme")
+        architecture_files: dict[str, str] = {}
+        for item in self._architecture_blobs(blobs):
+            payload = self._request(f"/repos/{encoded}/git/blobs/{item['sha']}") or {}
+            content = self._decode_content(payload)
+            if content:
+                architecture_files[str(item["path"])] = content[:32_000]
         return replace(
             repo,
             head_sha=tree.get("sha") or repo.head_sha,
             paths=paths,
             readme_excerpt=self._compact_readme(self._decode_content(readme)),
+            architecture_files=architecture_files,
         )
+
+    def _architecture_blobs(self, blobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        arch = re.compile(r"(?i)(?:aarch64|arm64|armv8|amd64|x86[_-]?64)")
+        build_or_ci = re.compile(
+            r"(?i)(?:^|/)(?:\.github/workflows|ci|scripts|docs?)/|"
+            r"(?:dockerfile|docker-bake|azure-pipelines|cmakepresets|build)"
+        )
+        candidates = []
+        for item in blobs:
+            path = str(item.get("path") or "")
+            size = int(item.get("size") or 0)
+            sha = str(item.get("sha") or "")
+            if not sha or size > 256_000:
+                continue
+            if arch.search(path) or build_or_ci.search(path):
+                candidates.append(item)
+        candidates.sort(
+            key=lambda item: (
+                not bool(arch.search(str(item.get("path") or ""))),
+                not str(item.get("path") or "").startswith(".github/workflows/"),
+                str(item.get("path") or "").casefold(),
+            )
+        )
+        return candidates[: self.max_architecture_files]
 
     @staticmethod
     def _decode_content(payload: dict[str, Any] | None) -> str:
@@ -167,7 +201,8 @@ class GitHubClient:
             return ""
         keywords = re.compile(
             r"(?i)(linux|ubuntu|debian|build|compile|test|fuzz|docker|cmake|cargo|"
-            r"standalone|command.line|library|dependencies|requirements)"
+            r"standalone|command.line|library|dependencies|requirements|arm64|"
+            r"aarch64|amd64|x86.64)"
         )
         selected = [text[:1200]]
         for line in text.splitlines():

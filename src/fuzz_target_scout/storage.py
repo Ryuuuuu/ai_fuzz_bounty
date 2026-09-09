@@ -263,6 +263,7 @@ class Store:
                     "security_url": row["security_url"],
                     "note": details["policy_note"],
                 },
+                "architecture": details.get("architecture"),
                 "assessment": {
                     "fuzz_score": row["fuzz_score"],
                     "reproduce_difficulty": row["reproduce_difficulty"],
@@ -306,6 +307,9 @@ def _candidate_details(candidate: Candidate) -> dict[str, Any]:
         ][:50],
         "security_sha256": security_digest,
         "policy_note": candidate.policy.note,
+        "architecture": (
+            candidate.architecture.to_dict() if candidate.architecture else None
+        ),
         "signals": candidate.static.signals,
         "blockers": candidate.static.blockers,
         "ai": candidate.ai.to_dict() if candidate.ai else None,

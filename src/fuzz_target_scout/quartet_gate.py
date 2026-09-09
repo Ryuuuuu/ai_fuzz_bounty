@@ -141,12 +141,12 @@ def build_quartet_evidence(
     quartet_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     generated_path = str(build.get("generated_harness_path") or "")
+    integration = _read_json(job_dir / "artifacts" / "integration-manifest.json")
     source_root = job_dir / "source"
     harness_origin = "upstream"
     generated = False
     if generated_path:
         candidate_path = Path(generated_path).resolve()
-        integration = _read_json(job_dir / "artifacts" / "integration-manifest.json")
         allowed_roots = [(job_dir / "build-source").resolve()]
         project_directory = str(integration.get("oss_fuzz_project_directory") or "")
         if project_directory:
@@ -175,7 +175,10 @@ def build_quartet_evidence(
         try:
             harness = find_harness_source(source_root, fuzz_target)
         except PipelineError:
-            source_root = job_dir / "integration" / "oss-fuzz"
+            source_root = job_dir / "integration" / (
+                "native" if integration.get("route") == "native_generated"
+                else "oss-fuzz"
+            )
             harness = find_harness_source(source_root, fuzz_target)
             harness_origin = "oss_fuzz_project"
     source_code = harness.read_text(encoding="utf-8", errors="replace")

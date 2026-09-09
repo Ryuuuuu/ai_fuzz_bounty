@@ -9,7 +9,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .models import AIAssessment, RepoSnapshot, StaticAssessment
+from .models import (
+    AIAssessment,
+    ArchitectureAssessment,
+    RepoSnapshot,
+    StaticAssessment,
+)
 
 
 AI_INSTRUCTIONS = """You are a software-testing triage analyst.
@@ -27,7 +32,10 @@ class AIError(RuntimeError):
 
 
 def compact_evidence(
-    repo: RepoSnapshot, static: StaticAssessment, policy_status: str
+    repo: RepoSnapshot,
+    static: StaticAssessment,
+    policy_status: str,
+    architecture: ArchitectureAssessment | None = None,
 ) -> dict[str, Any]:
     paths = [path.casefold() for path in repo.paths]
     interesting = [
@@ -59,6 +67,7 @@ def compact_evidence(
         "signals": static.signals,
         "blockers": static.blockers,
         "policy_gate": policy_status,
+        "architecture": architecture.to_dict() if architecture else None,
     }
 
 

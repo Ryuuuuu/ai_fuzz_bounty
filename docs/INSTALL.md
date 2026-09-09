@@ -27,7 +27,7 @@ Codex CLI 로그인 세션을 사용하므로 OpenAI API 키는 필요하지 않
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install fuzz_target_scout-0.7.0-py3-none-any.whl
+python -m pip install fuzz_target_scout-0.8.0-py3-none-any.whl
 fuzz-pipeline doctor
 ```
 

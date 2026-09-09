@@ -2,9 +2,11 @@
 
 Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상 정책이 확인된
 후보만 격리된 AI 퍼징 파이프라인으로 넘기는 범용 시스템입니다. 특정 제품에
-종속되지 않습니다. 기존 OSS-Fuzz 통합이 있는 C/C++ 프로젝트를 우선 처리하고,
-미등록 프로젝트는 CMake, Meson, Autotools, Cargo를 감지해 작업별 OSS-Fuzz 정의와
-초기 하네스를 생성합니다.
+종속되지 않습니다. 실행 호스트의 아키텍처를 자동 감지하고 CI, README와 빌드
+설정에서 같은 아키텍처의 명시적 지원 근거가 확인된 후보만 넘깁니다. x86_64에서는
+기존 OSS-Fuzz 통합을 우선 처리하고, ARM64에서는 Ubuntu 공식 다중 아키텍처 이미지와
+Clang/libFuzzer를 쓰는 네이티브 CMake, Meson, Autotools 경로로 초기 하네스를
+생성합니다.
 
 ## 판정 흐름
 
@@ -12,13 +14,14 @@ Linux에서 자동 퍼징하기 편한 공개 저장소를 찾고, 금전 보상
 2. 각 저장소의 SECURITY.md를 먼저 읽습니다.
 3. 저장소 정책이 유료 바운티를 명시하거나, 날짜가 기록된 검증 카탈로그와
    정확히 일치할 때만 verified로 판정합니다.
-4. verified와 conditional 후보에 대해서만 파일 트리와 README를 읽어
-   빌드 방식, Linux 지원, 테스트, 기존 fuzz harness, 저장소 크기를 평가합니다.
-5. 정적 점수를 통과한 verified 후보 중 상위 몇 개만 AI가 재평가합니다.
+4. verified와 conditional 후보에 대해서만 파일 트리, README와 제한된 CI·빌드
+   파일을 읽어 현재 호스트의 ARM64/aarch64 또는 x86_64 지원 근거를 확인합니다.
+5. 현재 호스트와 호환되고 정적 점수를 통과한 verified 후보만 AI가 재평가합니다.
 6. 기본 export는 verified만 JSONL로 내보냅니다. needs_review, rejected,
    초대제인 conditional은 자동 파이프라인에서 제외됩니다.
-7. 작업 생성 시 고정된 OSS-Fuzz 프로젝트 인덱스와 대조해 등록된 후보를 먼저 큐에
-   넣고, 미등록 후보는 지원 빌드 파일 신호를 확인한 뒤 범용 통합 생성 경로로 넘깁니다.
+7. 작업 생성 시 아키텍처를 다시 검사합니다. x86_64에서는 고정 OSS-Fuzz
+   프로젝트를 우선하고, ARM64에서는 amd64 전용 OSS-Fuzz 이미지를 제외한 네이티브
+   생성 경로만 큐에 넣습니다. 에뮬레이션은 사용하지 않습니다.
 
 AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECURITY.md의 명시적
 문구와 catalog.json에 기록된 공식 정책 근거만 사용합니다. 카탈로그 항목은
@@ -35,7 +38,9 @@ AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECUR
 Git, Docker Engine, 로그인된 Codex CLI입니다. 설치 경로나 사용자 이름은
 가정하지 않습니다. `parallel_workers`, `max_parallel_jobs`와 컨테이너 메모리를
 0으로 두면 실행 시점의 CPU affinity, cgroup v1/v2, `/proc/meminfo`와 Docker
-daemon 제한을 조합해 자동 계산합니다.
+daemon 제한을 조합해 자동 계산합니다. 기본 `native_only` 모드는 현재 호스트
+아키텍처를 `platform.machine()`으로 감지하고 Docker의 다른 아키텍처 기본값을
+하위 프로세스에 전달하지 않습니다.
 
 GitHub의 비인증 API 제한은 반복 탐색에 부족하므로 읽기 전용 토큰을 환경변수로
 설정하는 것을 권장합니다. 토큰을 설정 파일이나 저장소에 기록하지 마세요.
@@ -143,9 +148,10 @@ Quartet 검토를 최대 `max_fuzz_target_attempts`개까지 순서대로 수행
 `fuzz-pipeline doctor`가 Docker socket 권한 오류를 표시하면 현재 사용자를 docker
 그룹에 추가한 뒤 다시 로그인해야 합니다. 정확한 절차는 파이프라인 문서에 있습니다.
 
-작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. OSS-Fuzz와
-OSS-Fuzz-Gen을 기본 경로로 사용하고 QuartetFuzz의 P1-P4를 품질 게이트로
-적용합니다. AFL++ CmpLog는 4시간 동안 corpus가 늘지 않을 때 한 번 실행하고 새 입력을
+작업 주문은 `data/runs/<job-id>/job.json`에 생성됩니다. x86_64는 OSS-Fuzz,
+ARM64는 네이티브 Clang/libFuzzer 빌드를 사용하며 두 경로 모두 OSS-Fuzz-Gen 방식의
+AI 하네스 생성과 QuartetFuzz의 P1-P4 품질 게이트를 적용합니다. AFL++ CmpLog는
+지원되는 OSS-Fuzz 경로에서 4시간 동안 corpus가 늘지 않을 때 한 번 실행하고 새 입력을
 기존 corpus로 되돌립니다. 새 입력이 없으면 소스 문자열 dictionary를 만들고, 다시
 정체되면 이미 측정한 미도달 후보로 새 하네스를 생성합니다. probe나 본 퍼징 체크포인트의 crash는 남은 시간을 소모하지
 않고 즉시 triage로 넘깁니다. VistaFuzz는 OpenCV-Python 전용 연구 아티팩트이므로

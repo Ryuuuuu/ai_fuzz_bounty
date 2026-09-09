@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .ai import AIError, CodexReviewer
+from .architecture import resolve_host_architecture
 from .config import load_config
 from .engine import ScoutEngine
 from .policy import PolicyVerifier
@@ -93,7 +94,8 @@ def _scan(config: dict[str, Any], args: argparse.Namespace) -> None:
         f"verified={summary.verified} conditional={summary.conditional} "
         f"review={summary.needs_review} rejected={summary.rejected} "
         f"ai_calls={summary.ai_calls} ai_cache_hits={summary.ai_cache_hits} "
-        f"errors={summary.errors}"
+        f"arch_ok={summary.architecture_compatible} "
+        f"arch_rejected={summary.architecture_rejected} errors={summary.errors}"
     )
 
 
@@ -118,23 +120,40 @@ def _list(config: dict[str, Any], args: argparse.Namespace) -> None:
     if not rows:
         print("no candidates; run 'fuzz-target-scout scan --catalog-only' first")
         return
-    headers = ("score", "diff", "policy", "ai", "language", "repository")
+    visible = []
+    for row in rows:
+        details = json.loads(row["details_json"])
+        architecture = details.get("architecture") or {}
+        if not args.all and not bool(architecture.get("compatible")):
+            continue
+        visible.append((row, architecture))
+    if not visible:
+        print("no candidates match the host architecture gate")
+        return
+    headers = ("score", "diff", "policy", "arch", "ai", "language", "repository")
     data = [
         (
             str(row["final_score"]),
             str(row["reproduce_difficulty"]),
             row["policy_status"],
+            (
+                str(architecture.get("host_arch") or "-")
+                + (":ok" if architecture.get("compatible") else ":blocked")
+            ),
             "yes" if row["ai_used"] else "no",
             row["language"] or "-",
             row["full_name"],
         )
-        for row in rows
+        for row, architecture in visible
     ]
-    widths = [max(len(headers[i]), *(len(row[i]) for row in data)) for i in range(6)]
-    print("  ".join(headers[i].ljust(widths[i]) for i in range(6)))
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in data))
+        for i in range(len(headers))
+    ]
+    print("  ".join(headers[i].ljust(widths[i]) for i in range(len(headers))))
     print("  ".join("-" * width for width in widths))
     for row in data:
-        print("  ".join(row[i].ljust(widths[i]) for i in range(6)))
+        print("  ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
 
 
 def _export(config: dict[str, Any], args: argparse.Namespace) -> None:
@@ -150,7 +169,14 @@ def _export(config: dict[str, Any], args: argparse.Namespace) -> None:
     )
     store = Store(config["storage"]["database_path"])
     try:
-        rows = list(store.export_rows(minimum, include_conditional))
+        rows = [
+            row
+            for row in store.export_rows(minimum, include_conditional)
+            if (
+                str(config["architecture"].get("mode")) != "native_only"
+                or bool((row.get("architecture") or {}).get("compatible"))
+            )
+        ]
     finally:
         store.close()
     with output.open("w", encoding="utf-8", newline="\n") as handle:
@@ -178,6 +204,14 @@ def _doctor(config: dict[str, Any], config_path: Path) -> None:
             "AI model",
             str(config["ai"]["model"]),
             f"reasoning={config['ai']['reasoning_effort']}",
+        ),
+        (
+            "architecture",
+            resolve_host_architecture(config["architecture"]),
+            (
+                f"mode={config['architecture']['mode']} "
+                f"explicit={config['architecture']['require_explicit_support']}"
+            ),
         ),
     ]
     for name, status, detail in checks:

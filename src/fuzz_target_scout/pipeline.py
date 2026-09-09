@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .architecture import resolve_host_architecture
+
 
 COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 CPP_LANGUAGES = {"c", "c++", "cpp"}
@@ -69,7 +71,10 @@ def prepare_jobs(
     job_ids: list[str] = []
 
     queued = list(candidates)
-    if support_index is not None:
+    architecture_config = pipeline_config.get("architecture")
+    host_arch = resolve_host_architecture(architecture_config or {})
+    oss_fuzz_native = architecture_config is None or host_arch == "x86_64"
+    if support_index is not None and oss_fuzz_native:
         queued.sort(
             key=lambda item: (
                 str(item.get("repository") or "").casefold() not in support_index,
@@ -151,6 +156,16 @@ def make_work_order(
         return None, "language_not_enabled"
 
     assessment = candidate.get("assessment") or {}
+    architecture_config = pipeline_config.get("architecture")
+    host_arch = resolve_host_architecture(architecture_config or {})
+    architecture = candidate.get("architecture") or {}
+    if architecture_config and str(
+        architecture_config.get("mode") or "native_only"
+    ) == "native_only":
+        if not bool(architecture.get("compatible")):
+            return None, "host_architecture_not_verified"
+        if str(architecture.get("host_arch") or "") != host_arch:
+            return None, "candidate_architecture_mismatch"
     route, route_reason, tools, optional_tools = _route(
         language, assessment, toolchain_lock
     )
@@ -158,18 +173,32 @@ def make_work_order(
         return None, route_reason
     support = None
     generic_build_signal = None
-    if language.casefold() in CPP_LANGUAGES and support_index is not None:
-        support = support_index.get(repository.casefold())
-        if support is None and not bool(
-            pipeline_config.get("allow_generic_integrations", True)
-        ):
-            return None, "no_pinned_oss_fuzz_project"
-        if support is None:
+    if language.casefold() in CPP_LANGUAGES:
+        oss_fuzz_native = architecture_config is None or host_arch == "x86_64"
+        if not oss_fuzz_native:
             generic_build_signal = _generic_build_signal(assessment)
             if generic_build_signal is None:
-                return None, "no_supported_generic_build_signal"
-            route = "oss_fuzz_generated"
-            route_reason = "generate a private OSS-Fuzz project definition and harness"
+                return None, "no_supported_native_build_signal"
+            route = "native_generated"
+            route_reason = (
+                f"generate and build a native {host_arch} libFuzzer harness"
+            )
+            tools = _tool_records(
+                toolchain_lock, ("oss-fuzz-gen", "quartetfuzz")
+            )
+            optional_tools = []
+        elif support_index is not None:
+            support = support_index.get(repository.casefold())
+            if support is None and not bool(
+                pipeline_config.get("allow_generic_integrations", True)
+            ):
+                return None, "no_pinned_oss_fuzz_project"
+            if support is None:
+                generic_build_signal = _generic_build_signal(assessment)
+                if generic_build_signal is None:
+                    return None, "no_supported_generic_build_signal"
+                route = "oss_fuzz_generated"
+                route_reason = "generate a private OSS-Fuzz project definition and harness"
 
     job_id = f"{_slug(repository)}-{commit[:12].lower()}"
     created_at = utc_now()
@@ -206,10 +235,16 @@ def make_work_order(
                 "oss_fuzz_project": (support or {}).get("project"),
                 "oss_fuzz_language": (support or {}).get("language"),
                 "generic_build_signal": generic_build_signal,
+                "host_arch": host_arch,
+                "architecture_evidence": list(architecture.get("evidence") or []),
                 "strategy": (
-                    "pinned_existing_oss_fuzz_project"
-                    if support
-                    else "generated_private_oss_fuzz_project"
+                    "native_generated_project"
+                    if route == "native_generated"
+                    else (
+                        "pinned_existing_oss_fuzz_project"
+                        if support
+                        else "generated_private_oss_fuzz_project"
+                    )
                 ),
             },
             "ai": {
@@ -260,6 +295,11 @@ def make_work_order(
                 ),
                 "network_during_fuzzing": False,
                 "container_read_only_source": True,
+                "host_arch": host_arch,
+                "architecture_mode": str(
+                    (architecture_config or {}).get("mode") or "legacy"
+                ),
+                "emulation_allowed": False,
             },
             "quality_gates": [
                 "policy_revalidated_at_same_program_scope",

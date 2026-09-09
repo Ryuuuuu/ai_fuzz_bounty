@@ -13,6 +13,7 @@ DEFAULTS: dict[str, Any] = {
         "per_query": 20,
         "max_tree_paths": 5000,
         "timeout_seconds": 20,
+        "seed_policy_catalog": True,
         "queries": [
             "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C",
             "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C++",
@@ -24,6 +25,13 @@ DEFAULTS: dict[str, Any] = {
         "catalog_path": "catalog.json",
         "max_catalog_age_days": 45,
         "allow_conditional_handoff": False,
+    },
+    "architecture": {
+        "mode": "native_only",
+        "host_arch": "auto",
+        "require_explicit_support": True,
+        "max_evidence_files": 8,
+        "native_builder_image": "ubuntu:24.04",
     },
     "scoring": {"minimum_static_score": 35, "minimum_handoff_score": 55},
     "ai": {
@@ -165,6 +173,7 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path]:
         with config_path.open("rb") as handle:
             loaded = tomllib.load(handle)
     config = _merge(DEFAULTS, loaded)
+    config["pipeline"]["architecture"] = copy.deepcopy(config["architecture"])
     base = config_path.parent
     path_settings = (
         ("policy", "catalog_path"),

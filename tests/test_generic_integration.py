@@ -19,6 +19,12 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertNotIn("cargo", dockerfile)
         self.assertNotIn("autoconf", dockerfile)
 
+    def test_native_builder_uses_multi_arch_ubuntu_and_clang(self):
+        dockerfile = _dockerfile("cmake", "ubuntu:24.04")
+        self.assertIn("FROM ubuntu:24.04", dockerfile)
+        self.assertIn("clang lld llvm", dockerfile)
+        self.assertNotIn("gcr.io/oss-fuzz-base", dockerfile)
+
     def test_detects_all_supported_build_families(self):
         markers = {
             "cmake": "CMakeLists.txt",

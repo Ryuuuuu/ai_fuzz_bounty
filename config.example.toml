@@ -4,6 +4,8 @@ api_url = "https://api.github.com"
 per_query = 20
 max_tree_paths = 5000
 timeout_seconds = 20
+# 새 탐색도 검증 카탈로그를 먼저 확인한 뒤 일반 GitHub 검색으로 확장합니다.
+seed_policy_catalog = true
 queries = [
   "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C",
   "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C++",
@@ -15,6 +17,15 @@ queries = [
 catalog_path = "catalog.json"
 max_catalog_age_days = 45
 allow_conditional_handoff = false
+
+[architecture]
+# 실행 호스트를 자동 감지하고 같은 아키텍처에서 검증된 대상만 선택합니다.
+mode = "native_only"
+host_arch = "auto"
+require_explicit_support = true
+max_evidence_files = 8
+# Ubuntu 공식 이미지는 amd64와 arm64를 모두 제공하며 현재 호스트 변형을 받습니다.
+native_builder_image = "ubuntu:24.04"
 
 [scoring]
 minimum_static_score = 35

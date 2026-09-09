@@ -24,6 +24,7 @@ class RepoSnapshot:
     security_url: str = ""
     security_text: str = ""
     readme_excerpt: str = ""
+    architecture_files: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,11 +71,24 @@ class AIAssessment:
 
 
 @dataclass(slots=True)
+class ArchitectureAssessment:
+    host_arch: str
+    compatible: bool
+    confidence: int
+    evidence: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class Candidate:
     repo: RepoSnapshot
     static: StaticAssessment
     policy: PolicyAssessment
     final_score: int
+    architecture: ArchitectureAssessment | None = None
     ai: AIAssessment | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,5 +97,6 @@ class Candidate:
             "static": self.static.to_dict(),
             "policy": self.policy.to_dict(),
             "final_score": self.final_score,
+            "architecture": self.architecture.to_dict() if self.architecture else None,
             "ai": self.ai.to_dict() if self.ai else None,
         }

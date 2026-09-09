@@ -251,6 +251,10 @@ class TriageRunner:
         if snapshot.is_dir():
             return {**build, "output_directory": str(snapshot), "sanitizer": "undefined"}
         integration = _read_json(job_dir / "artifacts" / "integration-manifest.json")
+        if build.get("execution_mode") == "native_container":
+            return self._build_native_ubsan(
+                job_dir, build, integration, fuzzer, snapshot
+            )
         oss_fuzz = Path(str(integration.get("oss_fuzz_worktree") or ""))
         helper = oss_fuzz / "infra" / "helper.py"
         project = str(build["oss_fuzz_project"])
@@ -288,6 +292,58 @@ class TriageRunner:
         temporary.replace(snapshot)
         return {**build, "output_directory": str(snapshot), "sanitizer": "undefined"}
 
+    def _build_native_ubsan(
+        self,
+        job_dir: Path,
+        build: dict[str, Any],
+        integration: dict[str, Any],
+        fuzzer: str,
+        snapshot: Path,
+    ) -> dict[str, Any]:
+        source = Path(str(integration["build_worktree"]))
+        image = str(build.get("runner_image") or "")
+        if not source.is_dir() or not image:
+            raise PipelineError("native build inputs for UBSan are missing")
+        work = job_dir / "native-work-undefined"
+        output = job_dir / "native-out-undefined"
+        for directory in (work, output):
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir()
+        command = [
+            "docker", "run", "--rm", "--network", "none",
+            "--label", "fuzz-target-scout=true",
+            "--label", f"fuzz-target-scout.job={job_dir.name}",
+            "--pids-limit", "2048", "--user", f"{os.getuid()}:{os.getgid()}",
+            "-e", "CFLAGS=-O1 -g -fno-omit-frame-pointer -fsanitize=undefined,fuzzer-no-link",
+            "-e", "CXXFLAGS=-O1 -g -fno-omit-frame-pointer -fsanitize=undefined,fuzzer-no-link",
+            "-e", "LIB_FUZZING_ENGINE=-fsanitize=fuzzer,undefined",
+            "-v", f"{source}:/src/project:ro", "-v", f"{work}:/work:rw",
+            "-v", f"{output}:/out:rw", image, "/src/build.sh",
+        ]
+        log_path = job_dir / "logs" / "native-ubsan-build.log"
+        returncode, output_text = self._run_capture(
+            command, log_path, int(self.pipeline["triage_timeout_seconds"])
+        )
+        if returncode != 0:
+            raise PipelineError(
+                f"native UBSan build failed with exit {returncode}: "
+                + output_text[-1000:]
+            )
+        if not (output / fuzzer).is_file():
+            raise PipelineError("native UBSan build output is missing")
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        temporary = snapshot.with_name(f"undefined.tmp-{os.getpid()}")
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        shutil.copytree(output, temporary)
+        temporary.replace(snapshot)
+        return {
+            **build,
+            "output_directory": str(snapshot),
+            "sanitizer": "undefined",
+        }
+
     def _docker_reproduce_command(
         self,
         build: dict[str, Any],
@@ -308,12 +364,20 @@ class TriageRunner:
             "--cpus", "1", "--memory", f"{self._container_memory_mb}m",
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-e", "FUZZING_ENGINE=libfuzzer", "-e", f"SANITIZER={sanitizer}",
-            "-e", "HELPER=True", "-v", f"{out_dir}:/out:ro",
-            "-v", f"{testcase}:/testcase:ro",
+            "-e", "HELPER=True", "-e", "ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer",
+            "-v", f"{out_dir}:/out:ro", "-v", f"{testcase}:/testcase:ro",
         ]
         if writable is not None:
             command.extend(["-v", f"{writable}:/triage:rw"])
-        command.extend(["gcr.io/oss-fuzz-base/base-runner", "reproduce", fuzzer])
+        if build.get("execution_mode") == "native_container":
+            image = str(build.get("runner_image") or "")
+            if not image:
+                raise PipelineError("native build manifest has no runner image")
+            command.extend([image, f"/out/{fuzzer}", "/testcase"])
+        else:
+            command.extend(
+                ["gcr.io/oss-fuzz-base/base-runner", "reproduce", fuzzer]
+            )
         command.extend(extra)
         return command
 
@@ -525,7 +589,10 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 def _safe_environment() -> dict[str, str]:
     environment = os.environ.copy()
-    for name in ("GITHUB_TOKEN", "GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"):
+    for name in (
+        "GITHUB_TOKEN", "GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
+        "DOCKER_DEFAULT_PLATFORM",
+    ):
         environment.pop(name, None)
     return environment
 

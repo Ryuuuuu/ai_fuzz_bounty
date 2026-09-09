@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from .architecture import normalize_architecture, resolve_host_architecture
 from .coverage_analysis import (
     CodexCoverageReviewer,
     IntrospectorClient,
@@ -63,7 +64,11 @@ class PipelineRunner:
         self.progress = progress or (lambda _: None)
         self.runs_root = Path(self.pipeline["runs_path"])
         self.tools_root = Path(self.pipeline["tools_path"])
-        self.github = GitHubClient(config["github"])
+        github_config = {
+            **config["github"],
+            "max_architecture_files": (config.get("architecture") or {}).get("max_evidence_files", 8),
+        }
+        self.github = GitHubClient(github_config)
         self.policy = PolicyVerifier(
             config["policy"]["catalog_path"],
             int(config["policy"]["max_catalog_age_days"]),
@@ -507,12 +512,16 @@ class PipelineRunner:
             relative_harness = evidence_harness.relative_to(source_root)
             build_harness = job_dir / "build-source" / relative_harness
         except PipelineError:
-            integration_root = job_dir / "integration" / "oss-fuzz"
-            evidence_harness = find_harness_source(integration_root, fuzz_target)
-            relative_harness = evidence_harness.relative_to(integration_root)
             integration = self._read_json(
                 job_dir / "artifacts" / "integration-manifest.json"
             )
+            integration_name = (
+                "native" if integration.get("route") == "native_generated"
+                else "oss-fuzz"
+            )
+            integration_root = job_dir / "integration" / integration_name
+            evidence_harness = find_harness_source(integration_root, fuzz_target)
+            relative_harness = evidence_harness.relative_to(integration_root)
             build_harness = (
                 Path(str(integration["oss_fuzz_project_directory"]))
                 / relative_harness
@@ -567,7 +576,11 @@ class PipelineRunner:
                     self._build_fuzzers(job_dir, job)
                 except PipelineError as exc:
                     build_error = str(exc)
-                    build_log = job_dir / "logs" / "oss-fuzz-build.log"
+                    build_log = job_dir / "logs" / (
+                        "native-build.log"
+                        if build.get("execution_mode") == "native_container"
+                        else "oss-fuzz-build.log"
+                    )
                     if build_log.is_file():
                         build_error += "\n" + build_log.read_text(
                             encoding="utf-8", errors="replace"
@@ -831,15 +844,48 @@ class PipelineRunner:
                 state_path, state, result, completed_seconds
             )
         if completed_seconds < budget:
+            native_lane = (
+                str((job.get("route") or {}).get("name") or "")
+                == "native_generated"
+            )
+            if (
+                native_lane
+                and bool(progress.get("coverage_stalled"))
+                and not bool(progress.get("stagnation_dictionary_applied"))
+                and not bool(progress.get("stagnation_dictionary_empty"))
+            ):
+                target = str(result.get("fuzz_target") or "")
+                dictionary = generate_dictionary(job_dir, target)
+                progress["stagnation_dictionary"] = dictionary
+                if int(dictionary["token_count"]) > 0:
+                    progress["stagnation_dictionary_applied"] = True
+                    progress["stalled_seconds"] = 0
+                    progress["coverage_stalled"] = False
+                else:
+                    progress["stagnation_dictionary_empty"] = True
+                self._write_json(progress_path, progress)
             should_run_afl = (
-                bool(progress.get("coverage_stalled"))
+                not native_lane
+                and bool(progress.get("coverage_stalled"))
                 and bool(getattr(self, "pipeline", {}).get("afl_cmplog_enabled", True))
                 and not (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
             )
             needs_harness = (
                 bool(progress.get("coverage_stalled"))
-                and bool(progress.get("stagnation_dictionary_applied"))
-                and (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
+                and (
+                    (
+                        not native_lane
+                        and bool(progress.get("stagnation_dictionary_applied"))
+                        and (job_dir / "artifacts" / "afl-cmplog-run.json").is_file()
+                    )
+                    or (
+                        native_lane
+                        and (
+                            bool(progress.get("stagnation_dictionary_applied"))
+                            or bool(progress.get("stagnation_dictionary_empty"))
+                        )
+                    )
+                )
                 and not bool(progress.get("stagnation_harness_scheduled"))
             )
             if needs_harness and self._schedule_stagnation_harness(job_dir):
@@ -1055,6 +1101,10 @@ class PipelineRunner:
             job_dir / "artifacts" / "integration-manifest.json"
         )
         build = self._read_json(job_dir / "artifacts" / "build-manifest.json")
+        if build.get("execution_mode") == "native_container":
+            raise PipelineError(
+                "AFL++ CmpLog is unavailable for the native generated lane"
+            )
         coverage = self._read_json(job_dir / "artifacts" / "coverage-plan.json")
         target = str((coverage.get("review") or {}).get("selected_fuzz_target") or "")
         if target not in build.get("fuzz_targets", []):
@@ -1567,8 +1617,23 @@ class PipelineRunner:
 
     def _prepare_integration(self, job_dir: Path, job: dict[str, Any]) -> None:
         route = str((job.get("route") or {}).get("name") or "")
-        if route not in {"oss_fuzz_existing", "oss_fuzz_gen", "oss_fuzz_generated"}:
+        if route not in {
+            "oss_fuzz_existing", "oss_fuzz_gen", "oss_fuzz_generated",
+            "native_generated",
+        }:
             raise PipelineError(f"integration route is not implemented: {route}")
+        if route == "native_generated":
+            expected_arch = str((job.get("execution") or {}).get("host_arch") or "")
+            actual_arch = resolve_host_architecture(
+                self.pipeline.get("architecture") or {}
+            )
+            if not expected_arch or actual_arch != expected_arch:
+                raise PipelineError(
+                    "native work order architecture mismatch: "
+                    f"expected={expected_arch or 'missing'} actual={actual_arch}"
+                )
+            self._prepare_native_integration(job_dir, job)
+            return
         oss_fuzz = self.tools_root / "oss-fuzz"
         if not (oss_fuzz / ".git").is_dir():
             raise PipelineError("pinned OSS-Fuzz checkout is missing")
@@ -1682,6 +1747,88 @@ class PipelineRunner:
                 "supported": True,
                 "strategy": "pinned_existing_oss_fuzz_project",
                 "oss_fuzz_project": project_name,
+            },
+        )
+
+    def _prepare_native_integration(
+        self, job_dir: Path, job: dict[str, Any]
+    ) -> None:
+        log_path = job_dir / "logs" / "integration.log"
+        source_checkout = job_dir / "source"
+        build_source = job_dir / "build-source"
+        commit = str((job.get("source") or {}).get("commit") or "")
+        if build_source.exists():
+            actual = self._capture(
+                ["git", "-C", str(build_source), "rev-parse", "HEAD"]
+            )
+            if actual.casefold() != commit.casefold():
+                raise PipelineError("existing native build worktree is at the wrong commit")
+        else:
+            self._run(
+                [
+                    "git", "-C", str(source_checkout), "worktree", "add", "--detach",
+                    str(build_source), commit,
+                ],
+                log_path,
+            )
+        self._sync_submodules(build_source, log_path)
+        project_name = "fts-" + job_dir.name[:48]
+        project_dir = job_dir / "integration" / "native"
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+        architecture = self.pipeline.get("architecture") or {}
+        base_image = str(
+            architecture.get("native_builder_image") or "ubuntu:24.04"
+        )
+        generated = create_generic_project(
+            job_dir=job_dir,
+            source=build_source,
+            project_dir=project_dir,
+            project_name=project_name,
+            pipeline=self.pipeline,
+            progress=self.progress,
+            native=True,
+            base_image=base_image,
+        )
+        hashes = {
+            path.relative_to(project_dir).as_posix(): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in sorted(project_dir.rglob("*"))
+            if path.is_file()
+        }
+        host_arch = resolve_host_architecture(architecture)
+        self._write_json(
+            job_dir / "artifacts" / "generic-integration.json", generated
+        )
+        self._write_json(
+            job_dir / "artifacts" / "integration-manifest.json",
+            {
+                "schema_version": 1,
+                "created_at": utc_now(),
+                "route": "native_generated",
+                "oss_fuzz_project": project_name,
+                "native_project_directory": str(project_dir),
+                "oss_fuzz_project_directory": str(project_dir),
+                "builder_base_image": base_image,
+                "host_arch": host_arch,
+                "target_commit": commit,
+                "source_checkout": str(source_checkout),
+                "build_worktree": str(build_source),
+                "integration_file_sha256": hashes,
+            },
+        )
+        self._write_json(
+            job_dir / "artifacts" / "integration-support.json",
+            {
+                "schema_version": 1,
+                "checked_at": utc_now(),
+                "repository": (job.get("source") or {}).get("repository"),
+                "supported": True,
+                "strategy": "native_generated_project",
+                "host_arch": host_arch,
+                "base_image": base_image,
+                "build_system": generated["build_system"],
             },
         )
 
@@ -1834,10 +1981,13 @@ class PipelineRunner:
         )
 
     def _build_fuzzers(self, job_dir: Path, job: dict[str, Any]) -> None:
-        del job
         manifest = self._read_json(
             job_dir / "artifacts" / "integration-manifest.json"
         )
+        if manifest.get("route") == "native_generated":
+            self._build_native_fuzzers(job_dir, job, manifest)
+            return
+        del job
         project = str(manifest["oss_fuzz_project"])
         build_source = Path(manifest["build_worktree"])
         oss_fuzz = Path(
@@ -1947,6 +2097,136 @@ class PipelineRunner:
             },
         )
 
+    def _build_native_fuzzers(
+        self, job_dir: Path, job: dict[str, Any], manifest: dict[str, Any]
+    ) -> None:
+        del job
+        project = str(manifest["oss_fuzz_project"])
+        project_dir = Path(str(manifest["native_project_directory"]))
+        build_source = Path(str(manifest["build_worktree"]))
+        expected_arch = str(manifest["host_arch"])
+        image_tag = "fts-native-" + hashlib.sha256(
+            f"{job_dir.name}:{expected_arch}".encode()
+        ).hexdigest()[:20]
+        log_path = job_dir / "logs" / "native-build.log"
+        timeout = int(self.pipeline["setup_timeout_seconds"])
+        self._sync_submodules(build_source, log_path)
+        self._run_streaming(
+            [
+                "docker", "build", "--pull", "--label", "fuzz-target-scout=true",
+                "--label", f"fuzz-target-scout.job={job_dir.name}",
+                "-t", image_tag, str(project_dir),
+            ],
+            log_path,
+            timeout=timeout,
+        )
+        image_arch = normalize_architecture(
+            self._capture(
+                ["docker", "image", "inspect", "--format", "{{.Architecture}}", image_tag]
+            )
+        )
+        runtime_arch = normalize_architecture(
+            self._capture(["docker", "run", "--rm", "--network", "none", image_tag, "uname", "-m"])
+        )
+        if image_arch != expected_arch or runtime_arch != expected_arch:
+            raise PipelineError(
+                "native builder architecture mismatch: "
+                f"expected={expected_arch} image={image_arch} runtime={runtime_arch}"
+            )
+        work_dir = job_dir / "native-work"
+        out_dir = job_dir / "native-out"
+        for directory in (work_dir, out_dir):
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir()
+        build_command = [
+            "docker", "run", "--rm", "--network", "none",
+            "--label", "fuzz-target-scout=true",
+            "--label", f"fuzz-target-scout.job={job_dir.name}",
+            "--pids-limit", "2048",
+            "--cpus", str(max(1, self._resource_allocation({}).workers_per_job)),
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "-v", f"{build_source}:/src/project:rw",
+            "-v", f"{work_dir}:/work:rw",
+            "-v", f"{out_dir}:/out:rw",
+            image_tag, "/src/build.sh",
+        ]
+        maximum = int(self.pipeline.get("max_harness_attempts", 3))
+        for attempt in range(1, maximum + 1):
+            try:
+                self._run_streaming(build_command, log_path, timeout=timeout)
+                break
+            except PipelineError:
+                if attempt >= maximum:
+                    raise
+                error = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+                repair_generic_harness(
+                    job_dir=job_dir,
+                    source=build_source,
+                    project_dir=project_dir,
+                    pipeline=self.pipeline,
+                    build_error=error,
+                    attempt=attempt,
+                )
+                self._run_streaming(
+                    [
+                        "docker", "build", "--label", "fuzz-target-scout=true",
+                        "--label", f"fuzz-target-scout.job={job_dir.name}",
+                        "-t", image_tag, str(project_dir),
+                    ],
+                    log_path,
+                    timeout=timeout,
+                )
+        fuzzers = sorted(
+            path.name
+            for path in out_dir.iterdir()
+            if not path.is_symlink()
+            and path.is_file()
+            and os.access(path, os.X_OK)
+        )
+        if not fuzzers:
+            raise PipelineError("native build produced no executable fuzz targets")
+        snapshot_root = job_dir / "build-output"
+        snapshot_root.mkdir(exist_ok=True)
+        snapshot = snapshot_root / "asan"
+        temporary = snapshot_root / f"asan.tmp-{time.time_ns()}"
+        shutil.copytree(out_dir, temporary, symlinks=True)
+        if snapshot.exists():
+            shutil.rmtree(snapshot)
+        temporary.replace(snapshot)
+        mirror = project_dir / "generic_harness.cc"
+        manifest.setdefault("integration_file_sha256", {})[
+            "generic_harness.cc"
+        ] = hashlib.sha256(mirror.read_bytes()).hexdigest()
+        manifest["runner_image"] = image_tag
+        manifest["runner_image_arch"] = image_arch
+        self._write_json(
+            job_dir / "artifacts" / "integration-manifest.json", manifest
+        )
+        original_status = self._capture(
+            ["git", "-C", str(job_dir / "source"), "status", "--porcelain"]
+        )
+        if original_status:
+            raise PipelineError("evidence source checkout was modified during native build")
+        self._write_json(
+            job_dir / "artifacts" / "build-manifest.json",
+            {
+                "schema_version": 1,
+                "built_at": utc_now(),
+                "engine": "libfuzzer",
+                "sanitizer": "address",
+                "oss_fuzz_project": project,
+                "execution_mode": "native_container",
+                "host_arch": expected_arch,
+                "runner_image": image_tag,
+                "builder_image_id": self._capture(
+                    ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag]
+                ),
+                "fuzz_targets": fuzzers,
+                "output_directory": str(snapshot),
+            },
+        )
+
     def _fuzz_session(
         self,
         job_dir: Path,
@@ -1990,63 +2270,45 @@ class PipelineRunner:
             int(rss_limit_mb or self.pipeline.get("fuzzer_rss_limit_mb") or 512),
         )
         input_timeout = int(self.pipeline["input_timeout_seconds"])
-        command = [
-            "docker",
-            "run",
-            "--rm",
-            "--name",
+        container = [
+            "docker", "run", "--rm", "--name",
             container_name or self._container_name(job_dir.name, f"{label}-{time.time_ns()}"),
-            "--label",
-            "fuzz-target-scout=true",
-            "--label",
-            f"fuzz-target-scout.job={job_dir.name}",
-            "--network",
-            "none",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,exec,nosuid,size=1g",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "512",
-            "--cpus",
-            str(workers),
-            "--memory",
-            f"{memory_mb}m",
-            "--user",
-            f"{os.getuid()}:{os.getgid()}",
-            "-e",
-            "FUZZING_ENGINE=libfuzzer",
-            "-e",
-            "SANITIZER=address",
-            "-e",
-            "RUN_FUZZER_MODE=interactive",
-            "-e",
-            "HELPER=True",
-            "-e",
-            f"CORPUS_DIR=/tmp/{fuzzer}_corpus",
-            "-v",
-            f"{runtime_out}:/out:rw",
-            "-v",
-            f"{corpus_dir}:/tmp/{fuzzer}_corpus:rw",
-            "-v",
-            f"{crash_dir}:/crashes:rw",
-            "gcr.io/oss-fuzz-base/base-runner",
-            "run_fuzzer",
-            fuzzer,
+            "--label", "fuzz-target-scout=true",
+            "--label", f"fuzz-target-scout.job={job_dir.name}",
+            "--network", "none", "--read-only",
+            "--tmpfs", "/tmp:rw,exec,nosuid,size=1g",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--pids-limit", "512", "--cpus", str(workers),
+            "--memory", f"{memory_mb}m", "--user", f"{os.getuid()}:{os.getgid()}",
+            "-e", "FUZZING_ENGINE=libfuzzer", "-e", "SANITIZER=address",
+            "-e", "RUN_FUZZER_MODE=interactive", "-e", "HELPER=True",
+            "-e", f"CORPUS_DIR=/tmp/{fuzzer}_corpus",
+            "-e", "ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer",
+            "-v", f"{runtime_out}:/out:rw",
+            "-v", f"{corpus_dir}:/tmp/{fuzzer}_corpus:rw",
+            "-v", f"{crash_dir}:/crashes:rw",
+        ]
+        arguments = [
             f"-max_total_time={seconds}",
             f"-timeout={input_timeout}",
             f"-rss_limit_mb={rss_limit_mb}",
             f"-artifact_prefix=/crashes/{fuzzer}-",
-            "-print_final_stats=1",
-            f"-jobs={workers}",
-            f"-workers={workers}",
-            "-ignore_crashes=1",
-            "-ignore_timeouts=1",
-            "-ignore_ooms=1",
+            "-print_final_stats=1", f"-jobs={workers}", f"-workers={workers}",
+            "-ignore_crashes=1", "-ignore_timeouts=1", "-ignore_ooms=1",
         ]
+        if build.get("execution_mode") == "native_container":
+            image = str(build.get("runner_image") or "")
+            if not image:
+                raise PipelineError("native build manifest has no runner image")
+            command = container + [
+                "--workdir", "/out", image, f"/out/{fuzzer}",
+                f"/tmp/{fuzzer}_corpus", *arguments,
+            ]
+        else:
+            command = container + [
+                "gcr.io/oss-fuzz-base/base-runner", "run_fuzzer", fuzzer,
+                *arguments,
+            ]
         started_at = utc_now()
         monotonic_start = time.monotonic()
         log_path = job_dir / "logs" / f"{label}-{fuzzer}.log"
@@ -2198,23 +2460,38 @@ class PipelineRunner:
         integration = self._read_json(
             job_dir / "artifacts" / "integration-manifest.json"
         )
-        oss_fuzz = Path(
-            str(integration.get("oss_fuzz_worktree") or self.tools_root / "oss-fuzz")
-        )
-        helper = oss_fuzz / "infra" / "helper.py"
-        self._run(
-            [
-                "python3",
-                str(helper),
-                "check_build",
-                "--sanitizer",
-                "address",
-                project,
-                selected,
-            ],
-            job_dir / "logs" / "oss-fuzz-smoke.log",
-            timeout=int(self.pipeline["smoke_seconds"]) + 180,
-        )
+        if manifest.get("execution_mode") == "native_container":
+            out_dir = Path(str(manifest["output_directory"]))
+            corpus = job_dir / "corpus" / selected
+            corpus.mkdir(parents=True, exist_ok=True)
+            self._run(
+                [
+                    "docker", "run", "--rm", "--network", "none", "--read-only",
+                    "--tmpfs", "/tmp:rw,exec,nosuid,size=256m",
+                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--pids-limit", "128", "--cpus", "1",
+                    "--user", f"{os.getuid()}:{os.getgid()}",
+                    "-e", "ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer",
+                    "-v", f"{out_dir}:/out:ro", "-v", f"{corpus}:/corpus:rw",
+                    str(manifest["runner_image"]), f"/out/{selected}", "/corpus",
+                    "-runs=100", f"-timeout={int(self.pipeline['input_timeout_seconds'])}",
+                ],
+                job_dir / "logs" / "native-smoke.log",
+                timeout=int(self.pipeline["smoke_seconds"]) + 180,
+            )
+        else:
+            oss_fuzz = Path(
+                str(integration.get("oss_fuzz_worktree") or self.tools_root / "oss-fuzz")
+            )
+            helper = oss_fuzz / "infra" / "helper.py"
+            self._run(
+                [
+                    "python3", str(helper), "check_build", "--sanitizer",
+                    "address", project, selected,
+                ],
+                job_dir / "logs" / "oss-fuzz-smoke.log",
+                timeout=int(self.pipeline["smoke_seconds"]) + 180,
+            )
         self._write_json(
             job_dir / "artifacts" / "smoke.json",
             {
@@ -2404,6 +2681,7 @@ def _subprocess_environment() -> dict[str, str]:
     environment = os.environ.copy()
     for name in ("GITHUB_TOKEN", "GH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"):
         environment.pop(name, None)
+    environment.pop("DOCKER_DEFAULT_PLATFORM", None)
     environment["GIT_TERMINAL_PROMPT"] = "0"
     environment["GIT_ALLOW_PROTOCOL"] = "https"
     return environment

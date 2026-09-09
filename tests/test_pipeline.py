@@ -189,6 +189,64 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertEqual(job["compatibility"]["generic_build_signal"], "cmake")
 
+    def test_arm64_native_mode_ignores_amd64_oss_fuzz_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            arm_config = {
+                **CONFIG,
+                "architecture": {
+                    "mode": "native_only",
+                    "host_arch": "aarch64",
+                    "require_explicit_support": True,
+                    "native_builder_image": "ubuntu:24.04",
+                },
+            }
+            value = candidate()
+            value["architecture"] = {
+                "host_arch": "aarch64",
+                "compatible": True,
+                "confidence": 90,
+                "evidence": ["ci: linux/arm64"],
+                "blockers": [],
+            }
+            summary = prepare_jobs(
+                [value],
+                directory,
+                arm_config,
+                LOCK,
+                {"org/parser": {"project": "parser", "language": "c++"}},
+            )
+            self.assertEqual(summary.created, 1)
+            job = json.loads(next(Path(directory).glob("*/job.json")).read_text())
+            self.assertEqual(job["route"]["name"], "native_generated")
+            self.assertEqual(
+                job["compatibility"]["strategy"], "native_generated_project"
+            )
+            self.assertFalse(job["execution"]["emulation_allowed"])
+            required = {item["name"] for item in job["route"]["required_tools"]}
+            self.assertEqual(required, {"oss-fuzz-gen", "quartetfuzz"})
+
+    def test_native_mode_rejects_candidate_for_another_architecture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            arm_config = {
+                **CONFIG,
+                "architecture": {
+                    "mode": "native_only",
+                    "host_arch": "aarch64",
+                    "require_explicit_support": True,
+                },
+            }
+            value = candidate()
+            value["architecture"] = {
+                "host_arch": "x86_64",
+                "compatible": True,
+                "evidence": ["ci: amd64"],
+            }
+            summary = prepare_jobs([value], directory, arm_config, LOCK, {})
+            self.assertEqual(summary.created, 0)
+            self.assertEqual(
+                summary.skip_reasons, {"candidate_architecture_mismatch": 1}
+            )
+
     def test_generic_candidate_without_supported_build_signal_is_rejected_early(self):
         with tempfile.TemporaryDirectory() as directory:
             value = candidate()

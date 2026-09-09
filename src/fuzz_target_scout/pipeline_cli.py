@@ -9,6 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .architecture import resolve_host_architecture
 from .config import load_config
 from .central_agent import CentralAgent
 from .pipeline import (
@@ -399,6 +400,17 @@ def _doctor(config: dict) -> None:
         ("runs root", str(Path(pipeline["runs_path"]))),
         ("tools root", str(Path(pipeline["tools_path"]))),
         ("AI model", f"{pipeline['ai_model']} ({pipeline['ai_reasoning_effort']})"),
+        (
+            "architecture",
+            (
+                f"{resolve_host_architecture(config['architecture'])} / "
+                f"{config['architecture']['mode']} / emulation disabled"
+            ),
+        ),
+        (
+            "native builder",
+            str(config["architecture"]["native_builder_image"]),
+        ),
         ("detected CPUs", str(resources.detected.cpu_count)),
         ("available memory", f"{resources.detected.memory_available_mb} MB"),
         ("parallel jobs", str(resources.parallel_jobs)),

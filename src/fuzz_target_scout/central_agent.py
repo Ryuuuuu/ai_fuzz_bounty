@@ -1028,12 +1028,17 @@ class CentralAgent:
         output.parent.mkdir(parents=True, exist_ok=True)
         store = Store(self.config["storage"]["database_path"])
         try:
-            rows = list(
-                store.export_rows(
+            rows = [
+                row
+                for row in store.export_rows(
                     int(self.config["scoring"]["minimum_handoff_score"]),
                     False,
                 )
-            )
+                if (
+                    str(self.config["architecture"].get("mode")) != "native_only"
+                    or bool((row.get("architecture") or {}).get("compatible"))
+                )
+            ]
         finally:
             store.close()
         temporary = output.with_suffix(output.suffix + ".tmp")

@@ -42,6 +42,8 @@ def create_generic_project(
     project_name: str,
     pipeline: dict[str, Any],
     progress: Callable[[str], None] | None = None,
+    native: bool = False,
+    base_image: str = "ubuntu:24.04",
 ) -> dict[str, Any]:
     progress = progress or (lambda _: None)
     build_system = detect_build_system(source)
@@ -50,7 +52,10 @@ def create_generic_project(
         job_dir, source, project_name, pipeline, progress
     )
     (project_dir / "generic_harness.cc").write_text(harness, encoding="utf-8")
-    (project_dir / "Dockerfile").write_text(_dockerfile(build_system), encoding="utf-8")
+    (project_dir / "Dockerfile").write_text(
+        _dockerfile(build_system, base_image if native else None),
+        encoding="utf-8",
+    )
     build_script = _build_script(build_system)
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
@@ -67,6 +72,8 @@ def create_generic_project(
         "created_at": utc_now(),
         "project": project_name,
         "build_system": build_system,
+        "execution_mode": "native_container" if native else "oss_fuzz",
+        "base_image": base_image if native else "gcr.io/oss-fuzz-base/base-builder",
         "harness_origin": origin,
         "candidate": candidate,
         "ai_usage": usage,
@@ -105,9 +112,10 @@ def repair_generic_harness(
     code = extract_harness_code(response)
     validation = validate_generated_harness(code, candidate)
     harness_path.write_text(code, encoding="utf-8")
-    mirror = job_dir / "integration" / "oss-fuzz" / "generic_harness.cc"
-    if mirror.parent.is_dir():
-        mirror.write_text(code, encoding="utf-8")
+    for integration_name in ("oss-fuzz", "native"):
+        mirror = job_dir / "integration" / integration_name / "generic_harness.cc"
+        if mirror.parent.is_dir():
+            mirror.write_text(code, encoding="utf-8")
     item = {
         "attempt": attempt,
         "created_at": utc_now(),
@@ -200,19 +208,36 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
     raise PipelineError("no existing harness or public function prototype was found")
 
 
-def _dockerfile(build_system: str) -> str:
+def _dockerfile(build_system: str, native_base_image: str | None = None) -> str:
     packages = {
         "cmake": "cmake ninja-build pkg-config",
         "meson": "meson ninja-build pkg-config",
         "autotools": "autoconf automake libtool make pkg-config",
         "cargo": "cargo rustc pkg-config",
     }[build_system]
-    return f"""FROM gcr.io/oss-fuzz-base/base-builder
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    {packages} \\
+    if native_base_image is None:
+        return f"""FROM gcr.io/oss-fuzz-base/base-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    {packages} \
     && rm -rf /var/lib/apt/lists/*
 COPY build.sh generic_harness.cc $SRC/
 WORKDIR $SRC/project
+"""
+    if not re.fullmatch(r"[A-Za-z0-9./:_-]{3,200}", native_base_image):
+        raise PipelineError("native builder image reference is invalid")
+    return f"""FROM {native_base_image}
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates clang lld llvm file libclang-rt-dev libc++-dev libc++abi-dev \
+    build-essential {packages} \
+    && rm -rf /var/lib/apt/lists/*
+ENV SRC=/src WORK=/work OUT=/out \
+    CC=clang CXX=clang++ \
+    CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
+    CXXFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
+    LIB_FUZZING_ENGINE="-fsanitize=fuzzer,address"
+RUN mkdir -p /src/project /work /out
+COPY build.sh generic_harness.cc /src/
+WORKDIR /src/project
 """
 
 

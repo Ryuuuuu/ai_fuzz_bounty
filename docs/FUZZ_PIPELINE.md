@@ -126,7 +126,20 @@ logs/             빌드와 실행 로그
 
 ## 현재 구현된 경계
 
-`fuzz-pipeline plan`은 정책·커밋·언어 게이트를 다시 검사하고 위 계약의 작업 폴더를
+## 네이티브 아키텍처 게이트
+
+`architecture.mode=native_only`가 기본값이다. 탐색기는 호스트 아키텍처를 자동
+감지하고 README, CI, Docker와 빌드 설정에서 같은 아키텍처의 명시적 근거를 찾는다.
+근거가 없거나 다른 아키텍처인 후보는 export와 작업 생성에서 각각 차단한다.
+ARM64/aarch64 호스트에서는 amd64 전용인 공식 OSS-Fuzz 빌더·러너를 사용하지 않는다.
+대신 `ubuntu:24.04`의 현재 호스트 변형에 Clang, ASan/UBSan과 libFuzzer를 설치해
+CMake, Meson 또는 Autotools 프로젝트를 네이티브 빌드한다. 이미지 메타데이터와
+컨테이너 안의 `uname -m`이 작업 주문의 아키텍처와 모두 일치해야 빌드를 인정한다.
+퍼징·최소화·3회 재현도 같은 네이티브 이미지에서 실행한다. ARM 네이티브 경로에서
+AFL++ CmpLog를 사용할 수 없을 때는 정체 dictionary와 후속 AI 하네스 경로를
+사용한다.
+
+`fuzz-pipeline plan`은 정책·커밋·언어·호스트 아키텍처 게이트를 다시 검사하고 위 계약의 작업 폴더를
 멱등적으로 만든다. 계획 시점에 `oss-fuzz-support.json`을 사용해 고정 OSS-Fuzz
 프로젝트 정의가 있는 후보를 먼저 배치한다. 정의가 없는 후보는
 `allow_generic_integrations=true`일 때 CMake, Meson, Autotools, Cargo 템플릿과
