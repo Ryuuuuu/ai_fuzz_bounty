@@ -937,6 +937,8 @@ class PipelineRunner:
                     "engine": "libfuzzer",
                     "corpus_files": result.get("corpus_files"),
                     "executed_units": result.get("executed_units"),
+                    "coverage_edges": result.get("coverage_edges"),
+                    "coverage_features": result.get("coverage_features"),
                     "status": result.get("status") or "completed",
                     "resource_limit": result.get("resource_limit"),
                 }
@@ -959,13 +961,34 @@ class PipelineRunner:
             session_budget = 0.0
         previous_corpus = int(progress.get("last_corpus_files") or 0)
         current_corpus = int(result.get("corpus_files") or 0)
+        current_edges, current_features = _result_coverage(result)
+        previous_edges = progress.get("last_coverage_edges")
+        previous_features = progress.get("last_coverage_features")
         if session_budget:
+            coverage_observed = current_edges > 0 or current_features > 0
+            has_coverage_baseline = (
+                previous_edges is not None or previous_features is not None
+            )
+            if coverage_observed and has_coverage_baseline:
+                coverage_advanced = (
+                    current_edges > int(previous_edges or 0)
+                    or current_features > int(previous_features or 0)
+                )
+            else:
+                coverage_advanced = current_corpus > previous_corpus
             progress["stalled_seconds"] = (
                 0
-                if current_corpus > previous_corpus
+                if coverage_advanced
                 else int(progress.get("stalled_seconds") or 0) + int(session_budget)
             )
             progress["last_corpus_files"] = max(previous_corpus, current_corpus)
+            if coverage_observed:
+                progress["last_coverage_edges"] = max(
+                    int(previous_edges or 0), current_edges
+                )
+                progress["last_coverage_features"] = max(
+                    int(previous_features or 0), current_features
+                )
             stall_limit = int(
                 getattr(self, "pipeline", {}).get("coverage_stall_seconds", 14400)
             )
@@ -2431,6 +2454,10 @@ class PipelineRunner:
             "-print_final_stats=1", f"-jobs={workers}", f"-workers={workers}",
             "-ignore_crashes=1", "-ignore_timeouts=1", "-ignore_ooms=1",
         ]
+        dictionary_path = runtime_out / f"{fuzzer}.dict"
+        dictionary_used = dictionary_path.is_file() and not dictionary_path.is_symlink()
+        if dictionary_used:
+            arguments.append(f"-dict=/out/{fuzzer}.dict")
         if build.get("execution_mode") == "native_container":
             image = str(build.get("runner_image") or "")
             if not image:
@@ -2465,6 +2492,9 @@ class PipelineRunner:
             if not path.is_symlink() and path.is_file()
         )
         worker_stats = self._collect_worker_stats(runtime_out, job_dir / "logs", label)
+        coverage_edges, coverage_features = _result_coverage(
+            {"worker_stats": worker_stats}
+        )
         summaries = self._sanitizer_summaries(log_path)
         result_session_id = session_id or f"{label}-{time.time_ns()}"
         resource_artifacts: list[str] = []
@@ -2515,7 +2545,10 @@ class PipelineRunner:
                 "libfuzzer_rss" if resource_limit_restart else None
             ),
             "resource_artifacts": resource_artifacts,
+            "dictionary_used": dictionary_used,
             "corpus_files": corpus_files,
+            "coverage_edges": coverage_edges,
+            "coverage_features": coverage_features,
             "crash_files": crashes,
             "sanitizer_summaries": summaries,
             "worker_stats": worker_stats,
@@ -2852,6 +2885,21 @@ def _subprocess_environment() -> dict[str, str]:
     environment["GIT_TERMINAL_PROMPT"] = "0"
     environment["GIT_ALLOW_PROTOCOL"] = "https"
     return environment
+
+
+def _result_coverage(result: dict[str, Any]) -> tuple[int, int]:
+    worker_stats = [
+        item for item in result.get("worker_stats") or [] if isinstance(item, dict)
+    ]
+    edges = max(
+        [int(result.get("coverage_edges") or 0)]
+        + [int(item.get("coverage_edges") or 0) for item in worker_stats]
+    )
+    features = max(
+        [int(result.get("coverage_features") or 0)]
+        + [int(item.get("coverage_features") or 0) for item in worker_stats]
+    )
+    return edges, features
 
 
 def _is_long_running_resource_oom(

@@ -325,6 +325,7 @@ class PipelineRunnerTests(unittest.TestCase):
             for path in (artifacts, output, job / "logs"):
                 path.mkdir(parents=True)
             (output / "fuzz_parser").write_bytes(b"fuzzer")
+            (output / "fuzz_parser.dict").write_text('"MAGIC"\n')
             (artifacts / "build-manifest.json").write_text(
                 json.dumps(
                     {
@@ -364,6 +365,7 @@ class PipelineRunnerTests(unittest.TestCase):
                 f"{job / 'corpus' / 'fuzz_parser'}:/tmp/fuzz_parser_corpus:rw"
             )
             self.assertIn("CORPUS_DIR=/tmp/fuzz_parser_corpus", command)
+            self.assertIn("-dict=/out/fuzz_parser.dict", command)
             self.assertLess(
                 command.index("CORPUS_DIR=/tmp/fuzz_parser_corpus"),
                 command.index(corpus_mount),
@@ -1066,6 +1068,8 @@ class PipelineRunnerTests(unittest.TestCase):
                     {
                         "completed_seconds": 3,
                         "last_corpus_files": 5,
+                        "last_coverage_edges": 10,
+                        "last_coverage_features": 20,
                         "stalled_seconds": 3,
                         "sessions": [],
                     }
@@ -1085,7 +1089,9 @@ class PipelineRunnerTests(unittest.TestCase):
                 return_value={
                     "fuzz_target": "fuzz_parser",
                     "elapsed_seconds": 3,
-                    "corpus_files": 5,
+                    "corpus_files": 6,
+                    "coverage_edges": 10,
+                    "coverage_features": 20,
                     "executed_units": 100,
                 },
             ):
