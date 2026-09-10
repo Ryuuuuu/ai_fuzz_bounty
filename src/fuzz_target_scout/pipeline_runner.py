@@ -878,6 +878,7 @@ class PipelineRunner:
         container_name = self._container_name(job_id, session_id)
         session_started = utc_now()
         state["status"] = "running"
+        state["last_error"] = None
         state["updated_at"] = session_started
         state["fuzz_started_at"] = state.get("fuzz_started_at") or session_started
         state["active_fuzz_session_id"] = session_id
