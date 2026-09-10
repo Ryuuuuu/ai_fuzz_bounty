@@ -31,8 +31,9 @@ fuzz-pipeline agent
 활성 컨테이너를 중지한다. 정상 중지는 실패 횟수에 포함하지 않고 `interrupted`로 남긴다.
 다시 시작하면 기존 체크포인트에서 남은 시간만 이어서 실행한다. 30분 간격 상태 로그와
 Telegram 전달 내역은 각각 `data/central-agent/progress.jsonl`과
-`data/central-agent/notifications.jsonl`에 기록된다. 비밀값이나 crash 원본 바이트는
-이 로그에 쓰지 않는다.
+`data/central-agent/notifications.jsonl`에 기록된다. AI가 같은 문제를 다르게 표현해도
+작업 ID와 문제 종류가 같으면 하나의 활성 경고로 묶고, 상태가 복구되거나 문제 종류가
+바뀔 때만 다시 알린다. 비밀값이나 crash 원본 바이트는 이 로그에 쓰지 않는다.
 
 `housekeep`은 오래된 로그와 corpus를 설정된 파일 수·용량까지 줄이고 완료 작업의 임시
 실행 복사본을 삭제한다. `artifacts`, `crashes`, `validation`, `poc`의 증거는 삭제하지

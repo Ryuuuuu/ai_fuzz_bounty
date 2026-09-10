@@ -1285,17 +1285,37 @@ def _health_incident_key(
         }
     else:
         problems = decision.get("problems") or []
+        classified = []
+        for item in problems:
+            job_id = str(item.get("job_id") or "system") if isinstance(item, dict) else "system"
+            classified.append((job_id, _ai_issue_kind(item)))
+        if not classified:
+            classified.append(("system", _ai_issue_kind(decision.get("summary") or "")))
         material = {
             "source": "ai",
             "severity": str(decision.get("severity") or "warning"),
-            "problems": sorted(
-                json.dumps(item, ensure_ascii=False, sort_keys=True)
-                for item in problems
-            ),
+            "problems": sorted(set(classified)),
         }
     return hashlib.sha256(
         json.dumps(material, ensure_ascii=False, sort_keys=True).encode()
     ).hexdigest()
+
+
+def _ai_issue_kind(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True).casefold()
+    categories = (
+        ("coverage_stall", ("coverage", "커버리지", "정체")),
+        ("authorization", ("authorization", "policy", "scope", "권한", "정책", "범위")),
+        ("resource", ("oom", "memory", "resource", "메모리", "자원")),
+        ("build", ("build", "compile", "빌드", "컴파일")),
+        ("stopped", ("stopped", "interrupted", "중단", "정지")),
+        ("crash", ("crash", "sanitizer", "크래시")),
+        ("ai_review", ("ai 상태 검토 실패", "health review failed", "unauthorized")),
+    )
+    for category, words in categories:
+        if any(word in text for word in words):
+            return category
+    return "other"
 
 
 def _compact_previous(overview: dict[str, Any]) -> dict[str, Any]:

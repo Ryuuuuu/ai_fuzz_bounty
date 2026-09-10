@@ -30,6 +30,47 @@ class StagnationTests(unittest.TestCase):
             text = (output / "fuzz_parser.dict").read_text()
             self.assertIn("MAGIC_HEADER", text)
 
+    def test_native_second_stall_uses_an_alternate_pinned_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            artifacts = job / "artifacts"
+            source = job / "source"
+            artifacts.mkdir()
+            (source / "first").mkdir(parents=True)
+            (source / "second").mkdir(parents=True)
+            (source / "first" / "fuzz.cc").write_text(
+                'extern "C" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long);\n'
+            )
+            (source / "second" / "fuzz.cc").write_text(
+                'extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, unsigned long size) { return size; }\n'
+            )
+            (artifacts / "generic-integration.json").write_text(json.dumps({
+                "candidate": {"file": "first/fuzz.cc"}
+            }))
+            plan = {
+                "review": {
+                    "decision": "baseline_existing",
+                    "execution_ready": True,
+                    "selected_fuzz_target": "generic_fuzzer",
+                },
+                "evidence": {
+                    "execution_mode": "native_container",
+                    "source_harnesses": ["first/fuzz.cc", "second/fuzz.cc"],
+                    "gap_candidates": [],
+                },
+            }
+            path = artifacts / "coverage-plan.json"
+            path.write_text(json.dumps(plan))
+            runner = object.__new__(PipelineRunner)
+
+            self.assertTrue(runner._schedule_stagnation_harness(job))
+            updated = json.loads(path.read_text())
+
+        candidate = updated["evidence"]["gap_candidates"][0]
+        self.assertEqual(candidate["file"], "second/fuzz.cc")
+        self.assertEqual(candidate["candidate_kind"], "alternate_upstream_harness")
+        self.assertEqual(updated["review"]["candidate_ids"], [candidate["id"]])
+
     def test_second_stall_selects_a_known_coverage_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             job = Path(directory)

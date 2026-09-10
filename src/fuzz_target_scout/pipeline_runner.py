@@ -1238,9 +1238,15 @@ class PipelineRunner:
         if not plan_path.is_file():
             return False
         plan = self._read_json(plan_path)
-        candidates = (plan.get("evidence") or {}).get("gap_candidates") or []
+        evidence = plan.setdefault("evidence", {})
+        candidates = evidence.get("gap_candidates") or []
         if not candidates:
-            return False
+            fallback = self._native_stagnation_candidate(job_dir, evidence)
+            if fallback is None:
+                return False
+            candidates = [fallback]
+            evidence["gap_candidates"] = candidates
+            refresh_evidence_hash(evidence)
         selected = candidates[0]
         review = plan.setdefault("review", {})
         review["decision"] = "generate_new_harness"
@@ -1252,6 +1258,62 @@ class PipelineRunner:
             shutil.copy2(plan_path, archive)
         self._write_json(plan_path, plan)
         return True
+
+
+    def _native_stagnation_candidate(
+        self, job_dir: Path, evidence: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Use a different pinned upstream harness when Introspector has no ARM data."""
+        if evidence.get("execution_mode") != "native_container":
+            return None
+        source_root = (job_dir / "source").resolve()
+        integration_path = job_dir / "artifacts" / "generic-integration.json"
+        integration = self._read_json(integration_path) if integration_path.is_file() else {}
+        used_files = {str((integration.get("candidate") or {}).get("file") or "")}
+        generation_path = job_dir / "artifacts" / "harness-generation.json"
+        if generation_path.is_file():
+            generation = self._read_json(generation_path)
+            used_files.add(str((generation.get("candidate") or {}).get("file") or ""))
+        for value in evidence.get("source_harnesses") or []:
+            relative = Path(str(value))
+            if (
+                not str(value)
+                or str(value) in used_files
+                or relative.is_absolute()
+                or ".." in relative.parts
+            ):
+                continue
+            path = (source_root / relative).resolve()
+            if source_root not in path.parents or not path.is_file() or path.is_symlink():
+                continue
+            try:
+                if path.stat().st_size > 500_000:
+                    continue
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            line = next(
+                (index for index, text in enumerate(lines, 1) if "LLVMFuzzerTestOneInput" in text),
+                0,
+            )
+            if not line:
+                continue
+            name = relative.as_posix()
+            return {
+                "id": hashlib.sha256(f"native-alternate:{name}".encode()).hexdigest()[:12],
+                "signature": f"alternate pinned fuzz harness behavior from {name}",
+                "file": name,
+                "local_symbol_line": line,
+                "reported_line": line,
+                "complexity": 0,
+                "runtime_coverage_percent": 0.0,
+                "reached_by_fuzzers": [],
+                "oracles": ["local_stagnation_fallback"],
+                "rank_score": 0,
+                "direct_byte_input": True,
+                "candidate_kind": "alternate_upstream_harness",
+            }
+        return None
 
     def _run_afl_cmplog(
         self,
@@ -2719,14 +2781,38 @@ class PipelineRunner:
         stamp = str(time.time_ns())
         history = job_dir / "artifacts" / "history" / f"generation-{stamp}"
         history.mkdir(parents=True)
-        for name in ("smoke.json", "probe-run.json", "quartet-review.json", "coverage-plan.json"):
+        for name in (
+            "smoke.json",
+            "probe-run.json",
+            "quartet-review.json",
+            "coverage-plan.json",
+            "fuzz-run.json",
+        ):
             path = job_dir / "artifacts" / name
             if path.is_file():
                 shutil.move(str(path), history / name)
-        runtime_probe = job_dir / "runtime-out" / "probe"
-        if runtime_probe.exists():
-            runtime_probe.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(runtime_probe), runtime_probe.parent / f"probe-{stamp}")
+        progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+        if progress_path.is_file():
+            previous = PipelineRunner._read_json(progress_path)
+            shutil.move(str(progress_path), history / "fuzz-progress.json")
+            continuation = {
+                "schema_version": 1,
+                "completed_seconds": float(previous.get("completed_seconds") or 0),
+                "sessions": list(previous.get("sessions") or []),
+            }
+            for key in (
+                "last_accounted_fuzz_session_id",
+                "adaptive_checkpoint_seconds",
+                "resource_limit_events",
+            ):
+                if key in previous:
+                    continuation[key] = previous[key]
+            PipelineRunner._write_json(progress_path, continuation)
+        for runtime_name in ("probe", "fuzz"):
+            runtime = job_dir / "runtime-out" / runtime_name
+            if runtime.exists():
+                runtime.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(runtime), runtime.parent / f"{runtime_name}-{stamp}")
         for category in ("corpus", "crashes"):
             root = job_dir / category
             selected = root / fuzz_target

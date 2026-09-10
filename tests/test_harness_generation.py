@@ -100,9 +100,20 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 "probe-run.json",
                 "quartet-review.json",
                 "coverage-plan.json",
+                "fuzz-run.json",
             ):
                 (artifacts / name).write_text(json.dumps({"name": name}))
+            (artifacts / "fuzz-progress.json").write_text(json.dumps({
+                "schema_version": 1,
+                "completed_seconds": 7200,
+                "sessions": [{"session_id": "old"}],
+                "last_accounted_fuzz_session_id": "old",
+                "last_coverage_edges": 10,
+                "stalled_seconds": 14400,
+                "stagnation_dictionary_applied": True,
+            }))
             (job / "runtime-out" / "probe").mkdir(parents=True)
+            (job / "runtime-out" / "fuzz").mkdir(parents=True)
             for category in ("corpus", "crashes"):
                 path = job / category / "fuzz_parser"
                 path.mkdir(parents=True)
@@ -112,6 +123,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             self.assertTrue(list((artifacts / "history").glob("*/coverage-plan.json")))
             self.assertFalse((job / "corpus" / "fuzz_parser").exists())
             self.assertFalse((job / "crashes" / "fuzz_parser").exists())
+            continuation = json.loads((artifacts / "fuzz-progress.json").read_text())
+            self.assertEqual(continuation["completed_seconds"], 7200)
+            self.assertEqual(continuation["sessions"], [{"session_id": "old"}])
+            self.assertNotIn("last_coverage_edges", continuation)
+            self.assertNotIn("stalled_seconds", continuation)
+            self.assertFalse((artifacts / "fuzz-run.json").exists())
+            self.assertFalse((job / "runtime-out" / "fuzz").exists())
 
     def test_generation_returns_successful_build_to_smoke_stage(self):
         with tempfile.TemporaryDirectory() as directory:

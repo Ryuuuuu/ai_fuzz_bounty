@@ -13,6 +13,7 @@ from fuzz_target_scout.central_agent import (
     CentralCodex,
     TelegramNotifier,
     _followup_available,
+    _health_incident_key,
 )
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.pipeline_worker import PipelineWorker, WorkerResult
@@ -224,6 +225,41 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(len(log_lines), 2)
         self.assertEqual(len(messages), 1)
         self.assertIn("crashes/fuzz/crash-1", messages[0])
+
+    def test_ai_incident_key_ignores_wording_changes_for_same_problem(self):
+        first = {
+            "severity": "warning",
+            "summary": "커버리지 정체가 지속됩니다.",
+            "problems": [{
+                "job_id": "org-parser-aaaaaaaaaaaa",
+                "reason": "커버리지 엣지가 533에 머뭅니다.",
+                "recommended_action": "입력 전략을 점검하세요.",
+            }],
+        }
+        second = {
+            "severity": "warning",
+            "summary": "퍼징 중 coverage 증가가 없습니다.",
+            "problems": [{
+                "job_id": "org-parser-aaaaaaaaaaaa",
+                "reason": "coverage remains unchanged",
+                "recommended_action": "review harness reachability",
+            }],
+        }
+        different = {
+            "severity": "warning",
+            "summary": "빌드 실패",
+            "problems": [{
+                "job_id": "org-parser-aaaaaaaaaaaa",
+                "reason": "build failed",
+            }],
+        }
+
+        self.assertEqual(
+            _health_incident_key([], first), _health_incident_key([], second)
+        )
+        self.assertNotEqual(
+            _health_incident_key([], first), _health_incident_key([], different)
+        )
 
     def test_monitor_suppresses_same_incident_and_notifies_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
