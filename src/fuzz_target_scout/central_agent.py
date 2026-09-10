@@ -527,7 +527,8 @@ class CentralAgent:
         should_notify = bool(deterministic) or bool(decision.get("notify"))
         notification_transition = "unchanged"
         adaptive_handling = (
-            not deterministic
+            should_notify
+            and not deterministic
             and _adaptive_stall_is_being_handled(self.runs_root, overview, decision)
         )
         if adaptive_handling:
