@@ -1292,8 +1292,16 @@ class PipelineRunner:
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
+            text = "\n".join(lines)
+            unsafe = re.compile(
+                r"\b(?:socket|connect|listen|accept|sendto|recvfrom|sleep|fork|execv)\s*\("
+                r"|loopback|datapath|workerpool",
+                re.IGNORECASE,
+            )
+            if unsafe.search(text):
+                continue
             line = next(
-                (index for index, text in enumerate(lines, 1) if "LLVMFuzzerTestOneInput" in text),
+                (index for index, value in enumerate(lines, 1) if "LLVMFuzzerTestOneInput" in value),
                 0,
             )
             if not line:

@@ -71,6 +71,37 @@ class StagnationTests(unittest.TestCase):
         self.assertEqual(candidate["candidate_kind"], "alternate_upstream_harness")
         self.assertEqual(updated["review"]["candidate_ids"], [candidate["id"]])
 
+    def test_native_second_stall_rejects_a_stateful_network_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            artifacts = job / "artifacts"
+            source = job / "source"
+            artifacts.mkdir()
+            source.mkdir()
+            (source / "recvfuzz.cpp").write_text(
+                'extern "C" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long) { '
+                'CreateLoopbackDatapath(); return 0; }\n'
+            )
+            (artifacts / "generic-integration.json").write_text(json.dumps({
+                "candidate": {"file": "current.cc"}
+            }))
+            path = artifacts / "coverage-plan.json"
+            path.write_text(json.dumps({
+                "review": {"decision": "baseline_existing", "execution_ready": True},
+                "evidence": {
+                    "execution_mode": "native_container",
+                    "source_harnesses": ["recvfuzz.cpp"],
+                    "gap_candidates": [],
+                },
+            }))
+            runner = object.__new__(PipelineRunner)
+
+            self.assertFalse(runner._schedule_stagnation_harness(job))
+            updated = json.loads(path.read_text())
+
+        self.assertEqual(updated["evidence"]["gap_candidates"], [])
+        self.assertEqual(updated["review"]["decision"], "baseline_existing")
+
     def test_second_stall_selects_a_known_coverage_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             job = Path(directory)
