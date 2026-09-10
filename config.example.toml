@@ -140,6 +140,8 @@ discovery_limit = 0
 auto_improve = true
 max_improvement_cycles_per_job = 1
 improvement_probe_seconds = 600
+# 실행 중 정체 전략을 최소한 이 퍼징 시간만큼 평가한 뒤 다음 전략을 고릅니다.
+adaptive_strategy_evaluation_seconds = 3600
 
 [daemon]
 interval_seconds = 21600

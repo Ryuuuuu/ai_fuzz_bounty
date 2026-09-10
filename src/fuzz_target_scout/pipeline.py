@@ -392,6 +392,16 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         job_dir / "artifacts" / "validation-agent-report.json"
     )
     coverage_plan = _read_optional_object(job_dir / "artifacts" / "coverage-plan.json")
+    adaptive = _read_optional_object(job_dir / "artifacts" / "adaptive-strategy.json")
+    adaptive_current = next(
+        (
+            item
+            for item in reversed(adaptive.get("history") or [])
+            if isinstance(item, dict)
+            and str(item.get("id") or "") == str(adaptive.get("current_id") or "")
+        ),
+        {},
+    )
     budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
     completed = float(progress.get("completed_seconds") or 0)
     probe_findings = len(probe_run.get("crash_files") or [])
@@ -437,6 +447,8 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "coverage_edges": coverage_edges,
         "coverage_features": coverage_features,
         "coverage_stalled": bool(progress.get("coverage_stalled")),
+        "adaptive_strategy": adaptive_current.get("strategy"),
+        "adaptive_strategy_status": adaptive_current.get("status"),
         "corpus_files": int(fuzz_run.get("corpus_files") or 0),
         "crash_files": len(fuzz_run.get("crash_files") or []),
         "preflight_target": probe_run.get("fuzz_target"),

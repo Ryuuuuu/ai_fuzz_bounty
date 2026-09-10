@@ -136,6 +136,7 @@ DEFAULTS: dict[str, Any] = {
         "auto_improve": True,
         "max_improvement_cycles_per_job": 1,
         "improvement_probe_seconds": 600,
+        "adaptive_strategy_evaluation_seconds": 3600,
     },
     "daemon": {"interval_seconds": 21600},
 }

@@ -18,8 +18,30 @@
         "required": ["job_id", "reason", "recommended_action"],
         "additionalProperties": false
       }
+    },
+    "actions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "job_id": {"type": "string"},
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "enable_value_profile",
+              "inject_dictionary_seeds",
+              "deepen_mutation_stack",
+              "generate_followup_harness"
+            ]
+          },
+          "rationale": {"type": "string", "maxLength": 1200}
+        },
+        "required": ["job_id", "strategy", "rationale"],
+        "additionalProperties": false
+      }
     }
   },
-  "required": ["severity", "notify", "summary", "problems"],
+  "required": ["severity", "notify", "summary", "problems", "actions"],
   "additionalProperties": false
 }

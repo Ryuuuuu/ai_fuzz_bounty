@@ -352,6 +352,102 @@ class CentralAgentTests(unittest.TestCase):
         self.assertIn("중앙 상태 복구", messages[1])
         self.assertIn("실행 또는 준비 중인 작업: 1", messages[1])
 
+    def test_monitor_queues_allowlisted_strategy_and_notifies_telegram(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            runs = root / "runs"
+            config["pipeline"]["runs_path"] = str(runs)
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            job = runs / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "state.json").write_text(
+                json.dumps({"stage": "fuzzing", "status": "running"})
+            )
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps(
+                    {
+                        "coverage_stalled": True,
+                        "stagnation_dictionary_applied": True,
+                    }
+                )
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"evidence": {"execution_mode": "native_container"}})
+            )
+            overview = {
+                "job_count": 1,
+                "status_counts": {"running": 1},
+                "total_disk_bytes": 0,
+                "jobs": [
+                    {
+                        "job_id": job.name,
+                        "status": "running",
+                        "stage": "fuzzing",
+                        "coverage_stalled": True,
+                        "updated_at": "2099-01-01T00:00:00Z",
+                    }
+                ],
+            }
+            agent = CentralAgent(config)
+            agent.reviewer.health = lambda _evidence: (
+                {
+                    "severity": "warning",
+                    "notify": True,
+                    "summary": "커버리지 정체 대응",
+                    "problems": [],
+                    "actions": [
+                        {
+                            "job_id": job.name,
+                            "strategy": "enable_value_profile",
+                            "rationale": "비교 피드백을 확대합니다.",
+                        }
+                    ],
+                },
+                {},
+            )
+            messages = []
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True,
+                "ok",
+            )
+            allocation = ResourceAllocation(
+                1,
+                2,
+                1920,
+                768,
+                1,
+                1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                return_value=overview,
+            ):
+                record = agent.monitor("scheduled_check")
+
+            adaptive = json.loads(
+                (artifacts / "adaptive-strategy.json").read_text()
+            )
+
+        self.assertEqual(
+            adaptive["history"][0]["strategy"], "enable_value_profile"
+        )
+        self.assertEqual(record["improvements"][0]["selection_source"], "ai")
+        self.assertTrue(any("퍼징 전략을 변경" in message for message in messages))
+
     def test_cycle_review_and_improvement_finish_before_the_next_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -117,9 +117,12 @@ Telegram 알림과 대상 전환 전 개선 검토까지 관리하게 하려면:
     fuzz-pipeline agent
 
 Telegram 값은 환경변수로만 읽으며 Codex 하위 프로세스에는 전달하지 않는다. 중앙
-에이전트는 각 24시간 병렬 묶음이 끝날 때 다음 대상을 시작하기 전에 결과를 검토한다.
-확인된 coverage gap과 남은 생성 횟수가 있으면 기존 OSS-Fuzz-Gen 경로로 후속 하네스를
-만들고 기본 10분 probe, Quartet 및 coverage 게이트까지 다시 수행한다. 진행 로그는
+에이전트는 실행 중 정체가 확인되면 현재 작업에 허용되는 전략만 AI에 제시한다. 값 비교
+피드백, dictionary seed 재구성, 깊은 mutation 조합을 각각 제한된 시간 동안 평가하고,
+안전한 coverage gap 후보가 있을 때만 OSS-Fuzz-Gen 후속 하네스로 넘어간다. 같은 전략은
+반복하지 않으며 전략 적용과 성공·실패 결과를 Telegram으로 알린다. 각 24시간 병렬 묶음이
+끝날 때도 다음 대상을 시작하기 전에 결과를 검토한다. 후속 하네스는 기본 10분 probe,
+Quartet 및 coverage 게이트까지 다시 수행한다. 진행 로그는
 `data/central-agent/progress.jsonl`, AI 결정은 `data/central-agent/decisions/`에 남는다.
 
 현재 진행률, coverage, corpus, crash와 정체 상태 확인:

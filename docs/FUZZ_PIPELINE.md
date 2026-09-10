@@ -220,7 +220,10 @@ Codex 단계에서 생성된 하네스도 동일한 자원 할당을 받아 기�
 각 작업의 24시간 예산이 끝나 `triage_pending`이 되면 다음 작업을 선택한다.
 
 `fuzz-pipeline agent`는 worker를 묶음 단위로 실행한다. 같은 모델이 결정적 자원 계획이
-제시한 선택지 안에서 병렬도를 정하고, 30분마다 압축된 진행 지표를 판정한다. 묶음 종료 후
+제시한 선택지 안에서 병렬도를 정하고, 30분마다 압축된 진행 지표를 판정한다. 실행 중
+정체에는 허용 목록에서 한 전략만 선택하고, 선택 결과와 평가 결과를 Telegram으로 보낸다.
+AI가 잘못된 이름을 반환하거나 선택을 생략해도 중앙 에이전트는 가능한 가장 낮은 위험의
+전략으로 제한한다. 묶음 종료 후
 cycle review와 허용된 후속 하네스 probe가 끝나야 다음 묶음을 시작한다. 문제와 새 crash,
 PoC, 검증 보고서는 환경변수로 설정한 Telegram bot에 알린다.
 하네스 생성은 작업당 최대 두 사이클로 제한하며, 그 이상은 사람 검토 대상으로 남긴다.
@@ -251,9 +254,12 @@ CmpLog 보조 실행은 `afl_cmplog_enabled`로 끌 수 있고 `afl_cmplog_secon
 4시간 coverage 정체 뒤 x86_64 OSS-Fuzz 경로의 AFL++에서도 coverage 개선이 없거나,
 AFL++을 쓸 수 없는 네이티브 경로이면 현재 고정 소스와 하네스의 문자열을 제한적으로
 추출해 libFuzzer dictionary를 만든다. 생성된 dictionary는 다음 libFuzzer 명령의
-`-dict=` 인자로 반드시 연결하며 세션 결과에 적용 여부를 기록한다. dictionary 적용 뒤 다시 정체되면
-기존 coverage 분석에서 확인한 후보 하나를 선택해 OSS-Fuzz-Gen 빌드 수정 루프로
-넘긴다.
+`-dict=` 인자로 반드시 연결하며 세션 결과에 적용 여부를 기록한다. dictionary 적용 뒤
+다시 정체되면 중앙 에이전트가 `-use_value_profile=1`, dictionary token의 bounded seed
+변환, `-mutate_depth=10`을 각각 `adaptive_strategy_evaluation_seconds` 동안 평가한다.
+각 전략의 기준 coverage, 실행 시간과 결과는 `artifacts/adaptive-strategy.json`에 남는다.
+이 전략들로도 정체가 이어지고 안전한 coverage 후보가 있을 때만 OSS-Fuzz-Gen 빌드 수정
+루프로 넘긴다. 안전한 후보가 없으면 현재 하네스로 남은 예산을 수행한다.
 
 운영 중에는 `dashboard`, `housekeep`, `migrate` 명령을 사용한다. 디스크 제한,
 corpus·로그 정리, 고아 컨테이너 제거, 실패 횟수 제한과 상태 스키마 백업 절차는

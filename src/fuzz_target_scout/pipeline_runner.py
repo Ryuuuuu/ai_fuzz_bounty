@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from .adaptive_strategy import (
+    activate_runtime_strategy,
+    complete_harness_strategy,
+    current_strategy,
+    evaluate_runtime_strategy,
+    inject_dictionary_seeds,
+    load_strategy_record,
+    runtime_arguments,
+)
 from .architecture import normalize_architecture, resolve_host_architecture
 from .coverage_analysis import (
     CodexCoverageReviewer,
@@ -801,6 +810,29 @@ class PipelineRunner:
             else {"schema_version": 1, "completed_seconds": 0.0, "sessions": []}
         )
         completed_seconds = float(progress.get("completed_seconds") or 0)
+        adaptive = current_strategy(load_strategy_record(job_dir))
+        if (
+            adaptive
+            and adaptive.get("status") == "pending"
+            and adaptive.get("strategy") == "generate_followup_harness"
+        ):
+            if self._schedule_stagnation_harness(job_dir):
+                complete_harness_strategy(
+                    job_dir,
+                    status="scheduled",
+                    outcome="a safe follow-up harness candidate was scheduled",
+                )
+                state["status"] = "harness_work_pending"
+                state["last_error"] = None
+                state["updated_at"] = utc_now()
+                self._write_json(state_path, state)
+                return {"state": state, "adaptive_strategy": adaptive}
+            complete_harness_strategy(
+                job_dir,
+                status="failed",
+                outcome="no safe follow-up harness candidate remained",
+            )
+        adaptive = activate_runtime_strategy(job_dir, progress)
         artifact_path = job_dir / "artifacts" / "fuzz-run.json"
         active_session_id = str(state.get("active_fuzz_session_id") or "")
         if active_session_id and artifact_path.is_file():
@@ -971,6 +1003,7 @@ class PipelineRunner:
         current_edges, current_features = _result_coverage(result)
         previous_edges = progress.get("last_coverage_edges")
         previous_features = progress.get("last_coverage_features")
+        coverage_advanced = False
         if session_budget:
             coverage_observed = current_edges > 0 or current_features > 0
             has_coverage_baseline = (
@@ -1000,6 +1033,11 @@ class PipelineRunner:
                 getattr(self, "pipeline", {}).get("coverage_stall_seconds", 14400)
             )
             progress["coverage_stalled"] = progress["stalled_seconds"] >= stall_limit
+            evaluate_runtime_strategy(
+                job_dir,
+                progress,
+                coverage_advanced=coverage_advanced,
+            )
             self._write_json(progress_path, progress)
         self._clear_active_fuzz_session(state)
         if result.get("crash_files"):
@@ -1052,6 +1090,11 @@ class PipelineRunner:
                     )
                 )
                 and not bool(progress.get("stagnation_harness_scheduled"))
+                and not bool(
+                    (getattr(self, "config", {}).get("agent") or {}).get(
+                        "auto_improve", False
+                    )
+                )
             )
             if needs_harness and self._schedule_stagnation_harness(job_dir):
                 progress["stagnation_harness_scheduled"] = True
@@ -2535,6 +2578,10 @@ class PipelineRunner:
         dictionary_used = dictionary_path.is_file() and not dictionary_path.is_symlink()
         if dictionary_used:
             arguments.append(f"-dict=/out/{fuzzer}.dict")
+        seeded = inject_dictionary_seeds(
+            job_dir, dictionary_path, corpus_dir
+        )
+        arguments.extend(runtime_arguments(job_dir))
         if build.get("execution_mode") == "native_container":
             image = str(build.get("runner_image") or "")
             if not image:
@@ -2627,6 +2674,10 @@ class PipelineRunner:
             ),
             "resource_artifacts": resource_artifacts,
             "dictionary_used": dictionary_used,
+            "adaptive_seed_files_added": seeded,
+            "adaptive_strategy": (
+                (current_strategy(load_strategy_record(job_dir)) or {}).get("strategy")
+            ),
             "corpus_files": corpus_files,
             "coverage_edges": coverage_edges,
             "coverage_features": coverage_features,

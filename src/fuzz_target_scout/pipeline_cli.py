@@ -238,6 +238,11 @@ def _status(config: dict, args: argparse.Namespace) -> None:
         f"features={value['coverage_features']}"
     )
     print(f"coverage stalled   {str(value['coverage_stalled']).lower()}")
+    if value.get("adaptive_strategy"):
+        print(
+            f"adaptive strategy  {value['adaptive_strategy']} / "
+            f"{value.get('adaptive_strategy_status') or '-'}"
+        )
     print(f"corpus / crashes   {value['corpus_files']} / {value['crash_files']}")
     if value["preflight_target"]:
         print(
