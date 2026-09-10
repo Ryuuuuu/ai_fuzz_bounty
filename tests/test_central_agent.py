@@ -446,7 +446,25 @@ class CentralAgentTests(unittest.TestCase):
             adaptive["history"][0]["strategy"], "enable_value_profile"
         )
         self.assertEqual(record["improvements"][0]["selection_source"], "ai")
+        self.assertEqual(record["notification_transition"], "adaptive_handling")
+        self.assertEqual(len(messages), 1)
         self.assertTrue(any("퍼징 전략을 변경" in message for message in messages))
+
+    def test_graceful_fuzz_interruption_is_not_an_operational_failure(self):
+        config, _ = load_config(Path("missing.toml"))
+        agent = CentralAgent(config)
+        overview = {
+            "jobs": [
+                {
+                    "job_id": "org-parser-aaaaaaaaaaaa",
+                    "status": "interrupted",
+                    "stage": "fuzzing",
+                    "last_error": "fuzzing stopped by operator",
+                }
+            ]
+        }
+
+        self.assertEqual(agent._operational_problems(overview), [])
 
     def test_cycle_review_and_improvement_finish_before_the_next_batch(self):
         with tempfile.TemporaryDirectory() as directory:
