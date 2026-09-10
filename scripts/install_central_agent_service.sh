@@ -64,7 +64,8 @@ EnvironmentFile=$environment_file
 ExecStart=$exec_start
 Restart=on-failure
 RestartSec=30
-TimeoutStopSec=180
+KillSignal=SIGTERM
+TimeoutStopSec=60
 
 [Install]
 WantedBy=default.target

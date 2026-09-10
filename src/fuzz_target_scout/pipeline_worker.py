@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .pipeline import PipelineError, utc_now
+from .pipeline import PipelineError, PipelineInterrupted, utc_now
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .triage import TriageRunner
 from .operations import Housekeeper
@@ -44,11 +44,17 @@ class PipelineWorker:
         self.pipeline = config["pipeline"]
         self.runs_root = Path(self.pipeline["runs_path"])
         self.progress = progress or (lambda _: None)
-        self.runner = PipelineRunner(config, progress=self.progress)
+        self.stop_event = threading.Event()
+        self.runner = PipelineRunner(
+            config, progress=self.progress, cancel_event=self.stop_event
+        )
         self.triage_runner = TriageRunner(config, progress=self.progress)
         self.validation_runner = ValidationAgentRunner(config, progress=self.progress)
         self.housekeeper = Housekeeper(config)
         self._non_fuzz_lock = threading.Lock()
+
+    def stop(self) -> None:
+        self.stop_event.set()
 
     def run(self, max_jobs: int, *, setup_only: bool = False) -> list[WorkerResult]:
         if max_jobs < 0:
@@ -225,6 +231,15 @@ class PipelineWorker:
                 else:
                     raise PipelineError(f"worker does not understand stage: {stage}")
             raise PipelineError("worker exceeded the state transition limit")
+        except PipelineInterrupted as exc:
+            state = self._state(job_id)
+            return WorkerResult(
+                job_id,
+                str(state.get("status") or "interrupted"),
+                str(state.get("stage") or "unknown"),
+                "interrupted",
+                str(exc)[:2000],
+            )
         except Exception as exc:
             self._record_worker_error(job_id, exc)
             state = self._state(job_id)

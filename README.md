@@ -122,7 +122,7 @@ Telegram 값은 환경변수로만 읽으며 Codex 하위 프로세스에는 전
 만들고 기본 10분 probe, Quartet 및 coverage 게이트까지 다시 수행한다. 진행 로그는
 `data/central-agent/progress.jsonl`, AI 결정은 `data/central-agent/decisions/`에 남는다.
 
-현재 진행률, corpus, crash와 정체 상태 확인:
+현재 진행률, coverage, corpus, crash와 정체 상태 확인:
 
     fuzz-pipeline status --job-id <job-id>
     fuzz-pipeline dashboard --watch

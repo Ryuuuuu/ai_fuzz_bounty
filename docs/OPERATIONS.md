@@ -27,7 +27,8 @@ fuzz-pipeline agent
 계산의 상한과 호스트 여유분을 조정할 수 있다.
 
 장기 운영에서는 `worker` 대신 `agent`를 사용한다. 중앙 에이전트는 별도 잠금으로
-중복 실행을 막고, 종료 신호를 받으면 상태 파일에 기록된 활성 컨테이너를 중지한다.
+중복 실행을 막고, 종료 신호를 받으면 worker에 정상 중지를 전달한 뒤 상태 파일에 기록된
+활성 컨테이너를 중지한다. 정상 중지는 실패 횟수에 포함하지 않고 `interrupted`로 남긴다.
 다시 시작하면 기존 체크포인트에서 남은 시간만 이어서 실행한다. 30분 간격 상태 로그와
 Telegram 전달 내역은 각각 `data/central-agent/progress.jsonl`과
 `data/central-agent/notifications.jsonl`에 기록된다. 비밀값이나 crash 원본 바이트는
@@ -41,5 +42,6 @@ Telegram 전달 내역은 각각 `data/central-agent/progress.jsonl`과
 `dashboard --json`은 자동화가 읽을 수 있는 상태를 출력한다. 일반 화면에는 작업 단계,
 24시간 예산 진행률, 남은 시간, 처리량, crash 수, 검증 상태와 디스크 사용량이 표시된다.
 
-실패 횟수는 작업 상태의 `attempts.worker_failures`에 남는다. 같은 작업이
+퍼징 실행 로그는 세션 ID가 포함된 별도 파일에 기록해 이전 세션의 sanitizer/OOM 문구가
+현재 판정에 섞이지 않게 한다. 실패 횟수는 작업 상태의 `attempts.worker_failures`에 남는다. 같은 작업이
 `max_stage_failures`회 실패하면 자동 재시도를 중단하고 `manual_review`로 전환한다.

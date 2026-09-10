@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fuzz_target_scout.pipeline import PipelineError
+from fuzz_target_scout.pipeline import PipelineError, PipelineInterrupted
 from fuzz_target_scout.pipeline_worker import PipelineWorker
 from fuzz_target_scout.pipeline_worker import WorkerResult
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
@@ -71,6 +71,31 @@ class PipelineWorkerTests(unittest.TestCase):
             result = worker._advance("validation-job", setup_only=False)
             self.assertEqual(result.action, "validate")
             self.assertEqual(result.status, "ready_for_human")
+
+    def test_operator_interruption_does_not_consume_failure_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs, "interrupted-job", created="2026-01-01T00:00:00Z",
+                stage="fuzzing", status="interrupted",
+            )
+
+            class StubRunner:
+                @staticmethod
+                def fuzz(_job_id):
+                    raise PipelineInterrupted("fuzzing stopped by operator")
+
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_generation_cycles": 2, "max_stage_failures": 2}
+            worker.progress = lambda _message: None
+            worker.runner = StubRunner()
+            result = worker._advance("interrupted-job", setup_only=False)
+            state = json.loads((runs / "interrupted-job" / "state.json").read_text())
+
+        self.assertEqual(result.action, "interrupted")
+        self.assertEqual(result.status, "interrupted")
+        self.assertNotIn("worker_failures", state.get("attempts", {}))
 
     def test_repeated_worker_failure_stops_at_configured_limit(self):
         with tempfile.TemporaryDirectory() as directory:

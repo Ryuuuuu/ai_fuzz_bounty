@@ -19,6 +19,10 @@ class PipelineError(RuntimeError):
     pass
 
 
+class PipelineInterrupted(PipelineError):
+    """A resumable operator or service shutdown, not a pipeline failure."""
+
+
 class UnsupportedIntegrationError(PipelineError):
     """The target is valid but has no safely reusable build integration."""
 

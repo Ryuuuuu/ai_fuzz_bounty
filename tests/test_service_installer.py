@@ -55,6 +55,8 @@ class ServiceInstallerTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn(str(launcher), unit)
         self.assertIn(" agent", unit)
+        self.assertIn("KillSignal=SIGTERM", unit)
+        self.assertIn("TimeoutStopSec=60", unit)
         self.assertIn(f"Environment=PATH={root}/.venv/bin:", unit)
         self.assertNotIn("FUZZ_TELEGRAM_BOT_TOKEN=123", unit)
         self.assertEqual(secret_mode, 0o600)

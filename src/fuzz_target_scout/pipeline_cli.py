@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import signal
 import shutil
 import subprocess
 import time
@@ -457,6 +458,10 @@ def _agent(config: dict, args: argparse.Namespace) -> None:
         if not delivered:
             raise PipelineError(f"telegram test failed: {detail}")
         return
+    def stop_agent(_signum, _frame):
+        agent.stop()
+
+    previous_term = signal.signal(signal.SIGTERM, stop_agent)
     try:
         result = agent.run(
             max_batches=args.max_batches,
@@ -468,6 +473,8 @@ def _agent(config: dict, args: argparse.Namespace) -> None:
         agent.stop()
         print("central agent stopped", flush=True)
         return
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
     print(
         f"central agent complete: status={result.get('status')} "
         f"batches={result.get('completed_batches', 0)} "

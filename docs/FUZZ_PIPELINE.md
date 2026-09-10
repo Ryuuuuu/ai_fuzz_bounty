@@ -11,7 +11,7 @@
 
 | 도구 | 파이프라인에서 맡는 역할 | 적용 시점 |
 |---|---|---|
-| [OSS-Fuzz](https://github.com/google/oss-fuzz) | Linux 컨테이너 빌드, libFuzzer, ASan/UBSan, 커버리지와 크래시 최소화 | 모든 C/C++ 작업 |
+| [OSS-Fuzz](https://github.com/google/oss-fuzz) | x86_64의 기존 프로젝트 빌드·실행, libFuzzer, ASan/UBSan과 크래시 최소화 | 일치하는 OSS-Fuzz 정의가 있는 x86_64 작업 |
 | [OSS-Fuzz-Gen](https://github.com/google/oss-fuzz-gen) | 진입점 후보와 하네스 생성, 빌드 오류 피드백 수정, 기존 하네스 대비 커버리지 평가 | 하네스가 없거나 범위 확장이 필요할 때 |
 | [QuartetFuzz](https://github.com/OwenSanzas/QuartetFuzz) | P1 논리 정확성, P2 API 규약, P3 공개 보안 경계, P4 진입점 적절성 검사 | 하네스 빌드 전후의 필수 게이트 |
 | [Fuzz Introspector](https://github.com/ossf/fuzz-introspector) | 도달 함수, 미도달 코드, 하네스별 커버리지 차이 측정 | 진입점 선택과 4시간 정체 시점 |
@@ -44,7 +44,7 @@ queued
   → quartet_gate
   → coverage_analysis
   → fuzzing_asan_24h
-      ↳ corpus 4시간 정체 시 afl_cmplog 1회 → fuzzing_asan_24h
+      ↳ coverage edge/feature 4시간 정체 시 AFL++ CmpLog(지원 경로) 또는 dictionary → fuzzing_asan_24h
   → triage
   → validation
   → ready_for_human | exhausted | failed
@@ -70,8 +70,11 @@ queued
    로컬 ARM64 생성 프로젝트는 공개 Introspector에 존재하지 않으므로, Quartet을 통과하고
    실제 입력을 처리한 ASan probe가 있으면 이를 규칙 기반 기준선으로 승인한다.
 7. **fuzzing**: ASan/libFuzzer를 자동 계산된 worker 수로 총 86,400초 실행한다.
-   기본 한 시간 체크포인트마다 corpus 성장과 실행량을 기록하고, 4시간 동안 corpus가
-   늘지 않으면 고정 OSS-Fuzz가 제공하는 AFL++ CmpLog를 기본 3,600초 한 번 실행한다.
+   기본 한 시간 체크포인트마다 coverage edge/feature, corpus와 실행량을 기록한다.
+   coverage 수치가 제공되면 edge 또는 feature 증가만 정체 해제로 인정하고, 수치를 얻을 수
+   없는 경로에서만 corpus 증가를 대체 지표로 쓴다. 4시간 동안 coverage가 늘지 않으면
+   x86_64 OSS-Fuzz 경로는 고정 OSS-Fuzz가 제공하는 AFL++ CmpLog를 기본 3,600초 한 번
+   실행하고, 네이티브 경로는 고정 소스에서 제한적으로 만든 dictionary를 적용한다.
    실행 컨테이너에는 마운트한 corpus 경로를 `CORPUS_DIR`로 명시한다. OSS-Fuzz의
    `run_fuzzer`가 체크포인트마다 기본 corpus를 초기화하지 않으므로 앞 세션의 입력을
    다음 세션과 AFL++ 보조 실행이 그대로 이어받는다.
@@ -92,7 +95,7 @@ queued
 AI가 하는 일은 다섯 가지로 제한한다.
 
 1. 테스트와 공개 API에서 진입점을 순위화한다.
-2. 하네스·dictionary·작은 seed 후보를 생성한다.
+2. 직접 바이트 입력이 가능한 하네스를 생성한다.
 3. 압축한 컴파일 오류를 보고 최대 3회 수정한다.
 4. Fuzz Introspector 결과에서 다음 하네스가 노릴 미도달 경로를 설명한다.
 5. 재현된 크래시의 호출 흐름과 보고서 초안을 만든다.
@@ -245,8 +248,10 @@ CmpLog 보조 실행은 `afl_cmplog_enabled`로 끌 수 있고 `afl_cmplog_secon
 지문, 프레임, 제한된 소스 구간, 크기와 고정 커밋만 한 번에 전달한다. 생성된 PoC는
 네트워크가 없는 OSS-Fuzz 재현 컨테이너만 실행한다.
 
-4시간 정체 뒤 AFL++에서도 새 corpus가 없으면 현재 고정 소스와 하네스의 문자열을
-제한적으로 추출해 libFuzzer dictionary를 만든다. dictionary 적용 뒤 다시 정체되면
+4시간 coverage 정체 뒤 x86_64 OSS-Fuzz 경로의 AFL++에서도 coverage 개선이 없거나,
+AFL++을 쓸 수 없는 네이티브 경로이면 현재 고정 소스와 하네스의 문자열을 제한적으로
+추출해 libFuzzer dictionary를 만든다. 생성된 dictionary는 다음 libFuzzer 명령의
+`-dict=` 인자로 반드시 연결하며 세션 결과에 적용 여부를 기록한다. dictionary 적용 뒤 다시 정체되면
 기존 coverage 분석에서 확인한 후보 하나를 선택해 OSS-Fuzz-Gen 빌드 수정 루프로
 넘긴다.
 

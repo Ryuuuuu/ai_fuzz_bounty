@@ -35,6 +35,7 @@ from .harness_generation import (
 from .pipeline import (
     COMMIT_PATTERN,
     PipelineError,
+    PipelineInterrupted,
     UnsupportedIntegrationError,
     utc_now,
 )
@@ -58,10 +59,16 @@ STAGE_ORDER = ("policy_recheck", "source_checkout", "tool_sync", "integration")
 
 
 class PipelineRunner:
-    def __init__(self, config: dict[str, Any], progress: Progress | None = None):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        progress: Progress | None = None,
+        cancel_event=None,
+    ):
         self.config = config
         self.pipeline = config["pipeline"]
         self.progress = progress or (lambda _: None)
+        self.cancel_event = cancel_event
         self.runs_root = Path(self.pipeline["runs_path"])
         self.tools_root = Path(self.pipeline["tools_path"])
         github_config = {
@@ -1239,7 +1246,7 @@ class PipelineRunner:
         review["decision"] = "generate_new_harness"
         review["candidate_ids"] = [str(selected.get("id") or "")]
         review["execution_ready"] = False
-        review["reason"] = "coverage remained stalled after AFL++ CmpLog and a generated dictionary"
+        review["reason"] = "coverage remained stalled after the available input-strategy improvements"
         archive = job_dir / "artifacts" / "coverage-plan-before-stagnation-harness.json"
         if not archive.exists():
             shutil.copy2(plan_path, archive)
@@ -2473,13 +2480,18 @@ class PipelineRunner:
             ]
         started_at = utc_now()
         monotonic_start = time.monotonic()
-        log_path = job_dir / "logs" / f"{label}-{fuzzer}.log"
+        result_session_id = session_id or f"{label}-{time.time_ns()}"
+        safe_session_id = re.sub(r"[^a-zA-Z0-9_.-]", "-", result_session_id)
+        log_path = job_dir / "logs" / f"{label}-{fuzzer}-{safe_session_id}.log"
         exit_code = self._run_streaming(
             command,
             log_path,
             timeout=seconds + 600,
             allow_failure=True,
         )
+        cancel_event = getattr(self, "cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineInterrupted("fuzzing stopped by operator")
         elapsed = round(time.monotonic() - monotonic_start, 3)
         crashes = sorted(
             path.name
@@ -2496,7 +2508,6 @@ class PipelineRunner:
             {"worker_stats": worker_stats}
         )
         summaries = self._sanitizer_summaries(log_path)
-        result_session_id = session_id or f"{label}-{time.time_ns()}"
         resource_artifacts: list[str] = []
         resource_limit_restart = _is_long_running_resource_oom(
             crashes,

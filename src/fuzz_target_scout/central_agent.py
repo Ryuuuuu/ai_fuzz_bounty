@@ -402,6 +402,10 @@ class CentralAgent:
                         worker, allocation.parallel_jobs, capacity
                     )
                     self._active_worker = None
+                    if self.stop_event.is_set():
+                        self.state["status"] = "stopped"
+                        self._save_state()
+                        break
                     completed_batches += 1
                     self.state["batch_count"] = int(
                         self.state.get("batch_count") or 0
@@ -456,6 +460,9 @@ class CentralAgent:
 
     def stop(self) -> None:
         self.stop_event.set()
+        worker = getattr(self, "_active_worker", None)
+        if worker is not None:
+            worker.stop()
         self._stop_active_containers()
 
     def test_telegram(self) -> tuple[bool, str]:
@@ -590,6 +597,7 @@ class CentralAgent:
                 except FutureTimeout:
                     self.monitor("scheduled_check")
                     if self.stop_event.is_set():
+                        worker.stop()
                         self._stop_active_containers()
         except KeyboardInterrupt:
             self.stop()

@@ -351,13 +351,17 @@ class PipelineRunnerTests(unittest.TestCase):
                 log_path.write_text("", encoding="utf-8")
                 return 0
 
+            (job / "logs" / "probe-fuzz_parser.log").write_text(
+                "SUMMARY: libFuzzer: out-of-memory\n", encoding="utf-8"
+            )
             with patch.object(runner, "_run_streaming", side_effect=fake_run):
-                runner._fuzz_session(
+                result = runner._fuzz_session(
                     job,
                     {},
                     seconds=1,
                     workers=1,
                     label="probe",
+                    session_id="probe-session-1",
                 )
 
             command = captured["command"]
@@ -366,6 +370,8 @@ class PipelineRunnerTests(unittest.TestCase):
             )
             self.assertIn("CORPUS_DIR=/tmp/fuzz_parser_corpus", command)
             self.assertIn("-dict=/out/fuzz_parser.dict", command)
+            self.assertTrue(result["log_path"].endswith("probe-fuzz_parser-probe-session-1.log"))
+            self.assertEqual(result["sanitizer_summaries"], [])
             self.assertLess(
                 command.index("CORPUS_DIR=/tmp/fuzz_parser_corpus"),
                 command.index(corpus_mount),

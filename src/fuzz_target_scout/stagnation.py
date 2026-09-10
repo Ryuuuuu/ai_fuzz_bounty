@@ -60,7 +60,7 @@ def generate_dictionary(job_dir: Path, fuzz_target: str) -> dict[str, Any]:
         "token_count": len(tokens),
         "path": str(destination) if tokens else None,
         "sha256": hashlib.sha256(rendered.encode()).hexdigest(),
-        "source": "bounded_static_string_extraction_after_afl_cmplog",
+        "source": "bounded_static_string_extraction_after_coverage_stall",
     }
     _write_json(job_dir / "artifacts" / "stagnation-dictionary.json", record)
     return record
