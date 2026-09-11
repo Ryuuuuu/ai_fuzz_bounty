@@ -77,11 +77,57 @@ class GenericIntegrationTests(unittest.TestCase):
             self.assertEqual(result["build_system"], "cmake")
             self.assertTrue(result["harness_origin"].startswith("existing:"))
             self.assertEqual(result["candidate"]["file"], "fuzz.cc")
+            self.assertNotIn(
+                '"-I$SRC/project/"', (project / "build.sh").read_text()
+            )
             self.assertEqual(
                 (project / "generic_harness.cc").stat().st_mode & 0o777, 0o644
             )
             for name in ("Dockerfile", "build.sh", "project.yaml", "generic_harness.cc"):
                 self.assertTrue((project / name).is_file())
+
+    def test_existing_nested_harness_adds_its_header_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "oss-fuzz-project"
+            harness_dir = source / "tests" / "fuzz"
+            (root / "artifacts").mkdir()
+            harness_dir.mkdir(parents=True)
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.16)"
+            )
+            (harness_dir / "fuzz_helper.h").write_text("#pragma once\n")
+            (harness_dir / "block_fuzz.c").write_text(
+                '#include "fuzz_helper.h"\n#include <stddef.h>\n'
+                'int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) '
+                '{ return data != 0 && size > 0; }\n'
+            )
+
+            result = create_generic_project(
+                job_dir=root, source=source, project_dir=project,
+                project_name="fts-test", pipeline={},
+            )
+
+            self.assertEqual(result["candidate"]["file"], "tests/fuzz/block_fuzz.c")
+            self.assertIn(
+                '"-I$SRC/project/tests/fuzz"',
+                (project / "build.sh").read_text(),
+            )
+
+            record_path = root / "artifacts" / "generic-integration.json"
+            record_path.write_text(__import__("json").dumps(result))
+            item = repair_generic_harness(
+                job_dir=root, source=source, project_dir=project,
+                pipeline={}, build_error="missing fuzz_helper.h", attempt=1,
+            )
+            self.assertEqual(
+                item["repair_kind"], "deterministic_harness_include_path"
+            )
+            self.assertIn(
+                '"-I$SRC/project/tests/fuzz"',
+                (project / "build.sh").read_text(),
+            )
 
     def test_repair_uses_bounded_compile_feedback(self):
         with tempfile.TemporaryDirectory() as directory:

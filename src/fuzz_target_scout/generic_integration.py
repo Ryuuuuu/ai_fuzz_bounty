@@ -58,7 +58,7 @@ def create_generic_project(
         _dockerfile(build_system, base_image if native else None),
         encoding="utf-8",
     )
-    build_script = _build_script(build_system)
+    build_script = _build_script(build_system, _candidate_include_dir(candidate))
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
     build_path.chmod(0o755)
@@ -99,10 +99,25 @@ def repair_generic_harness(
     candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin", ""))
     if harness_origin.startswith("existing:"):
-        raise PipelineError(
-            "the upstream LLVMFuzzerTestOneInput harness is preserved; "
-            "repair the deterministic build integration instead"
+        build_script = _build_script(
+            str(record["build_system"]), _candidate_include_dir(candidate)
         )
+        build_path = project_dir / "build.sh"
+        build_path.write_text(build_script, encoding="utf-8")
+        build_path.chmod(0o755)
+        item = {
+            "attempt": attempt,
+            "created_at": utc_now(),
+            "ai_usage": {},
+            "repair_kind": "deterministic_harness_include_path",
+            "build_error_sha256": hashlib.sha256(build_error.encode()).hexdigest(),
+        }
+        record["build_script_sha256"] = hashlib.sha256(
+            build_script.encode()
+        ).hexdigest()
+        record.setdefault("repair_attempts", []).append(item)
+        _write_json(record_path, record)
+        return item
     if not candidate.get("file"):
         candidate = _select_public_candidate(source)
     context = source_context(source, candidate, radius=140)
@@ -258,7 +273,19 @@ WORKDIR /src/project
 """
 
 
-def _build_script(build_system: str) -> str:
+def _candidate_include_dir(candidate: dict[str, Any]) -> str:
+    value = Path(str(candidate.get("file") or "")).parent.as_posix()
+    if value in {"", "."}:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_./+-]{1,300}", value):
+        return ""
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        return ""
+    return value
+
+
+def _build_script(build_system: str, harness_include_dir: str = "") -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
 export CC CXX CFLAGS CXXFLAGS LIB_FUZZING_ENGINE OUT WORK
@@ -293,8 +320,13 @@ find . -type f -name '*.a' -exec cp -n {} "$WORK/build/" \\;
 find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/" \\;
 """,
     }
+    harness_include = (
+        f' "-I$SRC/project/{harness_include_dir}"'
+        if harness_include_dir
+        else ""
+    )
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
-include_flags=("-I$SRC/project")
+include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)
 if [[ -f "$WORK/build/build.ninja" ]]; then
   while IFS= read -r flag; do
     include_flags+=("$flag")
@@ -322,7 +354,9 @@ fi
   -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
   $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
-    return prelude + builds[build_system] + link
+    return prelude + builds[build_system] + link.replace(
+        "__HARNESS_INCLUDE__", harness_include
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
