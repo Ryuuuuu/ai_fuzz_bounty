@@ -6,9 +6,36 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fuzz_target_scout.ai import CodexReviewer
+from fuzz_target_scout.engine import _completed_repositories
 
 
 class CodexReviewerTests(unittest.TestCase):
+    def test_completed_repositories_are_excluded_from_future_ai_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            completed = runs / "org-done-aaaaaaaaaaaa"
+            active = runs / "org-active-bbbbbbbbbbbb"
+            completed.mkdir()
+            active.mkdir()
+            (completed / "state.json").write_text(
+                json.dumps({"stage": "complete"}), encoding="utf-8"
+            )
+            (completed / "job.json").write_text(
+                json.dumps({"source": {"repository": "Org/Done"}}),
+                encoding="utf-8",
+            )
+            (active / "state.json").write_text(
+                json.dumps({"stage": "fuzzing"}), encoding="utf-8"
+            )
+            (active / "job.json").write_text(
+                json.dumps({"source": {"repository": "Org/Active"}}),
+                encoding="utf-8",
+            )
+
+            repositories = _completed_repositories(runs)
+
+        self.assertEqual(repositories, {"org/done"})
+
     def test_uses_logged_in_cli_with_requested_model_and_high_reasoning(self):
         with tempfile.TemporaryDirectory() as directory:
             schema = Path(directory) / "schema.json"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 from .ai import AIError, CodexReviewer, compact_evidence, evidence_hash
@@ -195,12 +197,24 @@ class ScoutEngine:
             )
             return 0, 0, 0
 
+        enabled_languages = {
+            str(value).casefold()
+            for value in (self.config.get("pipeline") or {}).get("languages", [])
+        }
+        completed_repositories = _completed_repositories(
+            Path((self.config.get("pipeline") or {}).get("runs_path", "data/runs"))
+        )
         eligible = [
             candidate
             for candidate in candidates
             if candidate.policy.status == "verified"
             and bool(candidate.architecture and candidate.architecture.compatible)
             and candidate.static.fuzz_score >= int(ai_config["minimum_static_score"])
+            and (
+                not enabled_languages
+                or candidate.repo.language.casefold() in enabled_languages
+            )
+            and candidate.repo.full_name.casefold() not in completed_repositories
         ]
         eligible.sort(key=lambda item: item.static.fuzz_score, reverse=True)
         eligible = eligible[: int(ai_config["max_candidates_per_scan"])]
@@ -265,3 +279,23 @@ class ScoutEngine:
                 usage_share,
             )
         return calls, cache_hits, errors
+
+
+def _completed_repositories(runs_root: Path) -> set[str]:
+    completed: set[str] = set()
+    if not runs_root.is_dir() or runs_root.is_symlink():
+        return completed
+    for state_path in runs_root.glob("*/state.json"):
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if state.get("stage") != "complete":
+                continue
+            job = json.loads(
+                (state_path.parent / "job.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+        repository = str((job.get("source") or {}).get("repository") or "")
+        if repository:
+            completed.add(repository.casefold())
+    return completed
