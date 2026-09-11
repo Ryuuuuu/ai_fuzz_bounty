@@ -219,17 +219,37 @@ def _obtain_harness(
 
 
 def _find_existing_harness(source: Path) -> Path | None:
+    candidates: list[tuple[tuple[int, int, str], Path]] = []
     for path in sorted(source.rglob("*")):
         if path.is_symlink() or not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
             continue
         try:
             if path.stat().st_size > 500_000:
                 continue
-            if "LLVMFuzzerTestOneInput" in path.read_text(encoding="utf-8", errors="replace"):
-                return path
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "LLVMFuzzerTestOneInput" not in text:
+                continue
+            lowered = text.casefold()
+            name = path.stem.casefold()
+            penalty = 0
+            if "static_linking_only" in lowered:
+                penalty += 100
+            if re.search(r'#\s*include\s*[<"][^>"\n]*(?:private|internal)', lowered):
+                penalty += 60
+            if "simple" in name:
+                penalty -= 30
+            if any(value in name for value in ("decompress", "decode", "parse", "read")):
+                penalty -= 20
+            if "compress" in name and "decompress" not in name:
+                penalty -= 5
+            candidates.append(
+                ((penalty, len(text.splitlines()), path.as_posix()), path)
+            )
         except OSError:
             continue
-    return None
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
 
 
 def _select_public_candidate(source: Path) -> dict[str, Any]:

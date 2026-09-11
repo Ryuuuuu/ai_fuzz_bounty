@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
     _build_script,
+    _find_existing_harness,
     create_generic_project,
     detect_build_system,
     repair_generic_harness,
@@ -13,6 +14,24 @@ from fuzz_target_scout.generic_integration import (
 
 
 class GenericIntegrationTests(unittest.TestCase):
+    def test_prefers_simple_public_harness_over_static_only_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            fuzz = source / "tests" / "fuzz"
+            fuzz.mkdir(parents=True)
+            (fuzz / "block_decompress.c").write_text(
+                '#define LIB_STATIC_LINKING_ONLY\n'
+                'int LLVMFuzzerTestOneInput(const unsigned char *data, '
+                'unsigned long size) { return 0; }\n'
+            )
+            preferred = fuzz / "simple_decompress.c"
+            preferred.write_text(
+                'int LLVMFuzzerTestOneInput(const unsigned char *data, '
+                'unsigned long size) { return 0; }\n'
+            )
+
+            self.assertEqual(_find_existing_harness(source), preferred)
+
     def test_builder_installs_only_the_selected_build_family(self):
         dockerfile = _dockerfile("cmake")
         self.assertIn("cmake ninja-build pkg-config", dockerfile)
