@@ -58,7 +58,14 @@ def create_generic_project(
         _dockerfile(build_system, base_image if native else None),
         encoding="utf-8",
     )
-    build_script = _build_script(build_system, _candidate_include_dir(candidate))
+    support_sources = _candidate_support_sources(source, candidate)
+    harness_language = _candidate_harness_language(candidate, origin)
+    build_script = _build_script(
+        build_system,
+        _candidate_include_dir(candidate),
+        support_sources,
+        harness_language,
+    )
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
     build_path.chmod(0o755)
@@ -78,6 +85,8 @@ def create_generic_project(
         "base_image": base_image if native else "gcr.io/oss-fuzz-base/base-builder",
         "harness_origin": origin,
         "candidate": candidate,
+        "harness_language": harness_language,
+        "support_sources": support_sources,
         "ai_usage": usage,
         "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
         "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
@@ -99,8 +108,19 @@ def repair_generic_harness(
     candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin", ""))
     if harness_origin.startswith("existing:"):
+        support_sources = sorted(
+            set(record.get("support_sources") or [])
+            | set(_candidate_support_sources(source, candidate))
+        )
+        harness_language = str(
+            record.get("harness_language")
+            or _candidate_harness_language(candidate, harness_origin)
+        )
         build_script = _build_script(
-            str(record["build_system"]), _candidate_include_dir(candidate)
+            str(record["build_system"]),
+            _candidate_include_dir(candidate),
+            support_sources,
+            harness_language,
         )
         build_path = project_dir / "build.sh"
         build_path.write_text(build_script, encoding="utf-8")
@@ -115,6 +135,8 @@ def repair_generic_harness(
         record["build_script_sha256"] = hashlib.sha256(
             build_script.encode()
         ).hexdigest()
+        record["harness_language"] = harness_language
+        record["support_sources"] = support_sources
         record.setdefault("repair_attempts", []).append(item)
         _write_json(record_path, record)
         return item
@@ -285,7 +307,57 @@ def _candidate_include_dir(candidate: dict[str, Any]) -> str:
     return value
 
 
-def _build_script(build_system: str, harness_include_dir: str = "") -> str:
+def _safe_relative_source(value: str) -> str | None:
+    if not re.fullmatch(r"[A-Za-z0-9_./+-]{1,300}", value):
+        return None
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return path.as_posix()
+
+
+def _candidate_support_sources(
+    source: Path, candidate: dict[str, Any]
+) -> list[str]:
+    relative = _safe_relative_source(str(candidate.get("file") or ""))
+    if not relative:
+        return []
+    harness = source / relative
+    try:
+        text = harness.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    support: set[str] = set()
+    for include in re.findall(r'^\s*#\s*include\s*"([^"\n]+)"', text, re.MULTILINE):
+        header = (harness.parent / include).resolve()
+        try:
+            header.relative_to(source.resolve())
+        except ValueError:
+            continue
+        for suffix in SOURCE_SUFFIXES:
+            companion = header.with_suffix(suffix)
+            if not companion.is_file() or companion == harness:
+                continue
+            value = _safe_relative_source(companion.relative_to(source).as_posix())
+            if value:
+                support.add(value)
+    return sorted(support)
+
+
+def _candidate_harness_language(candidate: dict[str, Any], origin: str) -> str:
+    if origin.startswith("existing:") and Path(
+        str(candidate.get("file") or "")
+    ).suffix.casefold() == ".c":
+        return "c"
+    return "c++"
+
+
+def _build_script(
+    build_system: str,
+    harness_include_dir: str = "",
+    support_sources: list[str] | tuple[str, ...] = (),
+    harness_language: str = "c++",
+) -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
 export CC CXX CFLAGS CXXFLAGS LIB_FUZZING_ENGINE OUT WORK
@@ -325,6 +397,26 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
         if harness_include_dir
         else ""
     )
+    support_compile_lines: list[str] = []
+    for index, raw_source in enumerate(support_sources):
+        support_source = _safe_relative_source(str(raw_source))
+        if (
+            not support_source
+            or Path(support_source).suffix.casefold() not in SOURCE_SUFFIXES
+        ):
+            continue
+        is_c = Path(support_source).suffix.casefold() == ".c"
+        compiler = "$CC" if is_c else "$CXX"
+        flags = "$CFLAGS" if is_c else "$CXXFLAGS"
+        support_compile_lines.append(
+            f'"{compiler}" {flags} "${{include_flags[@]}}" -c '
+            f'"$SRC/project/{support_source}" '
+            f'-o "$WORK/harness-support-{index}.o"\n'
+            f'support_objects+=("$WORK/harness-support-{index}.o")'
+        )
+    harness_compiler = "$CC" if harness_language == "c" else "$CXX"
+    harness_flags = "$CFLAGS" if harness_language == "c" else "$CXXFLAGS -std=c++17"
+    support_compile = "\n".join(support_compile_lines)
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
 include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)
 if [[ -f "$WORK/build/build.ninja" ]]; then
@@ -350,13 +442,19 @@ if (( ${#archives[@]} == 0 )); then
   echo 'generic integration found no static libraries' >&2
   exit 1
 fi
-"$CXX" $CXXFLAGS -std=c++17 "${include_flags[@]}" "$SRC/generic_harness.cc" \\
+support_objects=()
+__SUPPORT_COMPILE__
+"__HARNESS_COMPILER__" __HARNESS_FLAGS__ "${include_flags[@]}" \\
+  -c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"
+"$CXX" $CXXFLAGS "$WORK/generic_harness.o" "${support_objects[@]}" \\
   -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
   $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
-    return prelude + builds[build_system] + link.replace(
-        "__HARNESS_INCLUDE__", harness_include
-    )
+    link = link.replace("__HARNESS_INCLUDE__", harness_include)
+    link = link.replace("__SUPPORT_COMPILE__", support_compile)
+    link = link.replace("__HARNESS_COMPILER__", harness_compiler)
+    link = link.replace("__HARNESS_FLAGS__", harness_flags)
+    return prelude + builds[build_system] + link
 
 
 def _read_json(path: Path) -> dict[str, Any]:

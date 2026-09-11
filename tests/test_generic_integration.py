@@ -45,12 +45,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 if expected == "cmake":
                     self.assertIn("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)", script)
                     self.assertIn('ninja -C "$WORK/build" -t commands', script)
-                harness_line = next(
-                    line for line in script.splitlines()
-                    if '"$SRC/generic_harness.cc"' in line
+                self.assertIn(
+                    '-c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"',
+                    script,
                 )
-                self.assertTrue(harness_line.endswith("\\"))
-                self.assertFalse(harness_line.endswith("\\n"))
+                self.assertIn('"$WORK/generic_harness.o"', script)
                 self.assertTrue(
                     any(
                         line.startswith("  -Wl,--start-group")
@@ -98,6 +97,9 @@ class GenericIntegrationTests(unittest.TestCase):
                 "cmake_minimum_required(VERSION 3.16)"
             )
             (harness_dir / "fuzz_helper.h").write_text("#pragma once\n")
+            (harness_dir / "fuzz_helper.c").write_text(
+                '#include "fuzz_helper.h"\n'
+            )
             (harness_dir / "block_fuzz.c").write_text(
                 '#include "fuzz_helper.h"\n#include <stddef.h>\n'
                 'int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) '
@@ -110,8 +112,16 @@ class GenericIntegrationTests(unittest.TestCase):
             )
 
             self.assertEqual(result["candidate"]["file"], "tests/fuzz/block_fuzz.c")
+            self.assertEqual(result["harness_language"], "c")
+            self.assertEqual(
+                result["support_sources"], ["tests/fuzz/fuzz_helper.c"]
+            )
             self.assertIn(
                 '"-I$SRC/project/tests/fuzz"',
+                (project / "build.sh").read_text(),
+            )
+            self.assertIn(
+                '"$SRC/project/tests/fuzz/fuzz_helper.c"',
                 (project / "build.sh").read_text(),
             )
 
