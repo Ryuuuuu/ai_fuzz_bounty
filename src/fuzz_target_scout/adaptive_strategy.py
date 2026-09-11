@@ -116,15 +116,19 @@ def activate_runtime_strategy(
 
 
 def runtime_arguments(job_dir: Path) -> list[str]:
-    entry = current_strategy(load_strategy_record(job_dir))
-    if not entry or entry.get("status") != "active":
-        return []
-    strategy = entry.get("strategy")
-    if strategy == "enable_value_profile":
-        return ["-use_value_profile=1"]
-    if strategy == "deepen_mutation_stack":
-        return ["-mutate_depth=10"]
-    return []
+    arguments: list[str] = []
+    for entry in load_strategy_record(job_dir).get("history") or []:
+        if not isinstance(entry, dict) or entry.get("status") not in {
+            "active",
+            "succeeded",
+        }:
+            continue
+        strategy = entry.get("strategy")
+        if strategy == "enable_value_profile":
+            arguments.append("-use_value_profile=1")
+        elif strategy == "deepen_mutation_stack":
+            arguments.append("-mutate_depth=10")
+    return list(dict.fromkeys(arguments))
 
 
 def inject_dictionary_seeds(

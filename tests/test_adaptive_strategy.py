@@ -41,9 +41,33 @@ class AdaptiveStrategyTests(unittest.TestCase):
             record = load_strategy_record(job)
 
         self.assertEqual(evaluated["status"], "ineffective")
+        self.assertEqual(runtime_arguments(job), [])
         self.assertEqual(
             attempted_strategies(record), {"enable_value_profile"}
         )
+
+    def test_successful_runtime_strategy_remains_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            (job / "artifacts").mkdir()
+            queue_strategy(job, "enable_value_profile", "stalled", 600)
+            progress = {
+                "completed_seconds": 1000,
+                "last_coverage_edges": 20,
+                "last_coverage_features": 30,
+                "last_corpus_files": 10,
+            }
+            activate_runtime_strategy(job, progress)
+            progress["completed_seconds"] = 1100
+            progress["last_coverage_features"] = 40
+            evaluated = evaluate_runtime_strategy(
+                job, progress, coverage_advanced=True
+            )
+
+            arguments = runtime_arguments(job)
+
+        self.assertEqual(evaluated["status"], "succeeded")
+        self.assertEqual(arguments, ["-use_value_profile=1"])
 
     def test_dictionary_strategy_adds_bounded_content_addressed_seeds(self):
         with tempfile.TemporaryDirectory() as directory:
