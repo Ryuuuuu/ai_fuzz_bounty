@@ -2,6 +2,15 @@
   "schema_version": 1,
   "entries": [
     {
+      "full_name": "facebook/zstd",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/facebook/zstd/security/policy",
+      "program_url": "https://www.facebook.com/whitehat",
+      "scope_note": "The repository SECURITY.md routes reports to Meta Bug Bounty and states that eligible reports may receive a bounty; exact eligibility remains subject to Meta triage.",
+      "last_verified": "2026-09-11"
+    },
+    {
       "full_name": "contentauth/c2pa-rs",
       "status": "verified",
       "access": "public",

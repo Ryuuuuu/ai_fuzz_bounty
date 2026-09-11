@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "entries": [
+    {"full_name":"facebook/zstd","status":"verified","access":"public","security_url":"https://github.com/facebook/zstd/security/policy","program_url":"https://www.facebook.com/whitehat","scope_note":"The repository SECURITY.md routes reports to Meta Bug Bounty and states that eligible reports may receive a bounty; exact eligibility remains subject to Meta triage.","last_verified":"2026-09-11"},
     {"full_name":"contentauth/c2pa-rs","status":"verified","access":"public","security_url":"https://github.com/contentauth/c2pa-rs/security/policy","program_url":"https://hackerone.com/adobe","scope_note":"Repository SECURITY.md explicitly routes this library to Adobe's public bug bounty; tagged supported releases apply.","last_verified":"2026-09-09"},
     {"full_name":"cli/cli","status":"verified","access":"public","security_url":"https://github.com/cli/cli/security/policy","program_url":"https://hackerone.com/github","scope_note":"GitHub CLI reports submitted through HackerOne can be bounty eligible; repository private reporting is not bounty eligible.","last_verified":"2026-09-09"},
     {"full_name":"PowerDNS/pdns","status":"verified","access":"public","security_url":"https://github.com/PowerDNS/pdns/security/policy","program_url":"https://yeswehack.com/programs/powerdns","scope_note":"Software scope is limited to PowerDNS Authoritative Server, Recursor, and dnsdist.","last_verified":"2026-09-09"},
