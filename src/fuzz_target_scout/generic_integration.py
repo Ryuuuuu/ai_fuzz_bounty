@@ -415,7 +415,9 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
             f'support_objects+=("$WORK/harness-support-{index}.o")'
         )
     harness_compiler = "$CC" if harness_language == "c" else "$CXX"
-    harness_flags = "$CFLAGS" if harness_language == "c" else "$CXXFLAGS -std=c++17"
+    harness_flags = (
+        "$CFLAGS -x c" if harness_language == "c" else "$CXXFLAGS -std=c++17"
+    )
     support_compile = "\n".join(support_compile_lines)
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
 include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)

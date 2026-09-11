@@ -124,6 +124,9 @@ class GenericIntegrationTests(unittest.TestCase):
                 '"$SRC/project/tests/fuzz/fuzz_helper.c"',
                 (project / "build.sh").read_text(),
             )
+            self.assertIn(
+                '"$CC" $CFLAGS -x c', (project / "build.sh").read_text()
+            )
 
             record_path = root / "artifacts" / "generic-integration.json"
             record_path.write_text(__import__("json").dumps(result))
