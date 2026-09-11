@@ -235,8 +235,7 @@ def build_quartet_evidence(
             re.DOTALL,
         )
     )
-    data_refs = len(re.findall(r"\bdata\b", source_code))
-    size_refs = len(re.findall(r"\bsize\b", source_code))
+    data_refs, size_refs = _entrypoint_reference_counts(source_code)
     unaligned = _line_matches(
         lines,
         re.compile(
@@ -400,6 +399,29 @@ def _symbol_basename(value: str) -> str:
     name = re.sub(r"\([^)]*\)\s*$", "", value.strip())
     name = re.sub(r"<.*>$", "", name)
     return re.split(r"::|->|\.", name)[-1]
+
+
+def _entrypoint_reference_counts(source_code: str) -> tuple[int, int]:
+    match = re.search(
+        r"\bLLVMFuzzerTestOneInput\s*\((?P<parameters>[^)]*)\)\s*\{",
+        source_code,
+        re.DOTALL,
+    )
+    if not match:
+        return 0, 0
+    parameters = match.group("parameters").split(",", 1)
+    if len(parameters) != 2:
+        return 0, 0
+    names: list[str] = []
+    for parameter in parameters:
+        identifiers = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", parameter)
+        if not identifiers:
+            return 0, 0
+        names.append(identifiers[-1])
+    return tuple(
+        len(re.findall(rf"\b{re.escape(name)}\b", source_code))
+        for name in names
+    )
 
 
 def quartet_record(

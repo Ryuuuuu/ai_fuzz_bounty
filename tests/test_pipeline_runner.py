@@ -18,6 +18,7 @@ from fuzz_target_scout.pipeline import PipelineError, UnsupportedIntegrationErro
 from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 from fuzz_target_scout.quartet_gate import (
+    _entrypoint_reference_counts,
     _numbered_source_excerpt,
     find_harness_source,
     resolve_generic_integration_harness,
@@ -26,6 +27,16 @@ from fuzz_target_scout.quartet_gate import (
 
 
 class PipelineRunnerTests(unittest.TestCase):
+    def test_quartet_counts_actual_entrypoint_parameter_names(self):
+        source = (
+            "int LLVMFuzzerTestOneInput(const uint8_t *src, size_t length) {\n"
+            "  consume(src, length);\n"
+            "  return src != 0 && length > 0;\n"
+            "}\n"
+        )
+
+        self.assertEqual(_entrypoint_reference_counts(source), (3, 3))
+
     def test_unsupported_integration_is_recorded_as_terminal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
