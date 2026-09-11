@@ -6,10 +6,30 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fuzz_target_scout.ai import CodexReviewer
-from fuzz_target_scout.engine import _completed_repositories
+from fuzz_target_scout.engine import _completed_repositories, _enabled_language_queries
 
 
 class CodexReviewerTests(unittest.TestCase):
+    def test_discovery_queries_follow_enabled_pipeline_languages(self):
+        selected = _enabled_language_queries(
+            [
+                "archived:false language:C",
+                "archived:false language:C++",
+                "archived:false language:Rust",
+                "stars:20..100",
+            ],
+            ["C", "C++"],
+        )
+
+        self.assertEqual(
+            selected,
+            [
+                "archived:false language:C",
+                "archived:false language:C++",
+                "stars:20..100",
+            ],
+        )
+
     def test_completed_repositories_are_excluded_from_future_ai_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -171,7 +172,10 @@ class ScoutEngine:
                     unique.setdefault(repo.full_name.casefold(), repo)
                 if limit and len(unique) >= limit:
                     return list(unique.values())
-        selected_queries = queries or list(self.config["github"]["queries"])
+        selected_queries = _enabled_language_queries(
+            queries or list(self.config["github"]["queries"]),
+            (self.config.get("pipeline") or {}).get("languages", []),
+        )
         per_query = int(self.config["github"]["per_query"])
         pushed_after = (date.today() - timedelta(days=365)).isoformat()
         for query_template in selected_queries:
@@ -299,3 +303,17 @@ def _completed_repositories(runs_root: Path) -> set[str]:
         if repository:
             completed.add(repository.casefold())
     return completed
+
+
+def _enabled_language_queries(
+    queries: list[str], enabled_languages: list[str]
+) -> list[str]:
+    enabled = {str(value).casefold() for value in enabled_languages}
+    if not enabled:
+        return queries
+    selected = []
+    for query in queries:
+        match = re.search(r"(?:^|\s)language:([^\s]+)", query, re.IGNORECASE)
+        if not match or match.group(1).casefold() in enabled:
+            selected.append(query)
+    return selected
