@@ -58,13 +58,16 @@ def create_generic_project(
         _dockerfile(build_system, base_image if native else None),
         encoding="utf-8",
     )
-    support_sources = _candidate_support_sources(source, candidate)
+    support_sources, support_include_dirs = _candidate_support_dependencies(
+        source, candidate
+    )
     harness_language = _candidate_harness_language(candidate, origin)
     build_script = _build_script(
         build_system,
         _candidate_include_dir(candidate),
         support_sources,
         harness_language,
+        support_include_dirs,
     )
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
@@ -87,6 +90,7 @@ def create_generic_project(
         "candidate": candidate,
         "harness_language": harness_language,
         "support_sources": support_sources,
+        "support_include_dirs": support_include_dirs,
         "ai_usage": usage,
         "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
         "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
@@ -108,9 +112,15 @@ def repair_generic_harness(
     candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin", ""))
     if harness_origin.startswith("existing:"):
+        discovered_sources, discovered_include_dirs = (
+            _candidate_support_dependencies(source, candidate)
+        )
         support_sources = sorted(
-            set(record.get("support_sources") or [])
-            | set(_candidate_support_sources(source, candidate))
+            set(record.get("support_sources") or []) | set(discovered_sources)
+        )
+        support_include_dirs = sorted(
+            set(record.get("support_include_dirs") or [])
+            | set(discovered_include_dirs)
         )
         harness_language = str(
             record.get("harness_language")
@@ -121,6 +131,7 @@ def repair_generic_harness(
             _candidate_include_dir(candidate),
             support_sources,
             harness_language,
+            support_include_dirs,
         )
         build_path = project_dir / "build.sh"
         build_path.write_text(build_script, encoding="utf-8")
@@ -137,6 +148,7 @@ def repair_generic_harness(
         ).hexdigest()
         record["harness_language"] = harness_language
         record["support_sources"] = support_sources
+        record["support_include_dirs"] = support_include_dirs
         record.setdefault("repair_attempts", []).append(item)
         _write_json(record_path, record)
         return item
@@ -339,29 +351,100 @@ def _safe_relative_source(value: str) -> str | None:
 def _candidate_support_sources(
     source: Path, candidate: dict[str, Any]
 ) -> list[str]:
+    support_sources, _ = _candidate_support_dependencies(source, candidate)
+    return support_sources
+
+
+def _candidate_support_dependencies(
+    source: Path, candidate: dict[str, Any]
+) -> tuple[list[str], list[str]]:
     relative = _safe_relative_source(str(candidate.get("file") or ""))
     if not relative:
-        return []
+        return [], []
     harness = source / relative
-    try:
-        text = harness.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
+    source_root = source.resolve()
     support: set[str] = set()
-    for include in re.findall(r'^\s*#\s*include\s*"([^"\n]+)"', text, re.MULTILINE):
-        header = (harness.parent / include).resolve()
-        try:
-            header.relative_to(source.resolve())
-        except ValueError:
+    include_directories: set[str] = set()
+    pending = [harness]
+    visited: set[Path] = set()
+    header_index: dict[str, list[Path]] | None = None
+    while pending and len(visited) < 100:
+        current = pending.pop()
+        resolved_current = current.resolve()
+        if resolved_current in visited:
             continue
-        for suffix in SOURCE_SUFFIXES:
-            companion = header.with_suffix(suffix)
-            if not companion.is_file() or companion == harness:
+        visited.add(resolved_current)
+        try:
+            text = current.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for include in re.findall(
+            r'^\s*#\s*include\s*"([^"\n]+)"', text, re.MULTILINE
+        ):
+            header = _resolve_project_header(
+                source_root, current.parent, include, header_index
+            )
+            if header is None and header_index is None:
+                header_index = _project_header_index(source_root)
+                header = _resolve_project_header(
+                    source_root, current.parent, include, header_index
+                )
+            if header is None:
                 continue
-            value = _safe_relative_source(companion.relative_to(source).as_posix())
-            if value:
-                support.add(value)
-    return sorted(support)
+            header_parent = header.parent.relative_to(source_root).as_posix()
+            if header_parent != ".":
+                include_directories.add(header_parent)
+            pending.append(header)
+            for suffix in SOURCE_SUFFIXES:
+                companion = header.with_suffix(suffix)
+                if not companion.is_file() or companion.resolve() == harness.resolve():
+                    continue
+                value = _safe_relative_source(
+                    companion.resolve().relative_to(source_root).as_posix()
+                )
+                if value and value not in support:
+                    support.add(value)
+                    pending.append(companion)
+    return sorted(support), sorted(include_directories)
+
+
+def _project_header_index(source_root: Path) -> dict[str, list[Path]]:
+    index: dict[str, list[Path]] = {}
+    indexed = 0
+    for path in source_root.rglob("*"):
+        if indexed >= 10_000:
+            break
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix.casefold() not in HEADER_SUFFIXES:
+            continue
+        index.setdefault(path.name, []).append(path.resolve())
+        indexed += 1
+    return index
+
+
+def _resolve_project_header(
+    source_root: Path,
+    including_dir: Path,
+    include: str,
+    header_index: dict[str, list[Path]] | None,
+) -> Path | None:
+    safe_include = _safe_relative_source(include)
+    if not safe_include:
+        return None
+    direct = (including_dir / safe_include).resolve()
+    try:
+        direct.relative_to(source_root)
+    except ValueError:
+        return None
+    if direct.is_file():
+        return direct
+    root_relative = (source_root / safe_include).resolve()
+    if root_relative.is_file():
+        return root_relative
+    index = header_index or {}
+    matches = index.get(Path(safe_include).name, [])
+    return matches[0] if len(matches) == 1 else None
 
 
 def _candidate_harness_language(candidate: dict[str, Any], origin: str) -> str:
@@ -377,6 +460,7 @@ def _build_script(
     harness_include_dir: str = "",
     support_sources: list[str] | tuple[str, ...] = (),
     harness_language: str = "c++",
+    support_include_dirs: list[str] | tuple[str, ...] = (),
 ) -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
@@ -412,10 +496,20 @@ find . -type f -name '*.a' -exec cp -n {} "$WORK/build/" \\;
 find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/" \\;
 """,
     }
-    harness_include = (
-        f' "-I$SRC/project/{harness_include_dir}"'
-        if harness_include_dir
-        else ""
+    include_directories = {harness_include_dir} if harness_include_dir else set()
+    include_directories.update(
+        Path(value).parent.as_posix()
+        for value in support_sources
+        if _safe_relative_source(str(value)) and Path(value).parent.as_posix() != "."
+    )
+    include_directories.update(
+        value
+        for raw_value in support_include_dirs
+        if (value := _safe_relative_source(str(raw_value)))
+        and Path(value).as_posix() != "."
+    )
+    harness_include = "".join(
+        f' "-I$SRC/project/{value}"' for value in sorted(include_directories)
     )
     support_compile_lines: list[str] = []
     for index, raw_source in enumerate(support_sources):

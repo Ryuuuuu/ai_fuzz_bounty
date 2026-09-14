@@ -110,15 +110,22 @@ class GenericIntegrationTests(unittest.TestCase):
             source = root / "source"
             project = root / "oss-fuzz-project"
             harness_dir = source / "tests" / "fuzz"
+            external_dir = source / "contrib" / "external"
             (root / "artifacts").mkdir()
             harness_dir.mkdir(parents=True)
+            external_dir.mkdir(parents=True)
             (source / "CMakeLists.txt").write_text(
                 "cmake_minimum_required(VERSION 3.16)"
             )
             (harness_dir / "fuzz_helper.h").write_text("#pragma once\n")
             (harness_dir / "fuzz_helper.c").write_text(
-                '#include "fuzz_helper.h"\n'
+                '#include "fuzz_helper.h"\n#include "external_helper.h"\n'
             )
+            (external_dir / "external_helper.h").write_text("#pragma once\n")
+            (external_dir / "external_helper.c").write_text(
+                '#include "external_helper.h"\n#include "header_only.h"\n'
+            )
+            (external_dir / "header_only.h").write_text("#pragma once\n")
             (harness_dir / "block_fuzz.c").write_text(
                 '#include "fuzz_helper.h"\n#include <stddef.h>\n'
                 'int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) '
@@ -133,7 +140,12 @@ class GenericIntegrationTests(unittest.TestCase):
             self.assertEqual(result["candidate"]["file"], "tests/fuzz/block_fuzz.c")
             self.assertEqual(result["harness_language"], "c")
             self.assertEqual(
-                result["support_sources"], ["tests/fuzz/fuzz_helper.c"]
+                result["support_sources"],
+                ["contrib/external/external_helper.c", "tests/fuzz/fuzz_helper.c"],
+            )
+            self.assertEqual(
+                result["support_include_dirs"],
+                ["contrib/external", "tests/fuzz"],
             )
             self.assertIn(
                 '"-I$SRC/project/tests/fuzz"',
@@ -141,6 +153,14 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             self.assertIn(
                 '"$SRC/project/tests/fuzz/fuzz_helper.c"',
+                (project / "build.sh").read_text(),
+            )
+            self.assertIn(
+                '"-I$SRC/project/contrib/external"',
+                (project / "build.sh").read_text(),
+            )
+            self.assertIn(
+                '"$SRC/project/contrib/external/external_helper.c"',
                 (project / "build.sh").read_text(),
             )
             self.assertIn(

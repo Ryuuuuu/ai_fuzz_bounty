@@ -205,7 +205,7 @@ class ScoutEngine:
             str(value).casefold()
             for value in (self.config.get("pipeline") or {}).get("languages", [])
         }
-        completed_repositories = _completed_repositories(
+        planned_repositories = _planned_repositories(
             Path((self.config.get("pipeline") or {}).get("runs_path", "data/runs"))
         )
         eligible = [
@@ -218,7 +218,7 @@ class ScoutEngine:
                 not enabled_languages
                 or candidate.repo.language.casefold() in enabled_languages
             )
-            and candidate.repo.full_name.casefold() not in completed_repositories
+            and candidate.repo.full_name.casefold() not in planned_repositories
         ]
         eligible.sort(key=lambda item: item.static.fuzz_score, reverse=True)
         eligible = eligible[: int(ai_config["max_candidates_per_scan"])]
@@ -285,15 +285,12 @@ class ScoutEngine:
         return calls, cache_hits, errors
 
 
-def _completed_repositories(runs_root: Path) -> set[str]:
-    completed: set[str] = set()
+def _planned_repositories(runs_root: Path) -> set[str]:
+    planned: set[str] = set()
     if not runs_root.is_dir() or runs_root.is_symlink():
-        return completed
+        return planned
     for state_path in runs_root.glob("*/state.json"):
         try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            if state.get("stage") != "complete":
-                continue
             job = json.loads(
                 (state_path.parent / "job.json").read_text(encoding="utf-8")
             )
@@ -301,8 +298,8 @@ def _completed_repositories(runs_root: Path) -> set[str]:
             continue
         repository = str((job.get("source") or {}).get("repository") or "")
         if repository:
-            completed.add(repository.casefold())
-    return completed
+            planned.add(repository.casefold())
+    return planned
 
 
 def _enabled_language_queries(

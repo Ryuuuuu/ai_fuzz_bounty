@@ -156,6 +156,17 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(second.existing, 1)
             self.assertEqual(second.created, 0)
 
+    def test_planning_does_not_queue_a_new_commit_for_the_same_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = prepare_jobs([candidate(commit="b" * 40)], directory, CONFIG, LOCK)
+            second = prepare_jobs([candidate(commit="c" * 40)], directory, CONFIG, LOCK)
+
+            self.assertEqual(first.created, 1)
+            self.assertEqual(second.created, 0)
+            self.assertEqual(
+                second.skip_reasons, {"repository_already_planned": 1}
+            )
+
     def test_support_index_filters_before_work_order_creation(self):
         with tempfile.TemporaryDirectory() as directory:
             strict = {**CONFIG, "allow_generic_integrations": False}

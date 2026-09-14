@@ -73,6 +73,7 @@ def prepare_jobs(
     existing = 0
     reasons: Counter[str] = Counter()
     job_ids: list[str] = []
+    planned_repositories = _planned_repositories(root)
 
     queued = list(candidates)
     architecture_config = pipeline_config.get("architecture")
@@ -101,6 +102,10 @@ def prepare_jobs(
         if (job_dir / "job.json").is_file():
             existing += 1
             continue
+        repository = str((work_order.get("source") or {}).get("repository") or "")
+        if repository.casefold() in planned_repositories:
+            reasons["repository_already_planned"] += 1
+            continue
         job_dir.mkdir(parents=False, exist_ok=False)
         for name in (
             "artifacts",
@@ -125,6 +130,7 @@ def prepare_jobs(
                 "last_error": None,
             },
         )
+        planned_repositories.add(repository.casefold())
         created += 1
     return PlanSummary(
         created=created,
@@ -133,6 +139,21 @@ def prepare_jobs(
         skip_reasons=dict(sorted(reasons.items())),
         job_ids=job_ids,
     )
+
+
+def _planned_repositories(runs_root: Path) -> set[str]:
+    repositories: set[str] = set()
+    if not runs_root.is_dir() or runs_root.is_symlink():
+        return repositories
+    for job_path in runs_root.glob("*/job.json"):
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        repository = str((job.get("source") or {}).get("repository") or "")
+        if repository:
+            repositories.add(repository.casefold())
+    return repositories
 
 
 def make_work_order(

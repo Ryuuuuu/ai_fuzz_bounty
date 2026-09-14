@@ -47,6 +47,15 @@
       "last_verified": "2026-09-09"
     },
     {
+      "full_name": "google/brotli",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/brotli/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's published OSS VRP tier list classifies google/brotli as OT1. Memory-corruption reports require exact reproduction with an existing OSS-Fuzz target or an upstream merged patch; reward still depends on demonstrated security impact.",
+      "last_verified": "2026-09-14"
+    },
+    {
       "full_name": "microsoft/TypeScript",
       "status": "verified",
       "access": "public",

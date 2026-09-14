@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fuzz_target_scout.ai import CodexReviewer
-from fuzz_target_scout.engine import _completed_repositories, _enabled_language_queries
+from fuzz_target_scout.engine import _enabled_language_queries, _planned_repositories
 
 
 class CodexReviewerTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class CodexReviewerTests(unittest.TestCase):
             ],
         )
 
-    def test_completed_repositories_are_excluded_from_future_ai_selection(self):
+    def test_planned_repositories_are_excluded_from_future_ai_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)
             completed = runs / "org-done-aaaaaaaaaaaa"
@@ -52,9 +52,9 @@ class CodexReviewerTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            repositories = _completed_repositories(runs)
+            repositories = _planned_repositories(runs)
 
-        self.assertEqual(repositories, {"org/done"})
+        self.assertEqual(repositories, {"org/done", "org/active"})
 
     def test_uses_logged_in_cli_with_requested_model_and_high_reasoning(self):
         with tempfile.TemporaryDirectory() as directory:
