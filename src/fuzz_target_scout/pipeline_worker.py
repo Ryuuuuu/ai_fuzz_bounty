@@ -17,6 +17,7 @@ from .validation_agent import ValidationAgentRunner
 
 
 MANUAL_STATUSES = {
+    "recovery_pending",
     "quartet_review_required",
     "manual_review",
     "complete",
@@ -306,7 +307,7 @@ class PipelineWorker:
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
             if state.get("status") != "interrupted":
-                state["status"] = "worker_failed"
+                state["status"] = "recovery_pending"
             attempts = state.setdefault("attempts", {})
             attempts["worker_failures"] = int(attempts.get("worker_failures", 0)) + 1
             maximum = int(getattr(self, "pipeline", {}).get("max_stage_failures", 3))

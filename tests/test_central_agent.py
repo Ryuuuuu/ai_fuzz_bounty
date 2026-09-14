@@ -12,6 +12,7 @@ from fuzz_target_scout.central_agent import (
     CentralAgent,
     CentralCodex,
     TelegramNotifier,
+    _failure_fingerprint,
     _followup_available,
     _health_incident_key,
 )
@@ -449,6 +450,228 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(record["notification_transition"], "adaptive_handling")
         self.assertEqual(len(messages), 1)
         self.assertTrue(any("퍼징 전략을 변경" in message for message in messages))
+
+    def test_monitor_recovers_failed_stage_and_notifies_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            runs = root / "runs"
+            config["pipeline"]["runs_path"] = str(runs)
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            job = runs / "org-parser-aaaaaaaaaaaa"
+            (job / "artifacts").mkdir(parents=True)
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            (job / "state.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job.name,
+                        "stage": "build",
+                        "status": "recovery_pending",
+                        "last_error": "native build failed",
+                        "attempts": {"worker_failures": 1},
+                    }
+                )
+            )
+            overview = {
+                "job_count": 1,
+                "status_counts": {"recovery_pending": 1},
+                "total_disk_bytes": 0,
+                "jobs": [
+                    {
+                        "job_id": job.name,
+                        "stage": "build",
+                        "status": "recovery_pending",
+                        "last_error": "native build failed",
+                        "updated_at": "2099-01-01T00:00:00Z",
+                    }
+                ],
+            }
+            captured = {}
+            agent = CentralAgent(config)
+
+            def decide(evidence):
+                captured.update(evidence)
+                return (
+                    {
+                        "severity": "warning",
+                        "notify": True,
+                        "summary": "빌드 단계를 한 번 재시도합니다.",
+                        "problems": [
+                            {
+                                "job_id": job.name,
+                                "reason": "native build failed",
+                                "recommended_action": "retry",
+                            }
+                        ],
+                        "actions": [],
+                        "recovery_actions": [
+                            {
+                                "job_id": job.name,
+                                "action": "retry_stage",
+                                "rationale": "일시적인 빌드 실패인지 확인합니다.",
+                            }
+                        ],
+                    },
+                    {},
+                )
+
+            agent.reviewer.health = decide
+            messages = []
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True,
+                "ok",
+            )
+            allocation = ResourceAllocation(
+                1,
+                2,
+                1920,
+                768,
+                1,
+                1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                return_value=overview,
+            ):
+                record = agent.monitor("cycle_complete")
+
+            state = json.loads((job / "state.json").read_text())
+            recovery = json.loads(
+                (job / "artifacts" / "central-recovery.json").read_text()
+            )
+
+        options = captured["jobs"][0]["failure_recovery"]["options"]
+        self.assertEqual(options[0]["action"], "retry_stage")
+        self.assertEqual(state["status"], "integrated")
+        self.assertEqual(state["stage"], "build")
+        self.assertEqual(state["attempts"]["worker_failures"], 0)
+        self.assertEqual(recovery["history"][0]["selection_source"], "ai")
+        self.assertEqual(record["notification_transition"], "unchanged")
+        self.assertEqual(len(messages), 1)
+        self.assertIn("중단된 퍼징 작업을 처리", messages[0])
+
+    def test_restart_from_integration_selects_a_different_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            (job / "state.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job.name,
+                        "stage": "build",
+                        "status": "recovery_pending",
+                        "last_error": "repeated build failure",
+                        "attempts": {"worker_failures": 1},
+                    }
+                )
+            )
+            (artifacts / "generic-integration.json").write_text(
+                json.dumps(
+                    {"candidate": {"file": "tests/fuzz/failed_fuzzer.c"}}
+                )
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 1200})
+            )
+            agent = CentralAgent(config)
+            result = agent._apply_failure_recovery(
+                job.name,
+                "restart_from_integration",
+                "다른 하네스로 통합을 다시 생성합니다.",
+                "ai",
+            )
+            final_state = json.loads((job / "state.json").read_text())
+            exclusions = json.loads(
+                (artifacts / "harness-exclusions.json").read_text()
+            )
+            progress_preserved = (artifacts / "fuzz-progress.json").is_file()
+            integration_archived = not (
+                artifacts / "generic-integration.json"
+            ).exists()
+
+        self.assertEqual(result["action"], "restart_from_integration")
+        self.assertEqual(final_state["stage"], "integration")
+        self.assertEqual(final_state["status"], "prepared")
+        self.assertEqual(
+            exclusions["paths"], ["tests/fuzz/failed_fuzzer.c"]
+        )
+        self.assertTrue(progress_preserved)
+        self.assertTrue(integration_archived)
+
+    def test_recovery_exhaustion_skips_target_instead_of_stalling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            state = {
+                "job_id": job.name,
+                "stage": "integration",
+                "status": "recovery_pending",
+                "last_error": "permanent integration failure",
+                "attempts": {"worker_failures": 1},
+            }
+            (job / "state.json").write_text(json.dumps(state))
+            agent = CentralAgent(config)
+            fingerprint = _failure_fingerprint(
+                "integration", state["last_error"]
+            )
+            (artifacts / "central-recovery.json").write_text(
+                json.dumps(
+                    {
+                        "history": [
+                            {
+                                "status": "applied",
+                                "action": "retry_stage",
+                                "failure_fingerprint": fingerprint,
+                            },
+                            {
+                                "status": "applied",
+                                "action": "retry_stage",
+                                "failure_fingerprint": "other",
+                            },
+                        ]
+                    }
+                )
+            )
+            evidence = agent._failure_recovery_evidence(job.name, state)
+            result = agent._apply_failure_recovery(
+                job.name,
+                "skip_target",
+                "자동 복구 횟수를 모두 사용했습니다.",
+                "deterministic_fallback",
+            )
+            final_state = json.loads((job / "state.json").read_text())
+
+        self.assertEqual(
+            [item["action"] for item in evidence["options"]], ["skip_target"]
+        )
+        self.assertEqual(result["action"], "skip_target")
+        self.assertEqual(final_state["stage"], "complete")
+        self.assertEqual(final_state["status"], "skipped_after_recovery")
 
     def test_graceful_fuzz_interruption_is_not_an_operational_failure(self):
         config, _ = load_config(Path("missing.toml"))

@@ -120,7 +120,11 @@ Telegram 값은 환경변수로만 읽으며 Codex 하위 프로세스에는 전
 에이전트는 실행 중 정체가 확인되면 현재 작업에 허용되는 전략만 AI에 제시한다. 값 비교
 피드백, dictionary seed 재구성, 깊은 mutation 조합을 각각 제한된 시간 동안 평가하고,
 안전한 coverage gap 후보가 있을 때만 OSS-Fuzz-Gen 후속 하네스로 넘어간다. 같은 전략은
-반복하지 않으며 전략 적용과 성공·실패 결과를 Telegram으로 알린다. 각 24시간 병렬 묶음이
+반복하지 않으며 전략 적용과 성공·실패 결과를 Telegram으로 알린다. 빌드나 하네스
+통합이 중단되면 동일 실패를 무작정 반복하지 않고 중앙 AI가 한 번 재시도하거나, 실패한
+하네스를 제외하고 통합부터 다시 생성한다. 작업별 자동 복구 한도를 모두 쓰면 실패 증거를
+보존하고 해당 대상을 건너뛰어 다음 보상 대상으로 진행한다. 모든 조치는 Telegram과
+`artifacts/central-recovery.json`에 기록한다. 각 24시간 병렬 묶음이
 끝날 때도 다음 대상을 시작하기 전에 결과를 검토한다. 후속 하네스는 기본 10분 probe,
 Quartet 및 coverage 게이트까지 다시 수행한다. 진행 로그는
 `data/central-agent/progress.jsonl`, AI 결정은 `data/central-agent/decisions/`에 남는다.

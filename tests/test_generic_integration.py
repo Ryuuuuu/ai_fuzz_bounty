@@ -31,6 +31,12 @@ class GenericIntegrationTests(unittest.TestCase):
             )
 
             self.assertEqual(_find_existing_harness(source), preferred)
+            self.assertEqual(
+                _find_existing_harness(
+                    source, {"tests/fuzz/simple_decompress.c"}
+                ),
+                fuzz / "block_decompress.c",
+            )
 
     def test_builder_installs_only_the_selected_build_family(self):
         dockerfile = _dockerfile("cmake")

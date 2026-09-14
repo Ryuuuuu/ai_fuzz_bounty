@@ -138,6 +138,8 @@ auto_discover = true
 discovery_interval_seconds = 21600
 discovery_limit = 0
 auto_improve = true
+auto_recover_failures = true
+max_automatic_recoveries_per_job = 2
 max_improvement_cycles_per_job = 1
 improvement_probe_seconds = 600
 # 실행 중 정체 전략을 최소한 이 퍼징 시간만큼 평가한 뒤 다음 전략을 고릅니다.

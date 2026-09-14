@@ -2,20 +2,44 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "severity": {"type": "string", "enum": ["healthy", "warning", "critical"]},
-    "notify": {"type": "boolean"},
-    "summary": {"type": "string", "maxLength": 1600},
+    "severity": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "warning",
+        "critical"
+      ]
+    },
+    "notify": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 1600
+    },
     "problems": {
       "type": "array",
       "maxItems": 12,
       "items": {
         "type": "object",
         "properties": {
-          "job_id": {"type": "string"},
-          "reason": {"type": "string", "maxLength": 800},
-          "recommended_action": {"type": "string", "maxLength": 800}
+          "job_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 800
+          },
+          "recommended_action": {
+            "type": "string",
+            "maxLength": 800
+          }
         },
-        "required": ["job_id", "reason", "recommended_action"],
+        "required": [
+          "job_id",
+          "reason",
+          "recommended_action"
+        ],
         "additionalProperties": false
       }
     },
@@ -25,7 +49,9 @@
       "items": {
         "type": "object",
         "properties": {
-          "job_id": {"type": "string"},
+          "job_id": {
+            "type": "string"
+          },
           "strategy": {
             "type": "string",
             "enum": [
@@ -35,13 +61,57 @@
               "generate_followup_harness"
             ]
           },
-          "rationale": {"type": "string", "maxLength": 1200}
+          "rationale": {
+            "type": "string",
+            "maxLength": 1200
+          }
         },
-        "required": ["job_id", "strategy", "rationale"],
+        "required": [
+          "job_id",
+          "strategy",
+          "rationale"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "recovery_actions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "retry_stage",
+              "restart_from_integration",
+              "skip_target"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "maxLength": 1200
+          }
+        },
+        "required": [
+          "job_id",
+          "action",
+          "rationale"
+        ],
         "additionalProperties": false
       }
     }
   },
-  "required": ["severity", "notify", "summary", "problems", "actions"],
+  "required": [
+    "severity",
+    "notify",
+    "summary",
+    "problems",
+    "actions",
+    "recovery_actions"
+  ],
   "additionalProperties": false
 }

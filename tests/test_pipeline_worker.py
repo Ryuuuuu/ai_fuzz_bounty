@@ -109,6 +109,8 @@ class PipelineWorkerTests(unittest.TestCase):
             worker.runs_root = runs
             worker.pipeline = {"max_stage_failures": 2}
             worker._record_worker_error("failure-job", RuntimeError("failed"))
+            pending = json.loads((job / "state.json").read_text())
+            self.assertEqual(pending["status"], "recovery_pending")
             worker._record_worker_error("failure-job", RuntimeError("failed again"))
             state = json.loads((job / "state.json").read_text())
             self.assertEqual(state["status"], "manual_review")

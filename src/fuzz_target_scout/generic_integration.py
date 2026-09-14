@@ -196,7 +196,15 @@ def _obtain_harness(
     pipeline: dict[str, Any],
     progress: Callable[[str], None],
 ) -> tuple[str, str, dict[str, int], dict[str, Any]]:
-    existing = _find_existing_harness(source)
+    exclusions = _read_optional_json(
+        job_dir / "artifacts" / "harness-exclusions.json"
+    )
+    excluded_paths = {
+        str(value)
+        for value in exclusions.get("paths") or []
+        if isinstance(value, str)
+    }
+    existing = _find_existing_harness(source, excluded_paths)
     if existing is not None:
         code = existing.read_text(encoding="utf-8", errors="replace")
         relative = existing.relative_to(source).as_posix()
@@ -230,9 +238,18 @@ def _obtain_harness(
     return code, "codex_oss_fuzz_gen_adapter", usage, candidate
 
 
-def _find_existing_harness(source: Path) -> Path | None:
+def _find_existing_harness(
+    source: Path, excluded_paths: set[str] | None = None
+) -> Path | None:
+    excluded_paths = excluded_paths or set()
     candidates: list[tuple[tuple[int, int, str], Path]] = []
     for path in sorted(source.rglob("*")):
+        try:
+            relative = path.relative_to(source).as_posix()
+        except ValueError:
+            continue
+        if relative in excluded_paths:
+            continue
         if path.is_symlink() or not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
             continue
         try:
@@ -576,6 +593,16 @@ __SUPPORT_COMPILE__
     link = link.replace("__HARNESS_COMPILER__", harness_compiler)
     link = link.replace("__HARNESS_FLAGS__", harness_flags)
     return prelude + builds[build_system] + link
+
+
+def _read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _read_json(path: Path) -> dict[str, Any]:

@@ -134,6 +134,8 @@ DEFAULTS: dict[str, Any] = {
         "discovery_interval_seconds": 21600,
         "discovery_limit": 0,
         "auto_improve": True,
+        "auto_recover_failures": True,
+        "max_automatic_recoveries_per_job": 2,
         "max_improvement_cycles_per_job": 1,
         "improvement_probe_seconds": 600,
         "adaptive_strategy_evaluation_seconds": 3600,

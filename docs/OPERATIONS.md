@@ -44,5 +44,10 @@ Telegram 전달 내역은 각각 `data/central-agent/progress.jsonl`과
 24시간 예산 진행률, 남은 시간, 처리량, crash 수, 검증 상태와 디스크 사용량이 표시된다.
 
 퍼징 실행 로그는 세션 ID가 포함된 별도 파일에 기록해 이전 세션의 sanitizer/OOM 문구가
-현재 판정에 섞이지 않게 한다. 실패 횟수는 작업 상태의 `attempts.worker_failures`에 남는다. 같은 작업이
-`max_stage_failures`회 실패하면 자동 재시도를 중단하고 `manual_review`로 전환한다.
+현재 판정에 섞이지 않게 한다. 실패 횟수는 작업 상태의 `attempts.worker_failures`에 남는다.
+실패하면 `recovery_pending`으로 전환하여 동일 단계를 즉시 반복하지 않는다. 중앙 AI가
+허용된 조치 중 재시도 또는 통합 재구축을 선택하며, 통합 재구축 때 실패한 하네스와 기존
+산출물은 `artifacts/history/`에 보존된다. 기본 두 번의 자동 복구로 해결되지 않으면
+`skipped_after_recovery`로 완료하고 다음 보상 대상으로 진행한다. 정책 재검증 실패,
+검증 결과가 불완전한 crash처럼 자동 처리하면 안 되는 상태는 기존 수동 검토 게이트를
+유지한다.
