@@ -131,6 +131,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 'int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) '
                 '{ return data != 0 && size > 0; }\n'
             )
+            (harness_dir / "run_block_fuzz.c").write_text(
+                '#include <stddef.h>\n'
+                'int LLVMFuzzerTestOneInput(const unsigned char*, size_t);\n'
+                'int main(void) { return 0; }\n'
+            )
 
             result = create_generic_project(
                 job_dir=root, source=source, project_dir=project,

@@ -239,7 +239,12 @@ def _find_existing_harness(source: Path) -> Path | None:
             if path.stat().st_size > 500_000:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            if "LLVMFuzzerTestOneInput" not in text:
+            definitions = re.findall(
+                r"\bLLVMFuzzerTestOneInput\s*\([^;{}]*\)\s*\{",
+                text,
+                re.DOTALL,
+            )
+            if len(definitions) != 1:
                 continue
             lowered = text.casefold()
             name = path.stem.casefold()
