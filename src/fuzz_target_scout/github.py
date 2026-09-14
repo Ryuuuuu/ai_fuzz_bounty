@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from .models import RepoSnapshot
@@ -153,6 +154,7 @@ class GitHubClient:
         return replace(
             repo,
             head_sha=tree.get("sha") or repo.head_sha,
+            language=_infer_fuzzable_language(paths, repo.language),
             paths=paths,
             readme_excerpt=self._compact_readme(self._decode_content(readme)),
             architecture_files=architecture_files,
@@ -211,3 +213,60 @@ class GitHubClient:
             if sum(map(len, selected)) >= max_chars:
                 break
         return "\n".join(selected)[:max_chars]
+
+
+_NATIVE_SUFFIXES = {
+    ".c": "C",
+    ".cc": "C++",
+    ".cpp": "C++",
+    ".cxx": "C++",
+    ".c++": "C++",
+}
+_IGNORED_SOURCE_PARTS = {
+    "third_party",
+    "third-party",
+    "vendor",
+    "vendored",
+    "node_modules",
+    "generated",
+}
+
+
+def _infer_fuzzable_language(paths: list[str], reported: str) -> str:
+    """Prefer the language of an in-tree native fuzz target over GitHub's size rank."""
+    fuzz_counts = {"C": 0, "C++": 0}
+    native_counts = {"C": 0, "C++": 0}
+    native_build = False
+    for raw_path in paths:
+        path = raw_path.replace("\\", "/")
+        parts = tuple(part.casefold() for part in path.split("/"))
+        name = parts[-1] if parts else ""
+        if (
+            name == "cmakelists.txt"
+            or name == "meson.build"
+            or name in {"configure.ac", "configure.in", "makefile.am"}
+        ):
+            native_build = True
+        language = _NATIVE_SUFFIXES.get(Path(name).suffix.casefold())
+        if language is None or any(part in _IGNORED_SOURCE_PARTS for part in parts):
+            continue
+        native_counts[language] += 1
+        stem = Path(name).stem
+        if any(
+            part in {"fuzz", "fuzzer", "fuzzers", "fuzzing"}
+            or part.startswith("fuzz_")
+            or part.endswith("_fuzz")
+            for part in (*parts[:-1], stem)
+        ):
+            fuzz_counts[language] += 1
+
+    if sum(fuzz_counts.values()):
+        return max(
+            fuzz_counts,
+            key=lambda value: (fuzz_counts[value], native_counts[value]),
+        )
+    if reported.casefold() not in {"c", "c++"} and native_build:
+        language = max(native_counts, key=native_counts.get)
+        if native_counts[language] >= 5:
+            return language
+    return reported
