@@ -136,7 +136,7 @@ class PipelineWorker:
     def _next_jobs(self, attempted: set[str], limit: int) -> list[str]:
         if limit < 1:
             return []
-        candidates: list[tuple[str, str]] = []
+        candidates: list[tuple[int, str, str]] = []
         for state_path in self.runs_root.glob("*/state.json"):
             try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -148,9 +148,10 @@ class PipelineWorker:
             if job_id in attempted or status in MANUAL_STATUSES or stage == "complete":
                 continue
             created = str(state.get("created_at") or "")
-            candidates.append((created, job_id))
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        return [job_id for _, job_id in candidates[:limit]]
+            priority = 0 if stage in {"triage", "validation"} else 1 if stage == "fuzzing" else 2
+            candidates.append((priority, created, job_id))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [job_id for _, _, job_id in candidates[:limit]]
 
     def _advance(
         self,

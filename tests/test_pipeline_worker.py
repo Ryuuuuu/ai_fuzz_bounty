@@ -260,6 +260,28 @@ class PipelineWorkerTests(unittest.TestCase):
             self.assertEqual(worker._next_job(set()), "triage-job")
             self.assertEqual(worker._next_job({"triage-job"}), "ready-job")
 
+    def test_resumable_fuzzing_precedes_an_older_setup_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs,
+                "setup-job",
+                created="2026-01-01T00:00:00Z",
+                stage="integration",
+                status="prepared",
+            )
+            self._job(
+                runs,
+                "fuzz-job",
+                created="2026-01-02T00:00:00Z",
+                stage="fuzzing",
+                status="interrupted",
+            )
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+
+            self.assertEqual(worker._next_job(set()), "fuzz-job")
+
 
 if __name__ == "__main__":
     unittest.main()
