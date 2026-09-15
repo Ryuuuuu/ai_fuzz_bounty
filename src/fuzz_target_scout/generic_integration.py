@@ -26,6 +26,19 @@ BUILD_SYSTEM_MARKERS = (
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx"}
 
+# Only install packages from this reviewed allow-list.  Project-controlled CMake
+# files may name arbitrary packages, so inferred values must never reach apt
+# directly.
+CMAKE_SYSTEM_DEPENDENCIES = {
+    "absl": ("libabsl-dev",),
+    "bzip2": ("libbz2-dev",),
+    "expat": ("libexpat1-dev",),
+    "libxml2": ("libxml2-dev",),
+    "openssl": ("libssl-dev",),
+    "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
+    "zlib": ("zlib1g-dev",),
+}
+
 
 def detect_build_system(source: Path) -> str:
     for name, markers in BUILD_SYSTEM_MARKERS:
@@ -47,6 +60,7 @@ def create_generic_project(
 ) -> dict[str, Any]:
     progress = progress or (lambda _: None)
     build_system = detect_build_system(source)
+    system_dependencies = _detect_system_dependencies(source, build_system)
     project_dir.mkdir(parents=True, exist_ok=False)
     harness, origin, usage, candidate = _obtain_harness(
         job_dir, source, project_name, pipeline, progress
@@ -55,7 +69,11 @@ def create_generic_project(
     harness_path.write_text(harness, encoding="utf-8")
     harness_path.chmod(0o644)
     (project_dir / "Dockerfile").write_text(
-        _dockerfile(build_system, base_image if native else None),
+        _dockerfile(
+            build_system,
+            base_image if native else None,
+            system_dependencies,
+        ),
         encoding="utf-8",
     )
     support_sources, support_include_dirs = _candidate_support_dependencies(
@@ -91,6 +109,7 @@ def create_generic_project(
         "harness_language": harness_language,
         "support_sources": support_sources,
         "support_include_dirs": support_include_dirs,
+        "system_dependencies": system_dependencies,
         "ai_usage": usage,
         "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
         "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
@@ -265,7 +284,19 @@ def _find_existing_harness(
                 continue
             lowered = text.casefold()
             name = path.stem.casefold()
+            relative_parts = {
+                part.casefold() for part in Path(relative).parts[:-1]
+            }
             penalty = 0
+            if relative_parts & {
+                "third_party",
+                "third-party",
+                "external",
+                "extern",
+                "vendor",
+                "vendored",
+            }:
+                penalty += 250
             if "static_linking_only" in lowered:
                 penalty += 100
             if re.search(r'#\s*include\s*[<"][^>"\n]*(?:private|internal)', lowered):
@@ -314,17 +345,72 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
     raise PipelineError("no existing harness or public function prototype was found")
 
 
-def _dockerfile(build_system: str, native_base_image: str | None = None) -> str:
+def _detect_system_dependencies(source: Path, build_system: str) -> list[str]:
+    if build_system != "cmake":
+        return []
+    files: list[Path] = []
+    root = source / "CMakeLists.txt"
+    if root.is_file() and not root.is_symlink():
+        files.append(root)
+    cmake_dir = source / "cmake"
+    if cmake_dir.is_dir() and not cmake_dir.is_symlink():
+        files.extend(
+            path
+            for path in sorted(cmake_dir.rglob("*.cmake"))
+            if path.is_file() and not path.is_symlink()
+        )
+    packages: set[str] = set()
+    total_bytes = 0
+    for path in files[:100]:
+        try:
+            size = path.stat().st_size
+            if size > 250_000 or total_bytes + size > 1_000_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        total_bytes += size
+        for match in re.finditer(
+            r"\bfind_package\s*\(\s*([A-Za-z0-9_+.-]+)",
+            text,
+            re.IGNORECASE,
+        ):
+            packages.update(
+                CMAKE_SYSTEM_DEPENDENCIES.get(match.group(1).casefold(), ())
+            )
+    return sorted(packages)
+
+
+def _dockerfile(
+    build_system: str,
+    native_base_image: str | None = None,
+    system_dependencies: list[str] | tuple[str, ...] = (),
+) -> str:
     packages = {
         "cmake": "cmake ninja-build pkg-config",
         "meson": "meson ninja-build pkg-config",
         "autotools": "autoconf automake libtool make pkg-config",
         "cargo": "cargo rustc pkg-config",
     }[build_system]
+    allowed_dependencies = sorted(
+        {
+            dependency
+            for dependency in system_dependencies
+            if dependency
+            in {
+                package
+                for packages in CMAKE_SYSTEM_DEPENDENCIES.values()
+                for package in packages
+            }
+        }
+    )
+    dependency_packages = (
+        " " + " ".join(allowed_dependencies) if allowed_dependencies else ""
+    )
     if native_base_image is None:
         return f"""FROM gcr.io/oss-fuzz-base/base-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    {packages} \
+    {packages}{dependency_packages} \
     && rm -rf /var/lib/apt/lists/*
 COPY --chmod=0755 build.sh $SRC/build.sh
 COPY --chmod=0644 generic_harness.cc $SRC/generic_harness.cc
@@ -335,7 +421,7 @@ WORKDIR $SRC/project
     return f"""FROM {native_base_image}
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates clang lld llvm file libclang-rt-dev libc++-dev libc++abi-dev \
-    build-essential {packages} \
+    build-essential {packages}{dependency_packages} \
     && rm -rf /var/lib/apt/lists/*
 ENV SRC=/src WORK=/work OUT=/out \
     CC=clang CXX=clang++ \

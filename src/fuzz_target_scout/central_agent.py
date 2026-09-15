@@ -1296,7 +1296,7 @@ class CentralAgent:
             failed_harness = str(
                 (integration.get("candidate") or {}).get("file") or ""
             )
-            if failed_harness:
+            if failed_harness and _failure_implicates_harness(job_dir, error):
                 exclusion_path = (
                     job_dir / "artifacts" / "harness-exclusions.json"
                 )
@@ -1874,6 +1874,43 @@ def _failure_fingerprint(stage: str, error: str) -> str:
     normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", error)
     normalized = re.sub(r"\s+", " ", normalized).strip()[:2000]
     return hashlib.sha256(f"{stage}\n{normalized}".encode()).hexdigest()
+
+
+def _failure_implicates_harness(job_dir: Path, error: str) -> bool:
+    evidence = [error]
+    for name in ("native-build.log", "oss-fuzz-build.log"):
+        path = job_dir / "logs" / name
+        try:
+            evidence.append(
+                path.read_text(encoding="utf-8", errors="replace")[-16_000:]
+            )
+        except OSError:
+            continue
+    text = "\n".join(evidence).casefold()
+    infrastructure_signals = (
+        "could not find find",
+        "config.cmake",
+        "no package '.*' found",
+        "unable to locate package",
+        "temporary failure resolving",
+        "submodule update --init",
+        "does not appear to be a git checkout",
+        "add_subdirectory given source",
+        "dockerfile parse error",
+    )
+    if any(signal in text for signal in infrastructure_signals):
+        return False
+    harness_signals = (
+        "generic_harness",
+        "llvmfuzzertestoneinput",
+        "selected target symbol",
+        "undefined reference",
+    )
+    if any(signal in text for signal in harness_signals):
+        return True
+    # Preserve the prior recovery behavior when the worker only recorded a
+    # generic command failure and no diagnostic log is available.
+    return True
 
 
 def _recovery_action_label(action: str) -> str:

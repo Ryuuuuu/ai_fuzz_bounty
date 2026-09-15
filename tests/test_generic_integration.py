@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
     _build_script,
+    _detect_system_dependencies,
     _find_existing_harness,
     create_generic_project,
     detect_build_system,
@@ -50,6 +51,38 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("clang lld llvm", dockerfile)
         self.assertIn("COPY --chmod=0644 generic_harness.cc", dockerfile)
         self.assertNotIn("gcr.io/oss-fuzz-base", dockerfile)
+
+    def test_cmake_dependencies_are_inferred_from_a_reviewed_allow_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "CMakeLists.txt").write_text(
+                "find_package(absl REQUIRED)\n"
+                "find_package(OpenSSL REQUIRED)\n"
+                "find_package(attacker_controlled REQUIRED)\n"
+            )
+            dependencies = _detect_system_dependencies(source, "cmake")
+            dockerfile = _dockerfile("cmake", "ubuntu:24.04", dependencies)
+
+        self.assertEqual(dependencies, ["libabsl-dev", "libssl-dev"])
+        self.assertIn("libabsl-dev libssl-dev", dockerfile)
+        self.assertNotIn("attacker_controlled", dockerfile)
+
+    def test_prefers_first_party_harness_over_vendored_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            vendored = source / "third_party" / "library"
+            first_party = source / "tests" / "fuzz"
+            vendored.mkdir(parents=True)
+            first_party.mkdir(parents=True)
+            for path in (vendored / "simple_fuzz.c", first_party / "fuzz.c"):
+                path.write_text(
+                    "int LLVMFuzzerTestOneInput(const unsigned char *data, "
+                    "unsigned long size) { return 0; }\n"
+                )
+
+            selected = _find_existing_harness(source)
+
+        self.assertEqual(selected, first_party / "fuzz.c")
 
     def test_detects_all_supported_build_families(self):
         markers = {

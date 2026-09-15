@@ -673,6 +673,47 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(final_state["stage"], "complete")
         self.assertEqual(final_state["status"], "skipped_after_recovery")
 
+    def test_dependency_failure_does_not_exclude_a_valid_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            logs = job / "logs"
+            artifacts.mkdir(parents=True)
+            logs.mkdir()
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            (job / "state.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job.name,
+                        "stage": "build",
+                        "status": "recovery_pending",
+                        "last_error": "command failed",
+                        "attempts": {"worker_failures": 1},
+                    }
+                )
+            )
+            (artifacts / "generic-integration.json").write_text(
+                json.dumps({"candidate": {"file": "tests/fuzz/fuzzer.cc"}})
+            )
+            (logs / "native-build.log").write_text(
+                "Could not find abslConfig.cmake\n"
+            )
+
+            agent = CentralAgent(config)
+            agent._apply_failure_recovery(
+                job.name,
+                "restart_from_integration",
+                "의존성을 보완해 다시 통합합니다.",
+                "ai",
+            )
+
+            self.assertFalse((artifacts / "harness-exclusions.json").exists())
+
     def test_graceful_fuzz_interruption_is_not_an_operational_failure(self):
         config, _ = load_config(Path("missing.toml"))
         agent = CentralAgent(config)
