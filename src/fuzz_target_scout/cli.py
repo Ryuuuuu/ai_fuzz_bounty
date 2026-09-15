@@ -171,7 +171,11 @@ def _export(config: dict[str, Any], args: argparse.Namespace) -> None:
     try:
         rows = [
             row
-            for row in store.export_rows(minimum, include_conditional)
+            for row in store.export_rows(
+                minimum,
+                include_conditional,
+                config["pipeline"].get("languages"),
+            )
             if (
                 str(config["architecture"].get("mode")) != "native_only"
                 or bool((row.get("architecture") or {}).get("compatible"))

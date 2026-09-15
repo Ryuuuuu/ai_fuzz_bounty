@@ -149,6 +149,10 @@ class ScoutEngine:
         queries: list[str] | None,
     ) -> list[RepoSnapshot]:
         unique: dict[str, RepoSnapshot] = {}
+        enabled_languages = [
+            str(value)
+            for value in (self.config.get("pipeline") or {}).get("languages", [])
+        ]
         if catalog_only:
             names = self.policy.catalog_names[:limit] if limit else self.policy.catalog_names
             for name in names:
@@ -158,6 +162,8 @@ class ScoutEngine:
                     self.progress(f"warning: catalog lookup {name}: {exc}")
                     continue
                 if repo:
+                    if not _language_is_enabled(repo.language, enabled_languages):
+                        continue
                     unique[repo.full_name.casefold()] = repo
             return list(unique.values())
 
@@ -169,6 +175,8 @@ class ScoutEngine:
                     self.progress(f"warning: catalog seed {name}: {exc}")
                     continue
                 if repo:
+                    if not _language_is_enabled(repo.language, enabled_languages):
+                        continue
                     unique.setdefault(repo.full_name.casefold(), repo)
                 if limit and len(unique) >= limit:
                     return list(unique.values())
@@ -314,3 +322,12 @@ def _enabled_language_queries(
         if not match or match.group(1).casefold() in enabled:
             selected.append(query)
     return selected
+
+
+def _language_is_enabled(language: str, enabled_languages: list[str]) -> bool:
+    enabled = {
+        str(value).strip().casefold()
+        for value in enabled_languages
+        if str(value).strip()
+    }
+    return not enabled or str(language).strip().casefold() in enabled

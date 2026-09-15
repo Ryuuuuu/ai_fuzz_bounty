@@ -234,17 +234,32 @@ class Store:
         self,
         minimum_score: int,
         include_conditional: bool,
+        enabled_languages: Iterable[str] | None = None,
     ) -> Iterable[dict[str, Any]]:
         statuses = ("verified", "conditional") if include_conditional else ("verified",)
         placeholders = ",".join("?" for _ in statuses)
+        languages = tuple(
+            sorted(
+                {
+                    str(value).strip().casefold()
+                    for value in (enabled_languages or [])
+                    if str(value).strip()
+                }
+            )
+        )
+        language_clause = (
+            " AND lower(language) IN (" + ",".join("?" for _ in languages) + ")"
+            if languages
+            else ""
+        )
         rows = self.connection.execute(
             f"""
             SELECT *
               FROM candidates
-             WHERE policy_status IN ({placeholders}) AND final_score >= ?
+             WHERE policy_status IN ({placeholders}) AND final_score >= ?{language_clause}
              ORDER BY final_score DESC, full_name
             """,
-            (*statuses, minimum_score),
+            (*statuses, minimum_score, *languages),
         )
         for row in rows:
             details = json.loads(row["details_json"])

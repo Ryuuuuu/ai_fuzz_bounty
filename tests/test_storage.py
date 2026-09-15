@@ -52,5 +52,49 @@ class StorageTests(unittest.TestCase):
             store.close()
 
 
+    def test_export_gate_excludes_disabled_languages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "scout.sqlite3")
+            scan_id = store.start_scan("test")
+            for name, language in (
+                ("org/native", "C++"),
+                ("org/go-tool", "Go"),
+                ("org/rust-tool", "Rust"),
+            ):
+                candidate = Candidate(
+                    repo=RepoSnapshot(
+                        full_name=name,
+                        html_url=f"https://github.com/{name}",
+                        default_branch="main",
+                        head_sha="abc",
+                        language=language,
+                        security_url=f"https://github.com/{name}/security/policy",
+                        security_text="policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=80,
+                        reproduce_difficulty=2,
+                        signals=["test"],
+                        blockers=[],
+                        suggested_entry_kind="existing_harness",
+                    ),
+                    policy=PolicyAssessment(
+                        status="verified",
+                        confidence=100,
+                        source="catalog",
+                        program_url="https://hackerone.com/example",
+                        note="test",
+                    ),
+                    final_score=80,
+                )
+                store.upsert_candidate(candidate, scan_id)
+            rows = list(
+                store.export_rows(50, False, enabled_languages=["C", "C++"])
+            )
+            store.close()
+
+        self.assertEqual([row["repository"] for row in rows], ["org/native"])
+
+
 if __name__ == "__main__":
     unittest.main()

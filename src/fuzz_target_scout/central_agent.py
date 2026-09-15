@@ -1630,6 +1630,7 @@ class CentralAgent:
                 for row in store.export_rows(
                     int(self.config["scoring"]["minimum_handoff_score"]),
                     False,
+                    self.pipeline.get("languages"),
                 )
                 if (
                     str(self.config["architecture"].get("mode")) != "native_only"

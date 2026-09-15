@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fuzz_target_scout.ai import CodexReviewer
-from fuzz_target_scout.engine import _enabled_language_queries, _planned_repositories
+from fuzz_target_scout.engine import (
+    _enabled_language_queries,
+    _language_is_enabled,
+    _planned_repositories,
+)
 
 
 class CodexReviewerTests(unittest.TestCase):
@@ -29,6 +33,11 @@ class CodexReviewerTests(unittest.TestCase):
                 "stars:20..100",
             ],
         )
+
+    def test_catalog_seed_follows_enabled_pipeline_languages(self):
+        self.assertTrue(_language_is_enabled("C++", ["C", "C++"]))
+        self.assertFalse(_language_is_enabled("Go", ["C", "C++"]))
+        self.assertFalse(_language_is_enabled("Rust", ["C", "C++"]))
 
     def test_planned_repositories_are_excluded_from_future_ai_selection(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -17,8 +17,6 @@ DEFAULTS: dict[str, Any] = {
         "queries": [
             "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C",
             "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C++",
-            "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:Rust",
-            "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:Go",
         ],
     },
     "policy": {
