@@ -30,13 +30,18 @@ HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx"}
 # files may name arbitrary packages, so inferred values must never reach apt
 # directly.
 CMAKE_SYSTEM_DEPENDENCIES = {
-    "absl": ("libabsl-dev",),
     "bzip2": ("libbz2-dev",),
     "expat": ("libexpat1-dev",),
     "libxml2": ("libxml2-dev",),
     "openssl": ("libssl-dev",),
     "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
     "zlib": ("zlib1g-dev",),
+}
+CMAKE_SOURCE_DEPENDENCIES = {
+    "absl": {
+        "url": "https://github.com/abseil/abseil-cpp.git",
+        "commit": "d38452e1ee03523a208362186fd42248ff2609f6",
+    },
 }
 
 
@@ -61,6 +66,7 @@ def create_generic_project(
     progress = progress or (lambda _: None)
     build_system = detect_build_system(source)
     system_dependencies = _detect_system_dependencies(source, build_system)
+    source_dependencies = _detect_source_dependencies(source, build_system)
     project_dir.mkdir(parents=True, exist_ok=False)
     harness, origin, usage, candidate = _obtain_harness(
         job_dir, source, project_name, pipeline, progress
@@ -73,6 +79,7 @@ def create_generic_project(
             build_system,
             base_image if native else None,
             system_dependencies,
+            source_dependencies,
         ),
         encoding="utf-8",
     )
@@ -110,6 +117,7 @@ def create_generic_project(
         "support_sources": support_sources,
         "support_include_dirs": support_include_dirs,
         "system_dependencies": system_dependencies,
+        "source_dependencies": source_dependencies,
         "ai_usage": usage,
         "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
         "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
@@ -346,8 +354,19 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
 
 
 def _detect_system_dependencies(source: Path, build_system: str) -> list[str]:
-    if build_system != "cmake":
-        return []
+    packages = _declared_cmake_packages(source) if build_system == "cmake" else set()
+    dependencies: set[str] = set()
+    for package in packages:
+        dependencies.update(CMAKE_SYSTEM_DEPENDENCIES.get(package, ()))
+    return sorted(dependencies)
+
+
+def _detect_source_dependencies(source: Path, build_system: str) -> list[str]:
+    packages = _declared_cmake_packages(source) if build_system == "cmake" else set()
+    return sorted(packages & CMAKE_SOURCE_DEPENDENCIES.keys())
+
+
+def _declared_cmake_packages(source: Path) -> set[str]:
     files: list[Path] = []
     root = source / "CMakeLists.txt"
     if root.is_file() and not root.is_symlink():
@@ -375,16 +394,15 @@ def _detect_system_dependencies(source: Path, build_system: str) -> list[str]:
             text,
             re.IGNORECASE,
         ):
-            packages.update(
-                CMAKE_SYSTEM_DEPENDENCIES.get(match.group(1).casefold(), ())
-            )
-    return sorted(packages)
+            packages.add(match.group(1).casefold())
+    return packages
 
 
 def _dockerfile(
     build_system: str,
     native_base_image: str | None = None,
     system_dependencies: list[str] | tuple[str, ...] = (),
+    source_dependencies: list[str] | tuple[str, ...] = (),
 ) -> str:
     packages = {
         "cmake": "cmake ninja-build pkg-config",
@@ -407,12 +425,32 @@ def _dockerfile(
     dependency_packages = (
         " " + " ".join(allowed_dependencies) if allowed_dependencies else ""
     )
+    allowed_sources = sorted(
+        {
+            dependency
+            for dependency in source_dependencies
+            if dependency in CMAKE_SOURCE_DEPENDENCIES
+        }
+    )
+    source_package = " git" if allowed_sources else ""
+    source_install = ""
+    for name in allowed_sources:
+        dependency = CMAKE_SOURCE_DEPENDENCIES[name]
+        source_install += f"""RUN git clone --filter=blob:none {dependency['url']} /tmp/{name} \\
+    && git -C /tmp/{name} checkout --detach {dependency['commit']} \\
+    && cmake -S /tmp/{name} -B /tmp/{name}-build -G Ninja \\
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 \\
+      -DBUILD_SHARED_LIBS=OFF -DABSL_BUILD_TESTING=OFF \\
+    && cmake --build /tmp/{name}-build --parallel "$(nproc)" \\
+    && cmake --install /tmp/{name}-build \\
+    && rm -rf /tmp/{name} /tmp/{name}-build
+"""
     if native_base_image is None:
         return f"""FROM gcr.io/oss-fuzz-base/base-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    {packages}{dependency_packages} \
+    {packages}{dependency_packages}{source_package} \
     && rm -rf /var/lib/apt/lists/*
-COPY --chmod=0755 build.sh $SRC/build.sh
+{source_install}COPY --chmod=0755 build.sh $SRC/build.sh
 COPY --chmod=0644 generic_harness.cc $SRC/generic_harness.cc
 WORKDIR $SRC/project
 """
@@ -421,9 +459,9 @@ WORKDIR $SRC/project
     return f"""FROM {native_base_image}
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates clang lld llvm file libclang-rt-dev libc++-dev libc++abi-dev \
-    build-essential {packages}{dependency_packages} \
+    build-essential {packages}{dependency_packages}{source_package} \
     && rm -rf /var/lib/apt/lists/*
-ENV SRC=/src WORK=/work OUT=/out \
+{source_install}ENV SRC=/src WORK=/work OUT=/out \
     CC=clang CXX=clang++ \
     CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
     CXXFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
@@ -648,6 +686,9 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
     )
     support_compile = "\n".join(support_compile_lines)
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
+mapfile -d '' dependency_archives < <(
+  find /usr/local/lib -type f -name '*.a' -print0 2>/dev/null
+)
 include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)
 if [[ -f "$WORK/build/build.ninja" ]]; then
   while IFS= read -r flag; do
@@ -677,7 +718,7 @@ __SUPPORT_COMPILE__
 "__HARNESS_COMPILER__" __HARNESS_FLAGS__ "${include_flags[@]}" \\
   -c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"
 "$CXX" $CXXFLAGS "$WORK/generic_harness.o" "${support_objects[@]}" \\
-  -Wl,--start-group "${archives[@]}" -Wl,--end-group \\
+  -Wl,--start-group "${archives[@]}" "${dependency_archives[@]}" -Wl,--end-group \\
   $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
     link = link.replace("__HARNESS_INCLUDE__", harness_include)

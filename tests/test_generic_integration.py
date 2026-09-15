@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
     _build_script,
+    _detect_source_dependencies,
     _detect_system_dependencies,
     _find_existing_harness,
     create_generic_project,
@@ -61,10 +62,16 @@ class GenericIntegrationTests(unittest.TestCase):
                 "find_package(attacker_controlled REQUIRED)\n"
             )
             dependencies = _detect_system_dependencies(source, "cmake")
-            dockerfile = _dockerfile("cmake", "ubuntu:24.04", dependencies)
+            source_dependencies = _detect_source_dependencies(source, "cmake")
+            dockerfile = _dockerfile(
+                "cmake", "ubuntu:24.04", dependencies, source_dependencies
+            )
 
-        self.assertEqual(dependencies, ["libabsl-dev", "libssl-dev"])
-        self.assertIn("libabsl-dev libssl-dev", dockerfile)
+        self.assertEqual(dependencies, ["libssl-dev"])
+        self.assertEqual(source_dependencies, ["absl"])
+        self.assertIn("libssl-dev git", dockerfile)
+        self.assertIn("https://github.com/abseil/abseil-cpp.git", dockerfile)
+        self.assertIn("d38452e1ee03523a208362186fd42248ff2609f6", dockerfile)
         self.assertNotIn("attacker_controlled", dockerfile)
 
     def test_prefers_first_party_harness_over_vendored_harness(self):
@@ -103,6 +110,7 @@ class GenericIntegrationTests(unittest.TestCase):
                 if expected == "cmake":
                     self.assertIn("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)", script)
                     self.assertIn('ninja -C "$WORK/build" -t commands', script)
+                self.assertIn("find /usr/local/lib", script)
                 self.assertIn(
                     '-c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"',
                     script,

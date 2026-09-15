@@ -1896,6 +1896,8 @@ def _failure_implicates_harness(job_dir: Path, error: str) -> bool:
         "submodule update --init",
         "does not appear to be a git checkout",
         "add_subdirectory given source",
+        "but the target was not found",
+        "an imported target",
         "dockerfile parse error",
     )
     if any(signal in text for signal in infrastructure_signals):
