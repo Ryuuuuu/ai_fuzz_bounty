@@ -499,9 +499,15 @@ def _candidate_support_dependencies(
                 )
             if header is None:
                 continue
-            header_parent = header.parent.relative_to(source_root).as_posix()
-            if header_parent != ".":
-                include_directories.add(header_parent)
+            include_root = header
+            for _ in Path(include).parts:
+                include_root = include_root.parent
+            try:
+                include_directory = include_root.relative_to(source_root).as_posix()
+            except ValueError:
+                include_directory = "."
+            if include_directory != ".":
+                include_directories.add(include_directory)
             pending.append(header)
             for suffix in SOURCE_SUFFIXES:
                 companion = header.with_suffix(suffix)

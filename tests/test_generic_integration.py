@@ -150,9 +150,11 @@ class GenericIntegrationTests(unittest.TestCase):
             project = root / "oss-fuzz-project"
             harness_dir = source / "tests" / "fuzz"
             external_dir = source / "contrib" / "external"
+            public_include = source / "include" / "library"
             (root / "artifacts").mkdir()
             harness_dir.mkdir(parents=True)
             external_dir.mkdir(parents=True)
+            public_include.mkdir(parents=True)
             (source / "CMakeLists.txt").write_text(
                 "cmake_minimum_required(VERSION 3.16)"
             )
@@ -165,8 +167,10 @@ class GenericIntegrationTests(unittest.TestCase):
                 '#include "external_helper.h"\n#include "header_only.h"\n'
             )
             (external_dir / "header_only.h").write_text("#pragma once\n")
+            (public_include / "api.h").write_text("#pragma once\n")
             (harness_dir / "block_fuzz.c").write_text(
-                '#include "fuzz_helper.h"\n#include <stddef.h>\n'
+                '#include "fuzz_helper.h"\n#include "library/api.h"\n'
+                '#include <stddef.h>\n'
                 'int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) '
                 '{ return data != 0 && size > 0; }\n'
             )
@@ -189,7 +193,7 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 result["support_include_dirs"],
-                ["contrib/external", "tests/fuzz"],
+                ["contrib/external", "include", "tests/fuzz"],
             )
             self.assertIn(
                 '"-I$SRC/project/tests/fuzz"',
@@ -201,6 +205,14 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             self.assertIn(
                 '"-I$SRC/project/contrib/external"',
+                (project / "build.sh").read_text(),
+            )
+            self.assertIn(
+                '"-I$SRC/project/include"',
+                (project / "build.sh").read_text(),
+            )
+            self.assertNotIn(
+                '"-I$SRC/project/include/library"',
                 (project / "build.sh").read_text(),
             )
             self.assertIn(
