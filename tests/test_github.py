@@ -1,6 +1,35 @@
+import base64
 import unittest
 
-from fuzz_target_scout.github import _infer_fuzzable_language
+from fuzz_target_scout.github import GitHubClient, _infer_fuzzable_language
+
+
+class GitHubRepositoryFileTests(unittest.TestCase):
+    def test_repository_file_uses_contents_api_and_decodes_text(self):
+        client = GitHubClient(
+            {
+                "api_url": "https://api.github.com",
+                "timeout_seconds": 10,
+                "max_tree_paths": 100,
+            }
+        )
+        captured = {}
+
+        def request(path):
+            captured["path"] = path
+            return {
+                "encoding": "base64",
+                "content": base64.b64encode(b"scope feed").decode(),
+            }
+
+        client._request = request
+        result = client.get_repository_file(
+            "google/bughunters",
+            "oss-repository-tier/external_repositories.txtpb",
+        )
+
+        self.assertEqual(result, "scope feed")
+        self.assertIn("/repos/google/bughunters/contents/", captured["path"])
 
 
 class GitHubLanguageInferenceTests(unittest.TestCase):

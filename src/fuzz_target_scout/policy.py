@@ -70,6 +70,45 @@ class PolicyVerifier:
     def catalog_names(self) -> list[str]:
         return [entry["full_name"] for entry in self.entries.values()]
 
+    def merge_google_oss_vrp_feed(
+        self,
+        text: str,
+        program_url: str,
+        verified_on: date | None = None,
+    ) -> int:
+        observed = (verified_on or date.today()).isoformat()
+        merged = 0
+        for match in re.finditer(r"repository\s*\{(.*?)\}", text, re.DOTALL):
+            body = match.group(1)
+            if not re.search(
+                r"product_vuln_scope\s*:\s*SCOPE_OSS_VRP\b", body
+            ):
+                continue
+            url_match = re.search(r'url\s*:\s*"(https://github\.com/[^"]+)"', body)
+            tier_match = re.search(r"tier\s*:\s*(TIER_OT[01])\b", body)
+            if not url_match or not tier_match:
+                continue
+            parsed = urlparse(url_match.group(1))
+            parts = [part for part in parsed.path.strip("/").split("/") if part]
+            if parsed.hostname != "github.com" or len(parts) != 2:
+                continue
+            full_name = "/".join(parts)
+            tier = tier_match.group(1).removeprefix("TIER_")
+            self.entries[full_name.casefold()] = {
+                "full_name": full_name,
+                "status": "verified",
+                "access": "public",
+                "security_url": f"https://github.com/{full_name}/security/policy",
+                "program_url": program_url,
+                "scope_note": (
+                    "Google's current official OSS VRP repository tier feed lists "
+                    f"this repository as {tier} and SCOPE_OSS_VRP."
+                ),
+                "last_verified": observed,
+            }
+            merged += 1
+        return merged
+
     def verify(self, repo: RepoSnapshot, today: date | None = None) -> PolicyAssessment:
         if repo.archived or repo.disabled:
             return PolicyAssessment(

@@ -28,6 +28,40 @@ class PolicyVerifierTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_google_oss_vrp_feed_adds_only_current_oss_scope(self):
+        verifier = PolicyVerifier(self.catalog)
+        feed = """
+repository {
+  url: "https://github.com/google/flatbuffers"
+  tier: TIER_OT1
+  product_vuln_scope: SCOPE_OSS_VRP
+}
+repository {
+  url: "https://github.com/example/cloud-only"
+  tier: TIER_OT1
+  product_vuln_scope: SCOPE_CLOUD_VRP
+}
+repository {
+  url: "https://example.com/not-github"
+  tier: TIER_OT0
+  product_vuln_scope: SCOPE_OSS_VRP
+}
+"""
+        count = verifier.merge_google_oss_vrp_feed(
+            feed,
+            "https://bughunters.google.com/about/rules/open-source/example",
+            verified_on=date(2026, 9, 15),
+        )
+        result = verifier.verify(
+            repo("google/flatbuffers", "Report vulnerabilities through g.co/vulnz."),
+            today=date(2026, 9, 15),
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(result.status, "verified")
+        self.assertIn("google/flatbuffers", verifier.catalog_names)
+        self.assertNotIn("example/cloud-only", verifier.catalog_names)
+
     def test_direct_explicit_bounty_is_verified(self):
         verifier = PolicyVerifier(self.catalog)
         result = verifier.verify(

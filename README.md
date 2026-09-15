@@ -10,7 +10,7 @@ Clang/libFuzzer를 쓰는 네이티브 CMake, Meson, Autotools 경로로 초기 
 
 ## 판정 흐름
 
-1. GitHub Repository Search에서 최근 유지보수되는 C, C++, Rust, Go 저장소를 찾습니다.
+1. 공식 보상 범위 목록과 GitHub Repository Search에서 최근 유지보수되는 C/C++ 저장소를 찾습니다.
 2. 각 저장소의 SECURITY.md를 먼저 읽습니다.
 3. 저장소 정책이 유료 바운티를 명시하거나, 날짜가 기록된 검증 카탈로그와
    정확히 일치할 때만 verified로 판정합니다.
@@ -24,8 +24,10 @@ Clang/libFuzzer를 쓰는 네이티브 CMake, Meson, Autotools 경로로 초기 
    생성 경로만 큐에 넣습니다. 에뮬레이션은 사용하지 않습니다.
 
 AI는 보상 정책을 승인할 수 없습니다. 정책 판정은 현재 SECURITY.md의 명시적
-문구와 catalog.json에 기록된 공식 정책 근거만 사용합니다. 카탈로그 항목은
-기본 45일 후 자동으로 needs_review 상태가 됩니다.
+문구, catalog.json의 날짜가 기록된 공식 정책 근거와 Google이 공개한 OSS VRP
+저장소 범위 목록만 사용합니다. 공식 범위 목록은 매 탐색 전에 다시 읽고
+SCOPE_OSS_VRP로 표시된 GitHub 저장소만 합칩니다. 카탈로그 항목은 기본 45일 후
+자동으로 needs_review 상태가 됩니다. 실행 큐가 비면 한 시간마다 새 범위를 확인합니다.
 
 ## Ubuntu 및 WSL2 설치
 

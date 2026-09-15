@@ -108,6 +108,87 @@
       "program_url": "https://security.owncloud.com/",
       "scope_note": "Private invitation route: a confirmed CVSS 7.0+ initial report can receive a bounty and program invitation.",
       "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "protocolbuffers/protobuf",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/protocolbuffers/protobuf/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists protocolbuffers/protobuf as OT0 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "openthread/openthread",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/openthread/openthread/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists openthread/openthread as OT0 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "tink-crypto/tink-cc",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/tink-crypto/tink-cc/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists tink-crypto/tink-cc as OT0 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/re2",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/re2/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/re2 as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/filament",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/filament/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/filament as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/flatbuffers",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/flatbuffers/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/flatbuffers as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/shaderc",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/shaderc/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/shaderc as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/XNNPACK",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/XNNPACK/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/XNNPACK as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "tensorflow/tflite-micro",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/tensorflow/tflite-micro/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists tensorflow/tflite-micro as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
     }
   ]
 }

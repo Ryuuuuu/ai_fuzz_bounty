@@ -105,6 +105,21 @@ class GitHubClient:
         payload = self._request(f"/repos/{encoded}")
         return self._snapshot(payload) if payload else None
 
+    def get_repository_file(
+        self, full_name: str, path: str, ref: str = "main"
+    ) -> str:
+        if full_name.count("/") != 1 or not path.strip():
+            raise GitHubError("invalid repository file reference")
+        encoded = "/".join(
+            urllib.parse.quote(part, safe="") for part in full_name.split("/", 1)
+        )
+        quoted_path = urllib.parse.quote(path.strip("/"), safe="/")
+        quoted_ref = urllib.parse.quote(ref, safe="")
+        payload = self._request(
+            f"/repos/{encoded}/contents/{quoted_path}?ref={quoted_ref}"
+        )
+        return self._decode_content(payload if isinstance(payload, dict) else None)
+
     def load_security_policy(self, repo: RepoSnapshot) -> RepoSnapshot:
         encoded = "/".join(
             urllib.parse.quote(part, safe="") for part in repo.full_name.split("/", 1)

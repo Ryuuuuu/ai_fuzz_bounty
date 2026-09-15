@@ -15,6 +15,12 @@ queries = [
 catalog_path = "catalog.json"
 max_catalog_age_days = 45
 allow_conditional_handoff = false
+# 공식 Google OSS VRP 저장소 범위 목록을 매 탐색 때 동기화합니다.
+google_oss_vrp_feed_enabled = true
+google_oss_vrp_feed_repository = "google/bughunters"
+google_oss_vrp_feed_path = "oss-repository-tier/external_repositories.txtpb"
+google_oss_vrp_feed_branch = "main"
+google_oss_vrp_program_url = "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules"
 
 [architecture]
 # 실행 호스트를 자동 감지하고 같은 아키텍처에서 검증된 대상만 선택합니다.
@@ -134,6 +140,8 @@ telegram_chat_id_env = "FUZZ_TELEGRAM_CHAT_ID"
 telegram_timeout_seconds = 15
 auto_discover = true
 discovery_interval_seconds = 21600
+# 실행 가능한 작업이 없을 때는 더 짧은 주기로 새 C/C++ 범위를 찾습니다.
+idle_discovery_interval_seconds = 3600
 discovery_limit = 0
 auto_improve = true
 auto_recover_failures = true

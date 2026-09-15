@@ -23,6 +23,16 @@ DEFAULTS: dict[str, Any] = {
         "catalog_path": "catalog.json",
         "max_catalog_age_days": 45,
         "allow_conditional_handoff": False,
+        "google_oss_vrp_feed_enabled": True,
+        "google_oss_vrp_feed_repository": "google/bughunters",
+        "google_oss_vrp_feed_path": (
+            "oss-repository-tier/external_repositories.txtpb"
+        ),
+        "google_oss_vrp_feed_branch": "main",
+        "google_oss_vrp_program_url": (
+            "https://bughunters.google.com/about/rules/open-source/"
+            "google-open-source-software-vulnerability-reward-program-rules"
+        ),
     },
     "architecture": {
         "mode": "native_only",
@@ -130,6 +140,7 @@ DEFAULTS: dict[str, Any] = {
         "telegram_timeout_seconds": 15,
         "auto_discover": True,
         "discovery_interval_seconds": 21600,
+        "idle_discovery_interval_seconds": 3600,
         "discovery_limit": 0,
         "auto_improve": True,
         "auto_recover_failures": True,

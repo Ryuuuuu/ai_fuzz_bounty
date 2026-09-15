@@ -1582,6 +1582,11 @@ class CentralAgent:
             self._plan_exported_candidates()
             return
         interval = int(self.agent["discovery_interval_seconds"])
+        if not self._runnable_jobs():
+            interval = min(
+                interval,
+                int(self.agent.get("idle_discovery_interval_seconds", 3600)),
+            )
         previous = _parse_time(str(self.state.get("last_discovery_at") or ""))
         due = previous is None or (
             datetime.now(timezone.utc) - previous

@@ -65,6 +65,7 @@ class ScoutEngine:
         candidates: list[Candidate] = []
         errors = 0
         try:
+            self._refresh_policy_sources()
             repos = self._discover(catalog_only, limit, queries)
             self.progress(f"discovered {len(repos)} unique repositories")
             for index, repo in enumerate(repos, 1):
@@ -141,6 +142,31 @@ class ScoutEngine:
                 scan_id, "failed", len(candidates), 0, str(exc)[:1000]
             )
             raise
+
+    def _refresh_policy_sources(self) -> None:
+        policy_config = self.config["policy"]
+        if not bool(policy_config.get("google_oss_vrp_feed_enabled", True)):
+            return
+        try:
+            text = self.github.get_repository_file(
+                str(
+                    policy_config.get("google_oss_vrp_feed_repository")
+                    or "google/bughunters"
+                ),
+                str(
+                    policy_config.get("google_oss_vrp_feed_path")
+                    or "oss-repository-tier/external_repositories.txtpb"
+                ),
+                str(policy_config.get("google_oss_vrp_feed_branch") or "main"),
+            )
+        except GitHubError as exc:
+            self.progress(f"warning: Google OSS VRP scope refresh failed: {exc}")
+            return
+        count = self.policy.merge_google_oss_vrp_feed(
+            text,
+            str(policy_config.get("google_oss_vrp_program_url") or ""),
+        )
+        self.progress(f"loaded {count} repositories from the Google OSS VRP scope feed")
 
     def _discover(
         self,

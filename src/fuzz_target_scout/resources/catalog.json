@@ -1,17 +1,194 @@
 {
   "schema_version": 1,
   "entries": [
-    {"full_name":"facebook/zstd","status":"verified","access":"public","security_url":"https://github.com/facebook/zstd/security/policy","program_url":"https://www.facebook.com/whitehat","scope_note":"The repository SECURITY.md routes reports to Meta Bug Bounty and states that eligible reports may receive a bounty; exact eligibility remains subject to Meta triage.","last_verified":"2026-09-11"},
-    {"full_name":"contentauth/c2pa-rs","status":"verified","access":"public","security_url":"https://github.com/contentauth/c2pa-rs/security/policy","program_url":"https://hackerone.com/adobe","scope_note":"Repository SECURITY.md explicitly routes this library to Adobe's public bug bounty; tagged supported releases apply.","last_verified":"2026-09-09"},
-    {"full_name":"cli/cli","status":"verified","access":"public","security_url":"https://github.com/cli/cli/security/policy","program_url":"https://hackerone.com/github","scope_note":"GitHub CLI reports submitted through HackerOne can be bounty eligible; repository private reporting is not bounty eligible.","last_verified":"2026-09-09"},
-    {"full_name":"PowerDNS/pdns","status":"verified","access":"public","security_url":"https://github.com/PowerDNS/pdns/security/policy","program_url":"https://yeswehack.com/programs/powerdns","scope_note":"Software scope is limited to PowerDNS Authoritative Server, Recursor, and dnsdist.","last_verified":"2026-09-09"},
-    {"full_name":"microsoft/msquic","status":"verified","access":"public","security_url":"https://github.com/microsoft/msquic/security/policy","program_url":"https://www.microsoft.com/en-us/msrc/opensourcebountyprogram","scope_note":"MsQuic is explicitly listed in the Microsoft Open Source Bounty Program.","last_verified":"2026-09-09"},
-    {"full_name":"google/brotli","status":"verified","access":"public","security_url":"https://github.com/google/brotli/security/policy","program_url":"https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules","scope_note":"Google's published OSS VRP tier list classifies google/brotli as OT1. Memory-corruption reports require exact reproduction with an existing OSS-Fuzz target or an upstream merged patch; reward still depends on demonstrated security impact.","last_verified":"2026-09-14"},
-    {"full_name":"microsoft/TypeScript","status":"verified","access":"public","security_url":"https://github.com/microsoft/TypeScript/security/policy","program_url":"https://www.microsoft.com/en-us/msrc/opensourcebountyprogram","scope_note":"TypeScript is explicitly listed in the Microsoft Open Source Bounty Program.","last_verified":"2026-09-09"},
-    {"full_name":"PowerShell/PowerShell","status":"verified","access":"public","security_url":"https://github.com/PowerShell/PowerShell/security/policy","program_url":"https://www.microsoft.com/en-us/msrc/opensourcebountyprogram","scope_note":"PowerShell 7 is explicitly listed in the Microsoft Open Source Bounty Program.","last_verified":"2026-09-09"},
-    {"full_name":"microsoft/agent-framework","status":"verified","access":"public","security_url":"https://github.com/microsoft/agent-framework/security/policy","program_url":"https://www.microsoft.com/en-us/msrc/opensourcebountyprogram","scope_note":"Microsoft Agent Framework is explicitly in scope; older Semantic Kernel and AutoGen products are not implied by this entry.","last_verified":"2026-09-09"},
-    {"full_name":"Azure/azure-sdk-for-python","status":"verified","access":"public","security_url":"https://github.com/Azure/azure-sdk-for-python/security/policy","program_url":"https://www.microsoft.com/en-us/msrc/opensourcebountyprogram","scope_note":"azure-sdk-for-python is explicitly listed in the Microsoft Open Source Bounty Program.","last_verified":"2026-09-09"},
-    {"full_name":"mattermost/mattermost","status":"verified","access":"public","security_url":"https://github.com/mattermost/mattermost/security/policy","program_url":"https://bugcrowd.com/engagements/mattermost-mbb-public","scope_note":"Mattermost's official vulnerability page links to its public Bugcrowd engagement; verify component scope before a run.","last_verified":"2026-09-09"},
-    {"full_name":"owncloud/core","status":"conditional","access":"invite","security_url":"https://github.com/owncloud/core/security/policy","program_url":"https://security.owncloud.com/","scope_note":"Private invitation route: a confirmed CVSS 7.0+ initial report can receive a bounty and program invitation.","last_verified":"2026-09-09"}
+    {
+      "full_name": "facebook/zstd",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/facebook/zstd/security/policy",
+      "program_url": "https://www.facebook.com/whitehat",
+      "scope_note": "The repository SECURITY.md routes reports to Meta Bug Bounty and states that eligible reports may receive a bounty; exact eligibility remains subject to Meta triage.",
+      "last_verified": "2026-09-11"
+    },
+    {
+      "full_name": "contentauth/c2pa-rs",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/contentauth/c2pa-rs/security/policy",
+      "program_url": "https://hackerone.com/adobe",
+      "scope_note": "Repository SECURITY.md explicitly routes this library to Adobe's public bug bounty; tagged supported releases apply.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "cli/cli",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/cli/cli/security/policy",
+      "program_url": "https://hackerone.com/github",
+      "scope_note": "GitHub CLI reports submitted through HackerOne can be bounty eligible; repository private reporting is not bounty eligible.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "PowerDNS/pdns",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/PowerDNS/pdns/security/policy",
+      "program_url": "https://yeswehack.com/programs/powerdns",
+      "scope_note": "Software scope is limited to PowerDNS Authoritative Server, Recursor, and dnsdist.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "microsoft/msquic",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/microsoft/msquic/security/policy",
+      "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+      "scope_note": "MsQuic is explicitly listed in the Microsoft Open Source Bounty Program.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "google/brotli",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/brotli/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's published OSS VRP tier list classifies google/brotli as OT1. Memory-corruption reports require exact reproduction with an existing OSS-Fuzz target or an upstream merged patch; reward still depends on demonstrated security impact.",
+      "last_verified": "2026-09-14"
+    },
+    {
+      "full_name": "microsoft/TypeScript",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/microsoft/TypeScript/security/policy",
+      "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+      "scope_note": "TypeScript is explicitly listed in the Microsoft Open Source Bounty Program.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "PowerShell/PowerShell",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/PowerShell/PowerShell/security/policy",
+      "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+      "scope_note": "PowerShell 7 is explicitly listed in the Microsoft Open Source Bounty Program.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "microsoft/agent-framework",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/microsoft/agent-framework/security/policy",
+      "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+      "scope_note": "Microsoft Agent Framework is explicitly in scope; older Semantic Kernel and AutoGen products are not implied by this entry.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "Azure/azure-sdk-for-python",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/Azure/azure-sdk-for-python/security/policy",
+      "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+      "scope_note": "azure-sdk-for-python is explicitly listed in the Microsoft Open Source Bounty Program.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "mattermost/mattermost",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/mattermost/mattermost/security/policy",
+      "program_url": "https://bugcrowd.com/engagements/mattermost-mbb-public",
+      "scope_note": "Mattermost's official vulnerability page links to its public Bugcrowd engagement; verify component scope before a run.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "owncloud/core",
+      "status": "conditional",
+      "access": "invite",
+      "security_url": "https://github.com/owncloud/core/security/policy",
+      "program_url": "https://security.owncloud.com/",
+      "scope_note": "Private invitation route: a confirmed CVSS 7.0+ initial report can receive a bounty and program invitation.",
+      "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "protocolbuffers/protobuf",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/protocolbuffers/protobuf/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists protocolbuffers/protobuf as OT0 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "openthread/openthread",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/openthread/openthread/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists openthread/openthread as OT0 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "tink-crypto/tink-cc",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/tink-crypto/tink-cc/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists tink-crypto/tink-cc as OT0 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/re2",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/re2/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/re2 as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/filament",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/filament/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/filament as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/flatbuffers",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/flatbuffers/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/flatbuffers as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/shaderc",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/shaderc/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/shaderc as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "google/XNNPACK",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/google/XNNPACK/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists google/XNNPACK as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "tensorflow/tflite-micro",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/tensorflow/tflite-micro/security/policy",
+      "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
+      "scope_note": "Google's official OSS VRP repository tier feed lists tensorflow/tflite-micro as OT1 and SCOPE_OSS_VRP.",
+      "last_verified": "2026-09-15"
+    }
   ]
 }
