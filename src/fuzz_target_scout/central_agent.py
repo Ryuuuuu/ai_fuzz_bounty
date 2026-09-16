@@ -1159,13 +1159,17 @@ class CentralAgent:
             0, int(self.agent.get("max_automatic_recoveries_per_job", 2))
         )
         applied = [item for item in history if item.get("status") == "applied"]
-        attempted = {
-            str(item.get("action") or "")
+        applied_for_failure = [
+            item
             for item in applied
             if item.get("failure_fingerprint") == fingerprint
+        ]
+        attempted = {
+            str(item.get("action") or "")
+            for item in applied_for_failure
         }
         options: list[dict[str, str]] = []
-        if len(applied) < maximum:
+        if len(applied_for_failure) < maximum:
             if "retry_stage" not in attempted:
                 options.append(
                     {
@@ -1202,7 +1206,7 @@ class CentralAgent:
             "status": status,
             "failure_fingerprint": fingerprint,
             "failure_count": failures,
-            "automatic_recoveries": len(applied),
+            "automatic_recoveries": len(applied_for_failure),
             "maximum_automatic_recoveries": maximum,
             "attempted_for_failure": sorted(attempted),
             "options": options,

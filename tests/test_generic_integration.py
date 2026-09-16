@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
     _build_script,
+    _candidate_support_dependencies,
     _detect_source_dependencies,
     _detect_system_dependencies,
     _find_existing_harness,
@@ -90,6 +91,24 @@ class GenericIntegrationTests(unittest.TestCase):
             selected = _find_existing_harness(source)
 
         self.assertEqual(selected, first_party / "fuzz.c")
+
+    def test_public_library_sources_are_not_recompiled_as_harness_helpers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = root / "re2" / "fuzzing" / "fuzzer.cc"
+            header = root / "re2" / "re2.h"
+            source = root / "re2" / "re2.cc"
+            harness.parent.mkdir(parents=True)
+            harness.write_text('#include "re2/re2.h"\n')
+            header.write_text("#pragma once\n")
+            source.write_text('#include "re2/re2.h"\n')
+
+            support_sources, include_dirs = _candidate_support_dependencies(
+                root, {"file": "re2/fuzzing/fuzzer.cc"}
+            )
+
+        self.assertEqual(support_sources, [])
+        self.assertEqual(include_dirs, [])
 
     def test_detects_all_supported_build_families(self):
         markers = {

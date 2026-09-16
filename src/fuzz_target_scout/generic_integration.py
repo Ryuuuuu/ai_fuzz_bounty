@@ -25,6 +25,7 @@ BUILD_SYSTEM_MARKERS = (
 )
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx"}
+HARNESS_SUPPORT_DIRECTORY_NAMES = {"test", "tests", "fuzz", "fuzzer", "fuzzing"}
 
 # Only install packages from this reviewed allow-list.  Project-controlled CMake
 # files may name arbitrary packages, so inferred values must never reach apt
@@ -524,6 +525,10 @@ def _candidate_support_dependencies(
             text = current.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        try:
+            current_relative = current.resolve().relative_to(source_root).as_posix()
+        except ValueError:
+            current_relative = ""
         for include in re.findall(
             r'^\s*#\s*include\s*"([^"\n]+)"', text, re.MULTILINE
         ):
@@ -547,9 +552,18 @@ def _candidate_support_dependencies(
             if include_directory != ".":
                 include_directories.add(include_directory)
             pending.append(header)
+            header_relative = header.relative_to(source_root).as_posix()
+            support_context = (
+                current_relative in support
+                or _is_harness_support_path(header_relative)
+            )
             for suffix in SOURCE_SUFFIXES:
                 companion = header.with_suffix(suffix)
-                if not companion.is_file() or companion.resolve() == harness.resolve():
+                if (
+                    not support_context
+                    or not companion.is_file()
+                    or companion.resolve() == harness.resolve()
+                ):
                     continue
                 value = _safe_relative_source(
                     companion.resolve().relative_to(source_root).as_posix()
@@ -558,6 +572,13 @@ def _candidate_support_dependencies(
                     support.add(value)
                     pending.append(companion)
     return sorted(support), sorted(include_directories)
+
+
+def _is_harness_support_path(relative: str) -> bool:
+    return bool(
+        {part.casefold() for part in Path(relative).parts[:-1]}
+        & HARNESS_SUPPORT_DIRECTORY_NAMES
+    )
 
 
 def _project_header_index(source_root: Path) -> dict[str, list[Path]]:

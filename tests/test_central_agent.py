@@ -651,7 +651,7 @@ class CentralAgentTests(unittest.TestCase):
                             {
                                 "status": "applied",
                                 "action": "retry_stage",
-                                "failure_fingerprint": "other",
+                                "failure_fingerprint": fingerprint,
                             },
                         ]
                     }
