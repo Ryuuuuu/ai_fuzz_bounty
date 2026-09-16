@@ -31,6 +31,25 @@ class GitHubRepositoryFileTests(unittest.TestCase):
         self.assertEqual(result, "scope feed")
         self.assertIn("/repos/google/bughunters/contents/", captured["path"])
 
+    def test_repository_search_can_start_from_a_rotating_page(self):
+        client = GitHubClient(
+            {
+                "api_url": "https://api.github.com",
+                "timeout_seconds": 10,
+                "max_tree_paths": 100,
+            }
+        )
+        captured = {}
+
+        def request(path):
+            captured["path"] = path
+            return {"items": []}
+
+        client._request = request
+        client.search_repositories("language:C", 20, start_page=7)
+
+        self.assertIn("page=7", captured["path"])
+
 
 class GitHubLanguageInferenceTests(unittest.TestCase):
     def test_native_fuzz_target_overrides_repository_size_language(self):

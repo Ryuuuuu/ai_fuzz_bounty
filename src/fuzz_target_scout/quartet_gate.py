@@ -368,8 +368,12 @@ def validate_quartet_review(
         _symbol_basename(str(value))
         for value in facts.get("source_symbols") or facts.get("called_symbols") or []
     }
-    if not {_symbol_basename(value) for value in target_symbols}.issubset(known_symbols):
-        raise PipelineError("Quartet review referenced a symbol absent from the harness")
+    verified_target_symbols = [
+        value for value in target_symbols if _symbol_basename(value) in known_symbols
+    ]
+    discarded_target_symbols = [
+        value for value in target_symbols if _symbol_basename(value) not in known_symbols
+    ]
     dynamic = facts["dynamic_evidence"]
     deterministic_ok = (
         int(facts["entrypoint_count"]) == 1
@@ -386,7 +390,8 @@ def validate_quartet_review(
     return {
         "principles": normalized,
         "overall_verdict": overall,
-        "target_symbols": target_symbols[:3],
+        "target_symbols": verified_target_symbols[:3],
+        "discarded_target_symbols": discarded_target_symbols[:3],
         "summary": str(review.get("summary") or "")[:2000],
         "execution_ready": execution_ready,
         "deterministic_checks_passed": deterministic_ok,

@@ -6,9 +6,18 @@ max_tree_paths = 5000
 timeout_seconds = 20
 # 새 탐색도 검증 카탈로그를 먼저 확인한 뒤 일반 GitHub 검색으로 확장합니다.
 seed_policy_catalog = true
+# 각 반복에서 다음 검색 결과 페이지로 이동해 같은 저장소만 다시 보지 않습니다.
+max_search_pages = 20
 queries = [
   "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C",
   "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C++",
+]
+# 기존 config.toml을 유지해도 이 기본 확장 검색은 자동으로 추가됩니다.
+additional_queries = [
+  "\"bug bounty\" in:readme archived:false fork:false pushed:>={pushed_after} language:C",
+  "\"bug bounty\" in:readme archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:facebook archived:false fork:false pushed:>={pushed_after} language:C",
+  "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
 ]
 
 [policy]

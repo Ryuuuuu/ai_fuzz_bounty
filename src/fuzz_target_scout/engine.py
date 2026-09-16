@@ -206,16 +206,34 @@ class ScoutEngine:
                     unique.setdefault(repo.full_name.casefold(), repo)
                 if limit and len(unique) >= limit:
                     return list(unique.values())
+        configured_queries = list(
+            queries if queries is not None else self.config["github"]["queries"]
+        )
+        if queries is None:
+            configured_queries.extend(self.config["github"].get("additional_queries", []))
         selected_queries = _enabled_language_queries(
-            queries or list(self.config["github"]["queries"]),
+            list(dict.fromkeys(configured_queries)),
             (self.config.get("pipeline") or {}).get("languages", []),
         )
         per_query = int(self.config["github"]["per_query"])
+        max_pages = max(1, int(self.config["github"].get("max_search_pages", 1)))
         pushed_after = (date.today() - timedelta(days=365)).isoformat()
         for query_template in selected_queries:
             query = query_template.replace("{pushed_after}", pushed_after)
-            self.progress(f"search: {query}")
-            for repo in self.github.search_repositories(query, per_query):
+            page = self.store.get_search_page(query_template, max_pages)
+            self.progress(f"search page {page}: {query}")
+            results = self.github.search_repositories(
+                query,
+                per_query,
+                start_page=page,
+            )
+            self.store.advance_search_page(
+                query_template,
+                page,
+                had_results=bool(results),
+                max_pages=max_pages,
+            )
+            for repo in results:
                 unique.setdefault(repo.full_name.casefold(), repo)
                 if limit and len(unique) >= limit:
                     return list(unique.values())

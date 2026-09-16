@@ -78,9 +78,15 @@ class GitHubClient:
             topics=list(item.get("topics") or []),
         )
 
-    def search_repositories(self, query: str, limit: int) -> list[RepoSnapshot]:
+    def search_repositories(
+        self,
+        query: str,
+        limit: int,
+        *,
+        start_page: int = 1,
+    ) -> list[RepoSnapshot]:
         results: list[RepoSnapshot] = []
-        page = 1
+        page = max(1, int(start_page))
         while len(results) < limit:
             per_page = min(100, limit - len(results))
             params = urllib.parse.urlencode(

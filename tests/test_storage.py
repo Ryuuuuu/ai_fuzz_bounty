@@ -13,6 +13,21 @@ from fuzz_target_scout.storage import Store
 
 
 class StorageTests(unittest.TestCase):
+    def test_search_cursor_rotates_and_resets_after_an_empty_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "scout.sqlite3")
+            query = "language:C"
+            self.assertEqual(store.get_search_page(query, 3), 1)
+            store.advance_search_page(query, 1, had_results=True, max_pages=3)
+            self.assertEqual(store.get_search_page(query, 3), 2)
+            store.advance_search_page(query, 2, had_results=True, max_pages=3)
+            self.assertEqual(store.get_search_page(query, 3), 3)
+            store.advance_search_page(query, 3, had_results=True, max_pages=3)
+            self.assertEqual(store.get_search_page(query, 3), 1)
+            store.advance_search_page(query, 1, had_results=False, max_pages=3)
+            self.assertEqual(store.get_search_page(query, 3), 1)
+            store.close()
+
     def test_export_gate_excludes_conditional_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "scout.sqlite3")

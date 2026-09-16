@@ -14,9 +14,16 @@ DEFAULTS: dict[str, Any] = {
         "max_tree_paths": 5000,
         "timeout_seconds": 20,
         "seed_policy_catalog": True,
+        "max_search_pages": 20,
         "queries": [
             "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C",
             "archived:false fork:false pushed:>={pushed_after} stars:20..10000 language:C++",
+        ],
+        "additional_queries": [
+            '"bug bounty" in:readme archived:false fork:false pushed:>={pushed_after} language:C',
+            '"bug bounty" in:readme archived:false fork:false pushed:>={pushed_after} language:C++',
+            "org:facebook archived:false fork:false pushed:>={pushed_after} language:C",
+            "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
         ],
     },
     "policy": {

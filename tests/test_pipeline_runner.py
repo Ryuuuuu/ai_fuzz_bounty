@@ -603,6 +603,43 @@ class PipelineRunnerTests(unittest.TestCase):
             review["principles"]["p1"]["discarded_evidence_lines"], [99999]
         )
 
+    def test_quartet_discards_hallucinated_target_symbols(self):
+        principle = {"verdict": "pass", "rationale": "seen", "evidence_lines": [1]}
+        facts = {
+            "line_count": 5,
+            "entrypoint_count": 1,
+            "data_reference_count": 2,
+            "size_reference_count": 2,
+            "unaligned_read_lines": [],
+            "source_symbols": ["FullMatch"],
+            "dynamic_evidence": {
+                "asan_build": True,
+                "smoke_status": "passed",
+                "probe_status": "passed",
+                "probe_crash_count": 0,
+                "probe_corpus_files": 1,
+            },
+        }
+        review = validate_quartet_review(
+            {
+                "principles": {name: principle for name in ("p1", "p2", "p3", "p4")},
+                "overall_verdict": "pass",
+                "target_symbols": [
+                    "RE2::FullMatch",
+                    "invented symbol with generated prose",
+                ],
+                "summary": "valid review with one malformed advisory symbol",
+            },
+            facts,
+        )
+
+        self.assertTrue(review["execution_ready"])
+        self.assertEqual(review["target_symbols"], ["RE2::FullMatch"])
+        self.assertEqual(
+            review["discarded_target_symbols"],
+            ["invented symbol with generated prose"],
+        )
+
     def test_coverage_evidence_keeps_only_pinned_source_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -76,6 +76,11 @@ class Store:
                 output_tokens INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS search_cursors (
+                query TEXT PRIMARY KEY,
+                next_page INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         self.connection.commit()
@@ -165,6 +170,42 @@ class Store:
                 now,
                 scan_id,
             ),
+        )
+        self.connection.commit()
+
+    def get_search_page(self, query: str, max_pages: int) -> int:
+        if max_pages <= 1:
+            return 1
+        row = self.connection.execute(
+            "SELECT next_page FROM search_cursors WHERE query=?", (query,)
+        ).fetchone()
+        if row is None:
+            return 1
+        return min(max(1, int(row["next_page"])), max_pages)
+
+    def advance_search_page(
+        self,
+        query: str,
+        current_page: int,
+        *,
+        had_results: bool,
+        max_pages: int,
+    ) -> None:
+        if max_pages <= 1 or not had_results:
+            next_page = 1
+        else:
+            next_page = current_page + 1
+            if next_page > max_pages:
+                next_page = 1
+        self.connection.execute(
+            """
+            INSERT INTO search_cursors(query, next_page, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(query) DO UPDATE SET
+                next_page=excluded.next_page,
+                updated_at=excluded.updated_at
+            """,
+            (query, next_page, utc_now()),
         )
         self.connection.commit()
 
