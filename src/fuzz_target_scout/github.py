@@ -27,6 +27,7 @@ class GitHubClient:
         self.token = os.environ.get("GITHUB_TOKEN", "").strip()
         self.rate_remaining: int | None = None
         self.rate_reset: str | None = None
+        self._owner_security_cache: dict[str, tuple[str, str] | None] = {}
 
     def _request(self, path_or_url: str) -> Any:
         url = (
@@ -145,13 +146,39 @@ class GitHubClient:
                 if content:
                     html_url = content.get("html_url") or html_url
                     break
-        if not content:
+        if content:
+            return replace(
+                repo,
+                security_url=html_url,
+                security_text=self._decode_content(content),
+            )
+        inherited = self._load_owner_security_policy(repo.full_name.split("/", 1)[0])
+        if inherited is None:
             return replace(repo, security_url="")
+        inherited_url, inherited_text = inherited
         return replace(
             repo,
-            security_url=html_url,
-            security_text=self._decode_content(content),
+            security_url=inherited_url,
+            security_text=inherited_text,
         )
+
+    def _load_owner_security_policy(self, owner: str) -> tuple[str, str] | None:
+        cache_key = owner.casefold()
+        if cache_key in self._owner_security_cache:
+            return self._owner_security_cache[cache_key]
+        inherited: tuple[str, str] | None = None
+        for branch in ("main", "master"):
+            text = self.get_repository_file(
+                f"{owner}/.github", "SECURITY.md", branch
+            )
+            if text.strip():
+                inherited = (
+                    f"https://github.com/{owner}/.github/blob/{branch}/SECURITY.md",
+                    text,
+                )
+                break
+        self._owner_security_cache[cache_key] = inherited
+        return inherited
 
     def hydrate_code_evidence(self, repo: RepoSnapshot) -> RepoSnapshot:
         encoded = "/".join(

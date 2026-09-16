@@ -31,6 +31,42 @@ class GitHubRepositoryFileTests(unittest.TestCase):
         self.assertEqual(result, "scope feed")
         self.assertIn("/repos/google/bughunters/contents/", captured["path"])
 
+    def test_repository_without_own_policy_uses_owner_default(self):
+        client = GitHubClient(
+            {
+                "api_url": "https://api.github.com",
+                "timeout_seconds": 10,
+                "max_tree_paths": 100,
+            }
+        )
+        requested = []
+
+        def request(path):
+            requested.append(path)
+            if "/repos/facebook/.github/contents/SECURITY.md?ref=main" in path:
+                return {
+                    "encoding": "base64",
+                    "content": base64.b64encode(b"eligible for a bounty").decode(),
+                }
+            return None
+
+        client._request = request
+        repo = client._snapshot(
+            {
+                "full_name": "facebook/folly",
+                "default_branch": "main",
+                "language": "C++",
+            }
+        )
+        result = client.load_security_policy(repo)
+
+        self.assertEqual(result.security_text, "eligible for a bounty")
+        self.assertEqual(
+            result.security_url,
+            "https://github.com/facebook/.github/blob/main/SECURITY.md",
+        )
+        self.assertTrue(any("facebook/.github" in path for path in requested))
+
     def test_repository_search_can_start_from_a_rotating_page(self):
         client = GitHubClient(
             {

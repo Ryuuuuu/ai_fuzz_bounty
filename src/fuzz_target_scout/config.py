@@ -24,6 +24,8 @@ DEFAULTS: dict[str, Any] = {
             '"bug bounty" in:readme archived:false fork:false pushed:>={pushed_after} language:C++',
             "org:facebook archived:false fork:false pushed:>={pushed_after} language:C",
             "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
+            "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C",
+            "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C++",
         ],
     },
     "policy": {
