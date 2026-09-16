@@ -15,7 +15,11 @@ from fuzz_target_scout.coverage_analysis import (
     validate_review,
 )
 from fuzz_target_scout.pipeline import PipelineError, UnsupportedIntegrationError
-from fuzz_target_scout.pipeline_runner import PipelineRunner, _select_smoke_target
+from fuzz_target_scout.pipeline_runner import (
+    PipelineRunner,
+    _adapt_allocation_for_resource_limits,
+    _select_smoke_target,
+)
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 from fuzz_target_scout.quartet_gate import (
     _entrypoint_reference_counts,
@@ -518,6 +522,30 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(updated["completed_seconds"], 1000)
             self.assertEqual(updated["adaptive_checkpoint_seconds"], 500)
             self.assertEqual(updated["resource_limit_events"], 1)
+
+    def test_resource_limit_events_raise_dynamic_memory_limits(self):
+        snapshot = ResourceSnapshot(
+            cpu_count=4,
+            memory_total_mb=24000,
+            memory_available_mb=22000,
+            sources=("test",),
+        )
+        allocation = ResourceAllocation(
+            parallel_jobs=1,
+            workers_per_job=3,
+            container_memory_mb=2688,
+            fuzzer_rss_limit_mb=768,
+            cpu_reserve=1,
+            memory_reserve_mb=1024,
+            detected=snapshot,
+        )
+        adapted = _adapt_allocation_for_resource_limits(
+            allocation,
+            {"resource_limit_events": 1},
+            {"fuzzer_rss_limit_mb": 1024, "container_memory_overhead_mb": 384},
+        )
+        self.assertEqual(adapted.fuzzer_rss_limit_mb, 1024)
+        self.assertEqual(adapted.container_memory_mb, 3456)
 
     def test_collects_worker_stats_and_copies_logs(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -869,6 +869,9 @@ class PipelineRunner:
         if remaining == 0:
             raise PipelineError("completed fuzz budget has no result artifact")
         allocation = allocation or self._resource_allocation(job)
+        allocation = _adapt_allocation_for_resource_limits(
+            allocation, progress, getattr(self, "pipeline", {})
+        )
         self._record_resource_allocation(job_dir, allocation, "libfuzzer")
         configured_checkpoint = int(
             getattr(self, "pipeline", {}).get("fuzz_checkpoint_seconds", remaining)
@@ -3061,6 +3064,56 @@ def _result_coverage(result: dict[str, Any]) -> tuple[int, int]:
         + [int(item.get("coverage_features") or 0) for item in worker_stats]
     )
     return edges, features
+
+
+def _adapt_allocation_for_resource_limits(
+    allocation: ResourceAllocation,
+    progress: dict[str, Any],
+    pipeline: dict[str, Any],
+) -> ResourceAllocation:
+    events = max(0, int(progress.get("resource_limit_events") or 0))
+    if events == 0:
+        return allocation
+    workers = max(1, allocation.workers_per_job)
+    overhead = max(128, int(pipeline.get("container_memory_overhead_mb", 384)))
+    configured_rss = max(256, int(pipeline.get("fuzzer_rss_limit_mb", 1024)))
+    adaptive_max_rss = max(
+        configured_rss,
+        int(pipeline.get("adaptive_fuzzer_rss_limit_mb", 2048)),
+    )
+    target_rss = min(
+        adaptive_max_rss,
+        max(allocation.fuzzer_rss_limit_mb, 768) + 256 * events,
+    )
+    available = max(
+        512,
+        allocation.detected.memory_available_mb - allocation.memory_reserve_mb,
+    )
+    configured_container = int(pipeline.get("container_memory_mb", 0))
+    if configured_container > 0:
+        available = min(available, configured_container)
+    target_container = min(
+        available,
+        max(allocation.container_memory_mb, overhead + workers * target_rss),
+    )
+    target_rss = min(
+        target_rss,
+        max(256, (target_container - overhead) // workers),
+    )
+    if (
+        target_container == allocation.container_memory_mb
+        and target_rss == allocation.fuzzer_rss_limit_mb
+    ):
+        return allocation
+    return ResourceAllocation(
+        parallel_jobs=allocation.parallel_jobs,
+        workers_per_job=workers,
+        container_memory_mb=target_container,
+        fuzzer_rss_limit_mb=target_rss,
+        cpu_reserve=allocation.cpu_reserve,
+        memory_reserve_mb=allocation.memory_reserve_mb,
+        detected=allocation.detected,
+    )
 
 
 def _is_long_running_resource_oom(

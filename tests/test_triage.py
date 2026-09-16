@@ -79,6 +79,35 @@ class TriageTests(unittest.TestCase):
                 3,
             )
 
+    def test_nonreproducing_oom_is_archived_and_fuzzing_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_id, job_dir = self._fixture(Path(directory), crash=True)
+            crash_dir = job_dir / "crashes" / "fuzz_parser"
+            (crash_dir / "crash-1").rename(crash_dir / "fuzz_parser-oom-deadbeef")
+            artifact = job_dir / "artifacts" / "fuzz-run.json"
+            payload = json.loads(artifact.read_text())
+            payload["crash_files"] = ["fuzz_parser-oom-deadbeef"]
+            artifact.write_text(json.dumps(payload))
+            (job_dir / "artifacts" / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 1000, "resource_limit_events": 1})
+            )
+            with patch.object(runner, "_minimize", return_value=None), patch.object(
+                runner, "_reproduce", return_value=(0, "")
+            ):
+                result = runner.triage(job_id, use_ai=False)
+
+            self.assertTrue(result["resource_only_false_positive"])
+            self.assertEqual(result["state"]["status"], "ready")
+            self.assertEqual(result["state"]["stage"], "fuzzing")
+            self.assertFalse(any(crash_dir.iterdir()))
+            self.assertTrue(
+                (Path(result["resource_event_archive"]) / "fuzz_parser-oom-deadbeef").is_file()
+            )
+            progress = json.loads(
+                (job_dir / "artifacts" / "fuzz-progress.json").read_text()
+            )
+            self.assertEqual(progress["resource_limit_events"], 2)
+
     def test_probe_finding_uses_the_same_reproduction_pipeline(self):
         with tempfile.TemporaryDirectory() as directory:
             runner, job_id, job_dir = self._fixture(Path(directory), crash=True)

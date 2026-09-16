@@ -669,9 +669,22 @@ done < <(
   grep -rhoE 'option[(][A-Za-z_][A-Za-z0-9_]*BUILD_SHARED[A-Za-z0-9_]*' \
     CMakeLists.txt cmake 2>/dev/null | sed 's/^option(//' | sort -u
 )
-cmake -S . -B "$WORK/build" -G Ninja \\
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo "${cmake_shared_args[@]}" \\
-  -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \\
+while IFS= read -r option; do
+  cmake_shared_args+=("-D${option}=OFF")
+done < <(
+  grep -rhoE 'option[(][A-Za-z_][A-Za-z0-9_]*' \
+    CMakeLists.txt cmake tools 2>/dev/null | sed 's/^option(//' | \
+    grep -E '(^|_)BUILD_(TESTS?|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM)$' | \
+    sort -u
+)
+cmake_build_type=RelWithDebInfo
+if grep -RqiE 'CMAKE_BUILD_TYPE must be either.*debug.*release|VALID_BUILD_TYPE.*debug.*release' \
+  CMakeLists.txt cmake 2>/dev/null; then
+  cmake_build_type=release
+fi
+cmake -S . -B "$WORK/build" -G Ninja \
+  -DCMAKE_BUILD_TYPE="$cmake_build_type" "${cmake_shared_args[@]}" \
+  -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
   -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS"
 cmake --build "$WORK/build" --parallel "$(nproc)"
 """,

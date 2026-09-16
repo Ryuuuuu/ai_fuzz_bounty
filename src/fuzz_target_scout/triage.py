@@ -66,6 +66,31 @@ class TriageRunner:
         for group in groups:
             group["classification"] = _classify_group(group)
         validated = [group for group in groups if group["reproduced"]]
+        resource_only_false_positive = _resource_only_false_positive(crashes, groups)
+        resource_event_archive = ""
+        if resource_only_false_positive:
+            event_id = hashlib.sha256(
+                "\n".join(sorted(path.name for path in crashes)).encode("utf-8")
+            ).hexdigest()[:16]
+            archive = job_dir / "artifacts" / "resource-events" / f"triage-{event_id}"
+            archive.mkdir(parents=True, exist_ok=True)
+            for path in crashes:
+                shutil.move(str(path), archive / path.name)
+            resource_event_archive = str(archive)
+            progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+            if progress_path.is_file():
+                progress = _read_json(progress_path)
+                progress["resource_limit_events"] = int(
+                    progress.get("resource_limit_events") or 0
+                ) + 1
+                current_checkpoint = int(
+                    progress.get("adaptive_checkpoint_seconds")
+                    or self.pipeline.get("fuzz_checkpoint_seconds", 3600)
+                )
+                progress["adaptive_checkpoint_seconds"] = max(
+                    60, min(current_checkpoint, max(60, current_checkpoint // 2))
+                )
+                _write_json(progress_path, progress)
         if validated and bool(self.pipeline.get("triage_ubsan_enabled", True)):
             self._cross_check_ubsan(job_dir, build, fuzzer, validated)
         report = None
@@ -88,6 +113,8 @@ class TriageRunner:
             "groups": groups,
             "report_draft": report,
             "report_error": report_error,
+            "resource_only_false_positive": resource_only_false_positive,
+            "resource_event_archive": resource_event_archive or None,
             "automatic_submission": False,
         }
         _write_json(job_dir / "artifacts" / "triage-summary.json", summary)
@@ -99,6 +126,11 @@ class TriageRunner:
             state["status"] = "validation_pending"
             state["stage"] = "validation"
             state["validation_status"] = "pending"
+        elif resource_only_false_positive:
+            state["status"] = "ready"
+            state["stage"] = "fuzzing"
+            state.pop("triage_artifact", None)
+            state.pop("finding_source", None)
         elif crashes:
             state["status"] = "triage_review_required"
             state["stage"] = "complete"
@@ -505,6 +537,22 @@ def _deduplicate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         groups[key]["duplicate_inputs"].append(record["original_sha256"])
     return list(groups.values())
+
+
+def _resource_only_false_positive(
+    crashes: list[Path], groups: list[dict[str, Any]]
+) -> bool:
+    return (
+        bool(crashes)
+        and bool(groups)
+        and all("-oom-" in path.name for path in crashes)
+        and all(
+            not bool(group.get("reproduced"))
+            and (group.get("classification") or {}).get("verdict")
+            == "no_sanitizer_reproduction"
+            for group in groups
+        )
+    )
 
 
 def _classify_group(group: dict[str, Any]) -> dict[str, str]:
