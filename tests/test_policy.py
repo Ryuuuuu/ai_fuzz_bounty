@@ -62,11 +62,31 @@ repository {
         self.assertIn("google/flatbuffers", verifier.catalog_names)
         self.assertNotIn("example/cloud-only", verifier.catalog_names)
 
+    def test_meta_owner_policy_is_a_trusted_paid_program(self):
+        verifier = PolicyVerifier(self.catalog)
+        assessment = verifier.verify(
+            RepoSnapshot(
+                full_name="facebook/folly",
+                html_url="https://github.com/facebook/folly",
+                default_branch="main",
+                head_sha="abc",
+                security_url="https://github.com/facebook/.github/blob/main/SECURITY.md",
+                security_text=(
+                    "Security issues in this open source project can be safely reported "
+                    "via the Meta Bug Bounty program: https://www.facebook.com/whitehat. "
+                    "Meta will determine whether it is eligible for a bounty."
+                ),
+            )
+        )
+
+        self.assertEqual(assessment.status, "verified")
+        self.assertEqual(assessment.program_url, "https://www.facebook.com/whitehat")
+
     def test_direct_explicit_bounty_is_verified(self):
         verifier = PolicyVerifier(self.catalog)
         result = verifier.verify(
             repo(
-                "small/parser",
+                "example/parser",
                 "This project has a public bug bounty program at "
                 "https://hackerone.com/example",
             )
@@ -77,13 +97,25 @@ repository {
         verifier = PolicyVerifier(self.catalog)
         result = verifier.verify(
             repo(
-                "cli/tool",
+                "example/tool",
                 "Private repository reports are not eligible for a bounty. "
                 "Submit through https://hackerone.com/example to be eligible "
                 "for a bounty reward.",
             )
         )
         self.assertEqual(result.status, "verified")
+
+    def test_copied_paid_policy_does_not_prove_repository_scope(self):
+        verifier = PolicyVerifier(self.catalog)
+        result = verifier.verify(
+            repo(
+                "unrelated/copy",
+                "This project has a public bug bounty program at "
+                "https://hackerone.com/coinbase",
+            )
+        )
+        self.assertEqual(result.status, "needs_review")
+        self.assertIn("copied policy", result.note)
 
     def test_platform_link_without_exact_paid_scope_needs_review(self):
         verifier = PolicyVerifier(self.catalog)
@@ -128,7 +160,7 @@ repository {
                 {
                     "entries": [
                         {
-                            "full_name": "org/tool",
+                            "full_name": "example/tool",
                             "status": "verified",
                             "program_url": "https://hackerone.com/example",
                             "last_verified": "2025-01-01",
@@ -141,7 +173,7 @@ repository {
         verifier = PolicyVerifier(self.catalog, max_age_days=45)
         result = verifier.verify(
             repo(
-                "org/tool",
+                "example/tool",
                 "This repository has a public bug bounty program at "
                 "https://hackerone.com/example",
             ),

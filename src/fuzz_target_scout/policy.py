@@ -21,6 +21,9 @@ TRUSTED_PROGRAM_DOMAINS = {
     "app.intigriti.com",
     "microsoft.com",
     "www.microsoft.com",
+    "facebook.com",
+    "www.facebook.com",
+    "bugbounty.meta.com",
 }
 
 STRONG_BOUNTY_PATTERNS = [
@@ -201,6 +204,17 @@ class PolicyVerifier:
         negative = any(pattern.search(text) for pattern in NEGATIVE_PATTERNS)
 
         if strong and trusted_urls:
+            if not self._program_matches_repository(repo, trusted_urls[0]):
+                return PolicyAssessment(
+                    status="needs_review",
+                    confidence=60,
+                    source="security.md",
+                    program_url=trusted_urls[0],
+                    note=(
+                        "The policy names a paid program, but its program identity does "
+                        "not match the repository owner; copied policy text cannot prove scope."
+                    ),
+                )
             return PolicyAssessment(
                 status="verified",
                 confidence=85,
@@ -230,3 +244,20 @@ class PolicyVerifier:
             source="security.md",
             note="No explicit paid bug-bounty evidence was found.",
         )
+
+    @staticmethod
+    def _program_matches_repository(repo: RepoSnapshot, program_url: str) -> bool:
+        owner = repo.full_name.split("/", 1)[0].casefold()
+        owner_token = re.sub(r"[^a-z0-9]", "", owner)
+        parsed = urlparse(program_url)
+        program_token = re.sub(
+            r"[^a-z0-9]",
+            "",
+            f"{parsed.hostname or ''}{parsed.path}".casefold(),
+        )
+        if owner_token and owner_token in program_token:
+            return True
+        inherited = (
+            f"github.com/{owner}/.github/" in repo.security_url.casefold()
+        )
+        return inherited
