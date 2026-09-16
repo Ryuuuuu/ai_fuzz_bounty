@@ -94,6 +94,7 @@ def create_generic_project(
         support_sources,
         harness_language,
         support_include_dirs,
+        source_dependencies,
     )
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
@@ -160,6 +161,7 @@ def repair_generic_harness(
             support_sources,
             harness_language,
             support_include_dirs,
+            tuple(record.get("source_dependencies") or ()),
         )
         build_path = project_dir / "build.sh"
         build_path.write_text(build_script, encoding="utf-8")
@@ -434,24 +436,19 @@ def _dockerfile(
         }
     )
     source_package = " git" if allowed_sources else ""
-    source_install = ""
+    source_checkout = ""
     for name in allowed_sources:
         dependency = CMAKE_SOURCE_DEPENDENCIES[name]
-        source_install += f"""RUN git clone --filter=blob:none {dependency['url']} /tmp/{name} \\
-    && git -C /tmp/{name} checkout --detach {dependency['commit']} \\
-    && cmake -S /tmp/{name} -B /tmp/{name}-build -G Ninja \\
-      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 \\
-      -DBUILD_SHARED_LIBS=OFF -DABSL_BUILD_TESTING=OFF \\
-    && cmake --build /tmp/{name}-build --parallel "$(nproc)" \\
-    && cmake --install /tmp/{name}-build \\
-    && rm -rf /tmp/{name} /tmp/{name}-build
+        source_checkout += f"""RUN git clone --filter=blob:none {dependency['url']} /opt/fuzz-dependencies/{name} \\
+    && git -C /opt/fuzz-dependencies/{name} checkout --detach {dependency['commit']} \\
+    && rm -rf /opt/fuzz-dependencies/{name}/.git
 """
     if native_base_image is None:
         return f"""FROM gcr.io/oss-fuzz-base/base-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     {packages}{dependency_packages}{source_package} \
     && rm -rf /var/lib/apt/lists/*
-{source_install}COPY --chmod=0755 build.sh $SRC/build.sh
+{source_checkout}COPY --chmod=0755 build.sh $SRC/build.sh
 COPY --chmod=0644 generic_harness.cc $SRC/generic_harness.cc
 WORKDIR $SRC/project
 """
@@ -462,7 +459,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ca-certificates clang lld llvm file libclang-rt-dev libc++-dev libc++abi-dev \
     build-essential {packages}{dependency_packages}{source_package} \
     && rm -rf /var/lib/apt/lists/*
-{source_install}ENV SRC=/src WORK=/work OUT=/out \
+{source_checkout}ENV SRC=/src WORK=/work OUT=/out \
     CC=clang CXX=clang++ \
     CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
     CXXFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \
@@ -634,6 +631,7 @@ def _build_script(
     support_sources: list[str] | tuple[str, ...] = (),
     harness_language: str = "c++",
     support_include_dirs: list[str] | tuple[str, ...] = (),
+    source_dependencies: list[str] | tuple[str, ...] = (),
 ) -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
@@ -641,6 +639,28 @@ export CC CXX CFLAGS CXXFLAGS LIB_FUZZING_ENGINE OUT WORK
 rm -rf "$WORK/build"
 mkdir -p "$WORK/build" "$OUT"
 """
+    dependency_build = ""
+    for name in sorted(
+        dependency
+        for dependency in set(source_dependencies)
+        if dependency in CMAKE_SOURCE_DEPENDENCIES
+    ):
+        dependency_build += f"""rm -rf "$WORK/dependency-{name}"
+cmake -S "/opt/fuzz-dependencies/{name}" -B "$WORK/dependency-{name}" -G Ninja \\
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_STANDARD=17 \\
+  -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \\
+  -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\
+  -DCMAKE_INSTALL_PREFIX="$WORK/dependencies" \\
+  -DBUILD_SHARED_LIBS=OFF -DABSL_BUILD_TESTING=OFF
+cmake --build "$WORK/dependency-{name}" --parallel "$(nproc)"
+cmake --install "$WORK/dependency-{name}"
+"""
+    if dependency_build:
+        dependency_build = (
+            'rm -rf "$WORK/dependencies"\nmkdir -p "$WORK/dependencies"\n'
+            + dependency_build
+            + 'export CMAKE_PREFIX_PATH="$WORK/dependencies"\n'
+        )
     builds = {
         "cmake": """cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)
 while IFS= read -r option; do
@@ -708,7 +728,7 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
     support_compile = "\n".join(support_compile_lines)
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
 mapfile -d '' dependency_archives < <(
-  find /usr/local/lib -type f -name '*.a' -print0 2>/dev/null
+  find "$WORK/dependencies" -type f -name '*.a' -print0 2>/dev/null
 )
 include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)
 if [[ -f "$WORK/build/build.ninja" ]]; then
@@ -746,7 +766,7 @@ __SUPPORT_COMPILE__
     link = link.replace("__SUPPORT_COMPILE__", support_compile)
     link = link.replace("__HARNESS_COMPILER__", harness_compiler)
     link = link.replace("__HARNESS_FLAGS__", harness_flags)
-    return prelude + builds[build_system] + link
+    return prelude + dependency_build + builds[build_system] + link
 
 
 def _read_optional_json(path: Path) -> dict[str, Any]:

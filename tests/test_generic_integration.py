@@ -110,6 +110,14 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertEqual(support_sources, [])
         self.assertEqual(include_dirs, [])
 
+    def test_source_dependency_is_built_with_the_active_sanitizer_flags(self):
+        script = _build_script("cmake", source_dependencies=["absl"])
+
+        self.assertIn('cmake -S "/opt/fuzz-dependencies/absl"', script)
+        self.assertIn('-DCMAKE_CXX_FLAGS="$CXXFLAGS"', script)
+        self.assertIn('-DCMAKE_INSTALL_PREFIX="$WORK/dependencies"', script)
+        self.assertIn('export CMAKE_PREFIX_PATH="$WORK/dependencies"', script)
+
     def test_detects_all_supported_build_families(self):
         markers = {
             "cmake": "CMakeLists.txt",
@@ -129,7 +137,7 @@ class GenericIntegrationTests(unittest.TestCase):
                 if expected == "cmake":
                     self.assertIn("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)", script)
                     self.assertIn('ninja -C "$WORK/build" -t commands', script)
-                self.assertIn("find /usr/local/lib", script)
+                self.assertIn('find "$WORK/dependencies"', script)
                 self.assertIn(
                     '-c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"',
                     script,
