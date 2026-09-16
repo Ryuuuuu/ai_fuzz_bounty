@@ -255,9 +255,9 @@ class PolicyVerifier:
             "",
             f"{parsed.hostname or ''}{parsed.path}".casefold(),
         )
-        if owner_token and owner_token in program_token:
-            return True
-        inherited = (
-            f"github.com/{owner}/.github/" in repo.security_url.casefold()
-        )
-        return inherited
+        inherited = f"github.com/{owner}/.github/" in repo.security_url.casefold()
+        if inherited:
+            return owner in {"facebook", "facebookincubator"} and (
+                parsed.hostname or ""
+            ).casefold() in {"facebook.com", "www.facebook.com", "bugbounty.meta.com"}
+        return bool(owner_token and owner_token in program_token)

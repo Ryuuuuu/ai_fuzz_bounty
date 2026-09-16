@@ -105,6 +105,24 @@ repository {
         )
         self.assertEqual(result.status, "verified")
 
+    def test_unlisted_owner_default_policy_does_not_prove_repository_scope(self):
+        verifier = PolicyVerifier(self.catalog)
+        assessment = verifier.verify(
+            RepoSnapshot(
+                full_name="microsoft/unlisted-project",
+                html_url="https://github.com/microsoft/unlisted-project",
+                default_branch="main",
+                head_sha="abc",
+                security_url="https://github.com/microsoft/.github/blob/main/SECURITY.md",
+                security_text=(
+                    "This project has a public bug bounty program at "
+                    "https://www.microsoft.com/en-us/msrc/bounty"
+                ),
+            )
+        )
+
+        self.assertEqual(assessment.status, "needs_review")
+
     def test_copied_paid_policy_does_not_prove_repository_scope(self):
         verifier = PolicyVerifier(self.catalog)
         result = verifier.verify(
