@@ -73,12 +73,16 @@ class GenericIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(dependencies, ["libgflags-dev", "libssl-dev"])
-        self.assertEqual(source_dependencies, ["absl", "cpuinfo", "pthreadpool"])
+        self.assertEqual(
+            source_dependencies, ["absl", "cpuinfo", "fxdiv", "pthreadpool"]
+        )
         self.assertIn("libgflags-dev libssl-dev git", dockerfile)
         self.assertIn("https://github.com/abseil/abseil-cpp.git", dockerfile)
         self.assertIn("d38452e1ee03523a208362186fd42248ff2609f6", dockerfile)
         self.assertIn("https://github.com/pytorch/cpuinfo.git", dockerfile)
         self.assertIn("8ce83db858065145192c97af90cb668ad72a12e9", dockerfile)
+        self.assertIn("https://github.com/Maratyszcza/FXdiv.git", dockerfile)
+        self.assertIn("63058eff77e11aa15bf531df5dd34395ec3017c8", dockerfile)
         self.assertIn("https://github.com/google/pthreadpool.git", dockerfile)
         self.assertIn("15a6644ba1c45f1acc16ac1e883efc3e56c6bed2", dockerfile)
         self.assertNotIn("attacker_controlled", dockerfile)
@@ -128,14 +132,16 @@ class GenericIntegrationTests(unittest.TestCase):
 
     def test_source_directory_dependencies_are_injected_without_rebuilding(self):
         script = _build_script(
-            "cmake", source_dependencies=["cpuinfo", "pthreadpool"]
+            "cmake", source_dependencies=["cpuinfo", "fxdiv", "pthreadpool"]
         )
 
         self.assertIn("-DCPUINFO_SOURCE_DIR=/opt/fuzz-dependencies/cpuinfo", script)
         self.assertIn(
             "-DPTHREADPOOL_SOURCE_DIR=/opt/fuzz-dependencies/pthreadpool", script
         )
+        self.assertIn("-DFXDIV_SOURCE_DIR=/opt/fuzz-dependencies/fxdiv", script)
         self.assertNotIn('cmake -S "/opt/fuzz-dependencies/cpuinfo"', script)
+        self.assertNotIn('cmake -S "/opt/fuzz-dependencies/fxdiv"', script)
         self.assertNotIn('cmake -S "/opt/fuzz-dependencies/pthreadpool"', script)
         self.assertIn("ENABLE_KLEIDIAI", script)
 

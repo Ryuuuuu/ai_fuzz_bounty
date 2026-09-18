@@ -51,6 +51,12 @@ CMAKE_SOURCE_DEPENDENCIES = {
         "cmake_source_variable": "CPUINFO_SOURCE_DIR",
         "build_separately": False,
     },
+    "fxdiv": {
+        "url": "https://github.com/Maratyszcza/FXdiv.git",
+        "commit": "63058eff77e11aa15bf531df5dd34395ec3017c8",
+        "cmake_source_variable": "FXDIV_SOURCE_DIR",
+        "build_separately": False,
+    },
     "pthreadpool": {
         "url": "https://github.com/google/pthreadpool.git",
         "commit": "15a6644ba1c45f1acc16ac1e883efc3e56c6bed2",
@@ -60,6 +66,7 @@ CMAKE_SOURCE_DEPENDENCIES = {
         ),
         "cmake_source_variable": "PTHREADPOOL_SOURCE_DIR",
         "build_separately": False,
+        "requires": ("fxdiv",),
     },
 }
 
@@ -392,6 +399,14 @@ def _detect_source_dependencies(source: Path, build_system: str) -> list[str]:
         markers = metadata.get("detection_markers") or ()
         if any(str(marker).casefold() in cmake_text for marker in markers):
             dependencies.add(name)
+    pending = list(dependencies)
+    while pending:
+        name = pending.pop()
+        for required in CMAKE_SOURCE_DEPENDENCIES[name].get("requires") or ():
+            if required not in CMAKE_SOURCE_DEPENDENCIES or required in dependencies:
+                continue
+            dependencies.add(required)
+            pending.append(required)
     return sorted(dependencies)
 
 
