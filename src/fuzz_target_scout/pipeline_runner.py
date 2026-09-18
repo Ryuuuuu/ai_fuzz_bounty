@@ -2463,6 +2463,12 @@ class PipelineRunner:
                     log_path,
                     timeout=timeout,
                 )
+                build_command = [
+                    *build_command[:-2],
+                    "-e",
+                    "FUZZ_REUSE_BUILD=1",
+                    *build_command[-2:],
+                ]
         fuzzers = sorted(
             path.name
             for path in out_dir.iterdir()

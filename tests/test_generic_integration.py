@@ -147,6 +147,17 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn('-DCMAKE_CXX_FLAGS="$CXXFLAGS"', script)
         self.assertIn('-DCMAKE_INSTALL_PREFIX="$WORK/dependencies"', script)
         self.assertIn('export CMAKE_PREFIX_PATH="$WORK/dependencies"', script)
+        self.assertIn('if [[ "$reuse_build" != "1" ]]', script)
+
+    def test_harness_retry_can_reuse_the_completed_library_build(self):
+        script = _build_script("cmake")
+
+        self.assertIn('reuse_build="${FUZZ_REUSE_BUILD:-0}"', script)
+        self.assertIn('rm -rf "$WORK/build"', script)
+        self.assertLess(
+            script.index('if [[ "$reuse_build" != "1" ]]'),
+            script.index('rm -rf "$WORK/build"'),
+        )
 
     def test_source_directory_dependencies_are_injected_without_rebuilding(self):
         script = _build_script(

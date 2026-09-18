@@ -724,7 +724,10 @@ def _build_script(
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
 export CC CXX CFLAGS CXXFLAGS LIB_FUZZING_ENGINE OUT WORK
-rm -rf "$WORK/build"
+reuse_build="${FUZZ_REUSE_BUILD:-0}"
+if [[ "$reuse_build" != "1" ]]; then
+  rm -rf "$WORK/build"
+fi
 mkdir -p "$WORK/build" "$OUT"
 """
     dependency_build = ""
@@ -746,8 +749,11 @@ cmake --install "$WORK/dependency-{name}"
 """
     if dependency_build:
         dependency_build = (
-            'rm -rf "$WORK/dependencies"\nmkdir -p "$WORK/dependencies"\n'
+            'if [[ "$reuse_build" != "1" ]]; then\n'
+            '  rm -rf "$WORK/dependencies"\n'
+            '  mkdir -p "$WORK/dependencies"\n'
             + dependency_build
+            + "fi\n"
             + 'export CMAKE_PREFIX_PATH="$WORK/dependencies"\n'
         )
     cmake_source_args = ""
