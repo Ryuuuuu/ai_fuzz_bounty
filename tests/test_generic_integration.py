@@ -138,6 +138,8 @@ class GenericIntegrationTests(unittest.TestCase):
                     self.assertIn("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)", script)
                     self.assertIn("cmake_build_type=RelWithDebInfo", script)
                     self.assertIn("BUILD_(TESTS?", script)
+                    self.assertEqual(script.count("grep -rhoEi 'option[(]"), 2)
+                    self.assertIn("[Oo][Pp][Tt][Ii][Oo][Nn]", script)
                     self.assertIn('-DCMAKE_BUILD_TYPE="$cmake_build_type"', script)
                     self.assertIn('ninja -C "$WORK/build" -t commands', script)
                 self.assertIn('find "$WORK/dependencies"', script)

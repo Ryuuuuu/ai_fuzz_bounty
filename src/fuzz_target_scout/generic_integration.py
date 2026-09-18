@@ -666,14 +666,14 @@ cmake --install "$WORK/dependency-{name}"
 while IFS= read -r option; do
   cmake_shared_args+=("-D${option}=OFF")
 done < <(
-  grep -rhoE 'option[(][A-Za-z_][A-Za-z0-9_]*BUILD_SHARED[A-Za-z0-9_]*' \
-    CMakeLists.txt cmake 2>/dev/null | sed 's/^option(//' | sort -u
+  grep -rhoEi 'option[(][A-Za-z_][A-Za-z0-9_]*BUILD_SHARED[A-Za-z0-9_]*' \
+    CMakeLists.txt cmake 2>/dev/null | sed -E 's/^[Oo][Pp][Tt][Ii][Oo][Nn][(]//' | sort -u
 )
 while IFS= read -r option; do
   cmake_shared_args+=("-D${option}=OFF")
 done < <(
-  grep -rhoE 'option[(][A-Za-z_][A-Za-z0-9_]*' \
-    CMakeLists.txt cmake tools 2>/dev/null | sed 's/^option(//' | \
+  grep -rhoEi 'option[(][A-Za-z_][A-Za-z0-9_]*' \
+    CMakeLists.txt cmake tools 2>/dev/null | sed -E 's/^[Oo][Pp][Tt][Ii][Oo][Nn][(]//' | \
     grep -E '(^|_)BUILD_(TESTS?|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM)$' | \
     sort -u
 )
