@@ -167,6 +167,27 @@ class PipelineTests(unittest.TestCase):
                 second.skip_reasons, {"repository_already_planned": 1}
             )
 
+    def test_completed_job_allows_a_new_pinned_commit_for_same_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = prepare_jobs([candidate(commit="b" * 40)], directory, CONFIG, LOCK)
+            first_job = Path(directory) / first.job_ids[0]
+            state_path = first_job / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state.update({"stage": "complete", "status": "skipped_after_recovery"})
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            second = prepare_jobs(
+                [candidate(commit="c" * 40)], directory, CONFIG, LOCK
+            )
+            same_commit = prepare_jobs(
+                [candidate(commit="b" * 40)], directory, CONFIG, LOCK
+            )
+
+            self.assertEqual(second.created, 1)
+            self.assertEqual(same_commit.created, 0)
+            self.assertEqual(same_commit.existing, 1)
+            self.assertEqual(len(list(Path(directory).glob("*/job.json"))), 2)
+
     def test_support_index_filters_before_work_order_creation(self):
         with tempfile.TemporaryDirectory() as directory:
             strict = {**CONFIG, "allow_generic_integrations": False}

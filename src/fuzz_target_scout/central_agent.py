@@ -1664,13 +1664,22 @@ class CentralAgent:
         support = load_oss_fuzz_support_index(
             self.pipeline["oss_fuzz_index_path"], lock
         )
-        prepare_jobs(
+        summary = prepare_jobs(
             load_jsonl(source),
             self.runs_root,
             self.pipeline,
             lock,
             support,
         )
+        self.state["last_plan"] = {
+            "planned_at": utc_now(),
+            "created": summary.created,
+            "existing": summary.existing,
+            "skipped": summary.skipped,
+            "skip_reasons": summary.skip_reasons,
+            "job_ids": summary.job_ids,
+        }
+        self._save_state()
 
     def _runnable_jobs(self) -> list[dict[str, Any]]:
         overview = pipeline_overview(self.runs_root)

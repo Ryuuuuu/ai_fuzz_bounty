@@ -33,6 +33,7 @@ HARNESS_SUPPORT_DIRECTORY_NAMES = {"test", "tests", "fuzz", "fuzzer", "fuzzing"}
 CMAKE_SYSTEM_DEPENDENCIES = {
     "bzip2": ("libbz2-dev",),
     "expat": ("libexpat1-dev",),
+    "gflags": ("libgflags-dev",),
     "libxml2": ("libxml2-dev",),
     "openssl": ("libssl-dev",),
     "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
@@ -42,6 +43,23 @@ CMAKE_SOURCE_DEPENDENCIES = {
     "absl": {
         "url": "https://github.com/abseil/abseil-cpp.git",
         "commit": "d38452e1ee03523a208362186fd42248ff2609f6",
+    },
+    "cpuinfo": {
+        "url": "https://github.com/pytorch/cpuinfo.git",
+        "commit": "8ce83db858065145192c97af90cb668ad72a12e9",
+        "detection_markers": ("cpuinfo_source_dir", "github.com/pytorch/cpuinfo"),
+        "cmake_source_variable": "CPUINFO_SOURCE_DIR",
+        "build_separately": False,
+    },
+    "pthreadpool": {
+        "url": "https://github.com/google/pthreadpool.git",
+        "commit": "15a6644ba1c45f1acc16ac1e883efc3e56c6bed2",
+        "detection_markers": (
+            "pthreadpool_source_dir",
+            "github.com/google/pthreadpool",
+        ),
+        "cmake_source_variable": "PTHREADPOOL_SOURCE_DIR",
+        "build_separately": False,
     },
 }
 
@@ -365,11 +383,29 @@ def _detect_system_dependencies(source: Path, build_system: str) -> list[str]:
 
 
 def _detect_source_dependencies(source: Path, build_system: str) -> list[str]:
-    packages = _declared_cmake_packages(source) if build_system == "cmake" else set()
-    return sorted(packages & CMAKE_SOURCE_DEPENDENCIES.keys())
+    if build_system != "cmake":
+        return []
+    packages = _declared_cmake_packages(source)
+    cmake_text = _cmake_metadata_text(source).casefold()
+    dependencies = packages & CMAKE_SOURCE_DEPENDENCIES.keys()
+    for name, metadata in CMAKE_SOURCE_DEPENDENCIES.items():
+        markers = metadata.get("detection_markers") or ()
+        if any(str(marker).casefold() in cmake_text for marker in markers):
+            dependencies.add(name)
+    return sorted(dependencies)
 
 
 def _declared_cmake_packages(source: Path) -> set[str]:
+    text = _cmake_metadata_text(source)
+    return {
+        match.group(1).casefold()
+        for match in re.finditer(
+            r"\bfind_package\s*\(\s*([A-Za-z0-9_+.-]+)", text, re.IGNORECASE
+        )
+    }
+
+
+def _cmake_metadata_text(source: Path) -> str:
     files: list[Path] = []
     root = source / "CMakeLists.txt"
     if root.is_file() and not root.is_symlink():
@@ -381,7 +417,7 @@ def _declared_cmake_packages(source: Path) -> set[str]:
             for path in sorted(cmake_dir.rglob("*.cmake"))
             if path.is_file() and not path.is_symlink()
         )
-    packages: set[str] = set()
+    chunks: list[str] = []
     total_bytes = 0
     for path in files[:100]:
         try:
@@ -392,13 +428,8 @@ def _declared_cmake_packages(source: Path) -> set[str]:
         except OSError:
             continue
         total_bytes += size
-        for match in re.finditer(
-            r"\bfind_package\s*\(\s*([A-Za-z0-9_+.-]+)",
-            text,
-            re.IGNORECASE,
-        ):
-            packages.add(match.group(1).casefold())
-    return packages
+        chunks.append(text)
+    return "\n".join(chunks)
 
 
 def _dockerfile(
@@ -644,6 +675,7 @@ mkdir -p "$WORK/build" "$OUT"
         dependency
         for dependency in set(source_dependencies)
         if dependency in CMAKE_SOURCE_DEPENDENCIES
+        and CMAKE_SOURCE_DEPENDENCIES[dependency].get("build_separately", True)
     ):
         dependency_build += f"""rm -rf "$WORK/dependency-{name}"
 cmake -S "/opt/fuzz-dependencies/{name}" -B "$WORK/dependency-{name}" -G Ninja \\
@@ -661,6 +693,16 @@ cmake --install "$WORK/dependency-{name}"
             + dependency_build
             + 'export CMAKE_PREFIX_PATH="$WORK/dependencies"\n'
         )
+    cmake_source_args = ""
+    for name in sorted(set(source_dependencies)):
+        metadata = CMAKE_SOURCE_DEPENDENCIES.get(name) or {}
+        variable = str(metadata.get("cmake_source_variable") or "")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", variable):
+            continue
+        cmake_source_args += (
+            f'cmake_shared_args+=("-D{variable}='
+            f'/opt/fuzz-dependencies/{name}")\n'
+        )
     builds = {
         "cmake": """cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)
 while IFS= read -r option; do
@@ -674,7 +716,7 @@ while IFS= read -r option; do
 done < <(
   grep -rhoEi 'option[(][A-Za-z_][A-Za-z0-9_]*' \
     CMakeLists.txt cmake tools 2>/dev/null | sed -E 's/^[Oo][Pp][Tt][Ii][Oo][Nn][(]//' | \
-    grep -E '(^|_)BUILD_(TESTS?|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM)$' | \
+    grep -E '(^|_)(BUILD_(TESTS?|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM)|ENABLE_KLEIDIAI)$' | \
     sort -u
 )
 cmake_build_type=RelWithDebInfo
@@ -779,7 +821,13 @@ __SUPPORT_COMPILE__
     link = link.replace("__SUPPORT_COMPILE__", support_compile)
     link = link.replace("__HARNESS_COMPILER__", harness_compiler)
     link = link.replace("__HARNESS_FLAGS__", harness_flags)
-    return prelude + dependency_build + builds[build_system] + link
+    build = builds[build_system]
+    if build_system == "cmake" and cmake_source_args:
+        build = build.replace(
+            "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)\n",
+            "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)\n" + cmake_source_args,
+        )
+    return prelude + dependency_build + build + link
 
 
 def _read_optional_json(path: Path) -> dict[str, Any]:

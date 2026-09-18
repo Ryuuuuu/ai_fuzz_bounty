@@ -146,9 +146,19 @@ def _planned_repositories(runs_root: Path) -> set[str]:
     if not runs_root.is_dir() or runs_root.is_symlink():
         return repositories
     for job_path in runs_root.glob("*/job.json"):
+        state_path = job_path.with_name("state.json")
         try:
             job = json.loads(job_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            continue
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        # Completed work only blocks its exact commit (checked by job_id above).
+        # A newer pinned commit may be planned without allowing two live jobs for
+        # the same repository.
+        if state.get("stage") == "complete":
             continue
         repository = str((job.get("source") or {}).get("repository") or "")
         if repository:

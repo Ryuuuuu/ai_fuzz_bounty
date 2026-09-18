@@ -60,6 +60,9 @@ class GenericIntegrationTests(unittest.TestCase):
             (source / "CMakeLists.txt").write_text(
                 "find_package(absl REQUIRED)\n"
                 "find_package(OpenSSL REQUIRED)\n"
+                "find_package(gflags REQUIRED)\n"
+                "set(CPUINFO_SOURCE_DIR ignored)\n"
+                "set(PTHREADPOOL_SOURCE_DIR ignored)\n"
                 "find_package(attacker_controlled REQUIRED)\n"
             )
             dependencies = _detect_system_dependencies(source, "cmake")
@@ -68,11 +71,15 @@ class GenericIntegrationTests(unittest.TestCase):
                 "cmake", "ubuntu:24.04", dependencies, source_dependencies
             )
 
-        self.assertEqual(dependencies, ["libssl-dev"])
-        self.assertEqual(source_dependencies, ["absl"])
-        self.assertIn("libssl-dev git", dockerfile)
+        self.assertEqual(dependencies, ["libgflags-dev", "libssl-dev"])
+        self.assertEqual(source_dependencies, ["absl", "cpuinfo", "pthreadpool"])
+        self.assertIn("libgflags-dev libssl-dev git", dockerfile)
         self.assertIn("https://github.com/abseil/abseil-cpp.git", dockerfile)
         self.assertIn("d38452e1ee03523a208362186fd42248ff2609f6", dockerfile)
+        self.assertIn("https://github.com/pytorch/cpuinfo.git", dockerfile)
+        self.assertIn("8ce83db858065145192c97af90cb668ad72a12e9", dockerfile)
+        self.assertIn("https://github.com/google/pthreadpool.git", dockerfile)
+        self.assertIn("15a6644ba1c45f1acc16ac1e883efc3e56c6bed2", dockerfile)
         self.assertNotIn("attacker_controlled", dockerfile)
 
     def test_prefers_first_party_harness_over_vendored_harness(self):
@@ -117,6 +124,19 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn('-DCMAKE_CXX_FLAGS="$CXXFLAGS"', script)
         self.assertIn('-DCMAKE_INSTALL_PREFIX="$WORK/dependencies"', script)
         self.assertIn('export CMAKE_PREFIX_PATH="$WORK/dependencies"', script)
+
+    def test_source_directory_dependencies_are_injected_without_rebuilding(self):
+        script = _build_script(
+            "cmake", source_dependencies=["cpuinfo", "pthreadpool"]
+        )
+
+        self.assertIn("-DCPUINFO_SOURCE_DIR=/opt/fuzz-dependencies/cpuinfo", script)
+        self.assertIn(
+            "-DPTHREADPOOL_SOURCE_DIR=/opt/fuzz-dependencies/pthreadpool", script
+        )
+        self.assertNotIn('cmake -S "/opt/fuzz-dependencies/cpuinfo"', script)
+        self.assertNotIn('cmake -S "/opt/fuzz-dependencies/pthreadpool"', script)
+        self.assertIn("ENABLE_KLEIDIAI", script)
 
     def test_detects_all_supported_build_families(self):
         markers = {
