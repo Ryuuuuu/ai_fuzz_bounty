@@ -779,7 +779,7 @@ while IFS= read -r option; do
 done < <(
   grep -rhoEi 'option[(][A-Za-z_][A-Za-z0-9_]*' \
     CMakeLists.txt cmake tools 2>/dev/null | sed -E 's/^[Oo][Pp][Tt][Ii][Oo][Nn][(]//' | \
-    grep -E '(^|_)(BUILD_(TESTS?|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM)|ENABLE_KLEIDIAI)$' | \
+    grep -E '(^|_)(BUILD_(TESTS?|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM|ALL_MICROKERNELS)|ENABLE_KLEIDIAI)$' | \
     sort -u
 )
 cmake_build_type=RelWithDebInfo

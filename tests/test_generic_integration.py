@@ -173,6 +173,7 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertNotIn('cmake -S "/opt/fuzz-dependencies/fxdiv"', script)
         self.assertNotIn('cmake -S "/opt/fuzz-dependencies/pthreadpool"', script)
         self.assertIn("ENABLE_KLEIDIAI", script)
+        self.assertIn("ALL_MICROKERNELS", script)
 
     def test_detects_all_supported_build_families(self):
         markers = {
