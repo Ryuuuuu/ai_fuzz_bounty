@@ -10,6 +10,7 @@ from fuzz_target_scout.generic_integration import (
     _detect_source_dependencies,
     _detect_system_dependencies,
     _find_existing_harness,
+    _select_public_candidate,
     create_generic_project,
     detect_build_system,
     repair_generic_harness,
@@ -17,6 +18,23 @@ from fuzz_target_scout.generic_integration import (
 
 
 class GenericIntegrationTests(unittest.TestCase):
+    def test_public_candidate_prefers_exported_header_over_benchmark_expression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "bench").mkdir()
+            (source / "include").mkdir()
+            (source / "bench" / "pack.h").write_text(
+                "num_blocks * sizeof(uint16_t) + sizeof(float));\n"
+            )
+            (source / "include" / "api.h").write_text(
+                "int parse_bytes(const unsigned char* data, unsigned long size);\n"
+            )
+
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["file"], "include/api.h")
+        self.assertIn("parse_bytes", candidate["signature"])
+
     def test_prefers_simple_public_harness_over_static_only_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

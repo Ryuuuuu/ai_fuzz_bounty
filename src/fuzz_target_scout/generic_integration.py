@@ -358,10 +358,26 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
         r"^\s*(?:extern\s+\"C\"\s+)?(?:[A-Za-z_][\w:<>,*&\s]+)\s+"
         r"(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;{}]*\)\s*;"
     )
-    rejected = {"main", "malloc", "free", "operator", "if", "for", "while"}
-    for path in sorted(source.rglob("*")):
-        if path.is_symlink() or not path.is_file() or path.suffix.casefold() not in HEADER_SUFFIXES:
-            continue
+    rejected = {
+        "alignof",
+        "decltype",
+        "for",
+        "free",
+        "if",
+        "main",
+        "malloc",
+        "operator",
+        "sizeof",
+        "while",
+    }
+    headers = (
+        path
+        for path in source.rglob("*")
+        if not path.is_symlink()
+        and path.is_file()
+        and path.suffix.casefold() in HEADER_SUFFIXES
+    )
+    for path in sorted(headers, key=lambda item: _public_header_rank(source, item)):
         try:
             if path.stat().st_size > 300_000:
                 continue
@@ -379,6 +395,30 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
                 "signature": line.strip()[:1000],
             }
     raise PipelineError("no existing harness or public function prototype was found")
+
+
+def _public_header_rank(source: Path, path: Path) -> tuple[int, int, int, str]:
+    relative = path.relative_to(source)
+    parts = tuple(part.casefold() for part in relative.parts[:-1])
+    low_value = {
+        "bench",
+        "benchmark",
+        "benchmarks",
+        "examples",
+        "internal",
+        "src",
+        "test",
+        "tests",
+        "third_party",
+        "tools",
+        "vendor",
+    }
+    return (
+        int(bool(set(parts) & low_value)),
+        int("include" not in parts and parts != ()),
+        len(parts),
+        relative.as_posix().casefold(),
+    )
 
 
 def _detect_system_dependencies(source: Path, build_system: str) -> list[str]:
