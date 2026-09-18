@@ -439,7 +439,9 @@ def _dockerfile(
     source_dependencies: list[str] | tuple[str, ...] = (),
 ) -> str:
     packages = {
-        "cmake": "cmake ninja-build pkg-config",
+        # CMake projects commonly generate sources and tables with Python at
+        # configure time, including native ARM microkernel projects.
+        "cmake": "cmake ninja-build pkg-config python3",
         "meson": "meson ninja-build pkg-config",
         "autotools": "autoconf automake libtool make pkg-config",
         "cargo": "cargo rustc pkg-config",

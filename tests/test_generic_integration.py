@@ -44,6 +44,7 @@ class GenericIntegrationTests(unittest.TestCase):
     def test_builder_installs_only_the_selected_build_family(self):
         dockerfile = _dockerfile("cmake")
         self.assertIn("cmake ninja-build pkg-config", dockerfile)
+        self.assertIn("python3", dockerfile)
         self.assertNotIn("cargo", dockerfile)
         self.assertNotIn("autoconf", dockerfile)
 
