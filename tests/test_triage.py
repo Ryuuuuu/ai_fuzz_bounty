@@ -108,6 +108,40 @@ class TriageTests(unittest.TestCase):
             )
             self.assertEqual(progress["resource_limit_events"], 2)
 
+    def test_nonreproducing_empty_leak_artifact_resumes_fuzzing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_id, job_dir = self._fixture(Path(directory), crash=True)
+            crash_dir = job_dir / "crashes" / "fuzz_parser"
+            crash = crash_dir / "crash-1"
+            crash.write_bytes(b"")
+            artifact = job_dir / "artifacts" / "fuzz-run.json"
+            payload = json.loads(artifact.read_text())
+            payload["sanitizer_summaries"] = [
+                "ERROR: LeakSanitizer: detected memory leaks",
+                "SUMMARY: AddressSanitizer: 32 byte(s) leaked in 1 allocation(s).",
+            ]
+            artifact.write_text(json.dumps(payload))
+            progress_path = job_dir / "artifacts" / "fuzz-progress.json"
+            progress_path.write_text(
+                json.dumps({"completed_seconds": 1000, "resource_limit_events": 0})
+            )
+            with patch.object(runner, "_minimize", return_value=None), patch.object(
+                runner, "_reproduce", return_value=(0, "")
+            ):
+                result = runner.triage(job_id, use_ai=False)
+
+            self.assertTrue(result["auto_resumable_false_positive"])
+            self.assertFalse(result["resource_only_false_positive"])
+            self.assertEqual(result["false_positive_reason"], "process_exit_leak")
+            self.assertEqual(result["state"]["status"], "ready")
+            self.assertEqual(result["state"]["stage"], "fuzzing")
+            self.assertFalse(any(crash_dir.iterdir()))
+            self.assertTrue(
+                (Path(result["false_positive_archive"]) / "crash-1").is_file()
+            )
+            progress = json.loads(progress_path.read_text())
+            self.assertEqual(progress["resource_limit_events"], 0)
+
     def test_probe_finding_uses_the_same_reproduction_pipeline(self):
         with tempfile.TemporaryDirectory() as directory:
             runner, job_id, job_dir = self._fixture(Path(directory), crash=True)

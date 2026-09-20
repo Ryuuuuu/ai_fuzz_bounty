@@ -66,19 +66,27 @@ class TriageRunner:
         for group in groups:
             group["classification"] = _classify_group(group)
         validated = [group for group in groups if group["reproduced"]]
-        resource_only_false_positive = _resource_only_false_positive(crashes, groups)
+        false_positive_reason = _auto_resumable_false_positive(
+            crashes, groups, fuzz_run
+        )
+        resource_only_false_positive = false_positive_reason == "resource_limit"
         resource_event_archive = ""
-        if resource_only_false_positive:
+        if false_positive_reason:
             event_id = hashlib.sha256(
                 "\n".join(sorted(path.name for path in crashes)).encode("utf-8")
             ).hexdigest()[:16]
-            archive = job_dir / "artifacts" / "resource-events" / f"triage-{event_id}"
+            event_directory = (
+                "resource-events"
+                if resource_only_false_positive
+                else "runtime-events"
+            )
+            archive = job_dir / "artifacts" / event_directory / f"triage-{event_id}"
             archive.mkdir(parents=True, exist_ok=True)
             for path in crashes:
                 shutil.move(str(path), archive / path.name)
             resource_event_archive = str(archive)
             progress_path = job_dir / "artifacts" / "fuzz-progress.json"
-            if progress_path.is_file():
+            if resource_only_false_positive and progress_path.is_file():
                 progress = _read_json(progress_path)
                 progress["resource_limit_events"] = int(
                     progress.get("resource_limit_events") or 0
@@ -114,7 +122,12 @@ class TriageRunner:
             "report_draft": report,
             "report_error": report_error,
             "resource_only_false_positive": resource_only_false_positive,
-            "resource_event_archive": resource_event_archive or None,
+            "auto_resumable_false_positive": bool(false_positive_reason),
+            "false_positive_reason": false_positive_reason or None,
+            "false_positive_archive": resource_event_archive or None,
+            "resource_event_archive": (
+                resource_event_archive if resource_only_false_positive else None
+            ),
             "automatic_submission": False,
         }
         _write_json(job_dir / "artifacts" / "triage-summary.json", summary)
@@ -126,7 +139,7 @@ class TriageRunner:
             state["status"] = "validation_pending"
             state["stage"] = "validation"
             state["validation_status"] = "pending"
-        elif resource_only_false_positive:
+        elif false_positive_reason:
             state["status"] = "ready"
             state["stage"] = "fuzzing"
             state.pop("triage_artifact", None)
@@ -539,13 +552,14 @@ def _deduplicate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(groups.values())
 
 
-def _resource_only_false_positive(
-    crashes: list[Path], groups: list[dict[str, Any]]
-) -> bool:
-    return (
+def _auto_resumable_false_positive(
+    crashes: list[Path],
+    groups: list[dict[str, Any]],
+    fuzz_run: dict[str, Any],
+) -> str:
+    clean_reproductions = (
         bool(crashes)
         and bool(groups)
-        and all("-oom-" in path.name for path in crashes)
         and all(
             not bool(group.get("reproduced"))
             and (group.get("classification") or {}).get("verdict")
@@ -553,6 +567,20 @@ def _resource_only_false_positive(
             for group in groups
         )
     )
+    if not clean_reproductions:
+        return ""
+    if all("-oom-" in path.name for path in crashes):
+        return "resource_limit"
+    summaries = [
+        str(value).lower()
+        for value in fuzz_run.get("sanitizer_summaries") or []
+        if str(value).strip()
+    ]
+    empty_artifacts = all(path.stat().st_size == 0 for path in crashes)
+    leak_only = bool(summaries) and all("leak" in value for value in summaries)
+    if empty_artifacts and leak_only:
+        return "process_exit_leak"
+    return ""
 
 
 def _classify_group(group: dict[str, Any]) -> dict[str, str]:
