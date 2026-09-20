@@ -168,6 +168,39 @@ class TriageTests(unittest.TestCase):
                 (Path(result["false_positive_archive"]) / timeout.name).is_file()
             )
 
+    def test_mixed_nonreproducing_runtime_artifacts_resume_fuzzing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_id, job_dir = self._fixture(Path(directory), crash=True)
+            crash_dir = job_dir / "crashes" / "fuzz_parser"
+            timeout = crash_dir / "fuzz_parser-timeout-deadbeef"
+            (crash_dir / "crash-1").rename(timeout)
+            empty_leak = crash_dir / "fuzz_parser-crash-empty"
+            empty_leak.write_bytes(b"")
+            artifact = job_dir / "artifacts" / "fuzz-run.json"
+            payload = json.loads(artifact.read_text())
+            payload["crash_files"] = [timeout.name, empty_leak.name]
+            payload["sanitizer_summaries"] = [
+                "ERROR: LeakSanitizer: detected memory leaks",
+                "SUMMARY: libFuzzer: timeout",
+                "SUMMARY: AddressSanitizer: 32 byte(s) leaked in 1 allocation(s).",
+            ]
+            artifact.write_text(json.dumps(payload))
+            with patch.object(runner, "_minimize", return_value=None), patch.object(
+                runner, "_reproduce", return_value=(0, "")
+            ):
+                result = runner.triage(job_id, use_ai=False)
+
+            self.assertTrue(result["auto_resumable_false_positive"])
+            self.assertEqual(
+                result["false_positive_reason"],
+                "mixed_runtime_artifacts_not_reproduced",
+            )
+            self.assertEqual(result["state"]["status"], "ready")
+            self.assertEqual(result["state"]["stage"], "fuzzing")
+            archive = Path(result["false_positive_archive"])
+            self.assertTrue((archive / timeout.name).is_file())
+            self.assertTrue((archive / empty_leak.name).is_file())
+
     def test_probe_finding_uses_the_same_reproduction_pipeline(self):
         with tempfile.TemporaryDirectory() as directory:
             runner, job_id, job_dir = self._fixture(Path(directory), crash=True)

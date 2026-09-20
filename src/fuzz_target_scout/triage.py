@@ -569,20 +569,28 @@ def _auto_resumable_false_positive(
     )
     if not clean_reproductions:
         return ""
-    if all("-oom-" in path.name for path in crashes):
-        return "resource_limit"
-    if all("-timeout-" in path.name for path in crashes):
-        return "timeout_not_reproduced"
     summaries = [
         str(value).lower()
         for value in fuzz_run.get("sanitizer_summaries") or []
         if str(value).strip()
     ]
-    empty_artifacts = all(path.stat().st_size == 0 for path in crashes)
-    leak_only = bool(summaries) and all("leak" in value for value in summaries)
-    if empty_artifacts and leak_only:
-        return "process_exit_leak"
-    return ""
+    known_summary_types = bool(summaries) and all(
+        "leak" in value or "timeout" in value for value in summaries
+    )
+    leak_observed = any("leak" in value for value in summaries)
+    reasons: set[str] = set()
+    for path in crashes:
+        if "-oom-" in path.name:
+            reasons.add("resource_limit")
+        elif "-timeout-" in path.name:
+            reasons.add("timeout_not_reproduced")
+        elif path.stat().st_size == 0 and known_summary_types and leak_observed:
+            reasons.add("process_exit_leak")
+        else:
+            return ""
+    if len(reasons) == 1:
+        return reasons.pop()
+    return "mixed_runtime_artifacts_not_reproduced"
 
 
 def _classify_group(group: dict[str, Any]) -> dict[str, str]:
