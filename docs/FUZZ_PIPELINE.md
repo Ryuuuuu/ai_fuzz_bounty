@@ -254,9 +254,10 @@ CmpLog 보조 실행은 `afl_cmplog_enabled`로 끌 수 있고 `afl_cmplog_secon
 정규화한 스택 지문으로 중복 입력을 묶는다. 검증된 그룹은 별도 UBSan 빌드에서도 한 번
 교차 실행한다. 검증된 그룹만 `validation-handoff.json`에
 포함한다. 재현되지 않은 그룹은 sanitizer 미검출과 불안정한 지문을 구분해 이유를
-기록한다. OOM 산출물이나 종료 시점 LeakSanitizer가 만든 0바이트 산출물이 세 번의
-깨끗한 재현에서 sanitizer 지문을 만들지 않으면 별도 이력으로 보존하고 남은 퍼징 예산을
-자동 재개한다. 다음 `validation` 단계의 Codex에는 입력 바이트나 전체 소스를 보내지 않고
+기록한다. OOM 산출물, 재현되지 않는 timeout, 종료 시점 LeakSanitizer가 만든 0바이트
+산출물이 세 번의 깨끗한 재현에서 sanitizer 지문을 만들지 않으면 별도 이력으로 보존하고
+남은 퍼징 예산을 자동 재개한다. 다음 `validation` 단계의 Codex에는 입력 바이트나 전체
+소스를 보내지 않고
 지문, 프레임, 제한된 소스 구간, 크기와 고정 커밋만 한 번에 전달한다. 생성된 PoC는
 네트워크가 없는 OSS-Fuzz 재현 컨테이너만 실행한다.
 

@@ -571,6 +571,8 @@ def _auto_resumable_false_positive(
         return ""
     if all("-oom-" in path.name for path in crashes):
         return "resource_limit"
+    if all("-timeout-" in path.name for path in crashes):
+        return "timeout_not_reproduced"
     summaries = [
         str(value).lower()
         for value in fuzz_run.get("sanitizer_summaries") or []
