@@ -203,8 +203,30 @@ class PipelineWorker:
                     elif status in {"harness_work_pending", "generation_failed"}:
                         cycles = int((state.get("attempts") or {}).get("harness_generation", 0))
                         if cycles >= int(self.pipeline["max_generation_cycles"]):
+                            error = "harness generation cycle limit reached"
+                            state["status"] = "manual_review"
+                            state["bounded_exhaustion"] = "harness_generation"
+                            state["last_error"] = error
+                            attempts = state.setdefault("attempts", {})
+                            attempts["worker_failures"] = max(
+                                1, int(attempts.get("worker_failures", 0))
+                            )
+                            state["updated_at"] = utc_now()
+                            path = self.runs_root / job_id / "state.json"
+                            temporary = path.with_suffix(".json.tmp")
+                            temporary.write_text(
+                                json.dumps(
+                                    state,
+                                    indent=2,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                                + "\n",
+                                encoding="utf-8",
+                            )
+                            temporary.replace(path)
                             return WorkerResult(
-                                job_id, status, stage, "manual_review", "generation cycle limit reached"
+                                job_id, "manual_review", stage, "manual_review", error
                             )
                         action = "generate"
                         self._serialized(self.runner.generate, job_id)

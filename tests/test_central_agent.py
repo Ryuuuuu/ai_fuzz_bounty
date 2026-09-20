@@ -673,6 +673,48 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(final_state["stage"], "complete")
         self.assertEqual(final_state["status"], "skipped_after_recovery")
 
+    def test_bounded_quartet_exhaustion_only_allows_skip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            state = {
+                "job_id": job.name,
+                "stage": "quartet_gate",
+                "status": "quartet_review_required",
+                "bounded_exhaustion": "quartet_gate",
+                "last_error": (
+                    "Quartet quality gate exhausted its bounded target and repair attempts"
+                ),
+                "attempts": {"worker_failures": 1, "quartet_repair": 2},
+            }
+            (job / "state.json").write_text(json.dumps(state))
+            agent = CentralAgent(config)
+
+            evidence = agent._failure_recovery_evidence(job.name, state)
+            result = agent._apply_failure_recovery(
+                job.name,
+                "skip_target",
+                "The bounded quality repair budget is exhausted.",
+                "deterministic_fallback",
+            )
+            final_state = json.loads((job / "state.json").read_text())
+
+        self.assertTrue(evidence["eligible"])
+        self.assertEqual(evidence["bounded_exhaustion"], "quartet_gate")
+        self.assertEqual(
+            [item["action"] for item in evidence["options"]], ["skip_target"]
+        )
+        self.assertEqual(result["action"], "skip_target")
+        self.assertEqual(final_state["stage"], "complete")
+        self.assertEqual(final_state["status"], "skipped_after_recovery")
+
     def test_dependency_failure_does_not_exclude_a_valid_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

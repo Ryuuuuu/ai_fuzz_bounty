@@ -116,6 +116,37 @@ class PipelineWorkerTests(unittest.TestCase):
             self.assertEqual(state["status"], "manual_review")
             self.assertEqual(state["attempts"]["worker_failures"], 2)
 
+    def test_generation_limit_is_persisted_for_automatic_skip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs,
+                "generation-job",
+                created="2026-01-01T00:00:00Z",
+                stage="fuzzing",
+                status="generation_failed",
+            )
+            state_path = runs / "generation-job" / "state.json"
+            state = json.loads(state_path.read_text())
+            state["attempts"] = {"harness_generation": 2}
+            state_path.write_text(json.dumps(state))
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_generation_cycles": 2}
+            worker.progress = lambda _message: None
+
+            result = worker._advance("generation-job", setup_only=False)
+            final_state = json.loads(state_path.read_text())
+
+        self.assertEqual(result.status, "manual_review")
+        self.assertEqual(result.action, "manual_review")
+        self.assertEqual(final_state["status"], "manual_review")
+        self.assertEqual(
+            final_state["bounded_exhaustion"], "harness_generation"
+        )
+        self.assertEqual(final_state["attempts"]["worker_failures"], 1)
+        self.assertIn("cycle limit", final_state["last_error"])
+
     def test_advance_stops_immediately_for_manual_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)

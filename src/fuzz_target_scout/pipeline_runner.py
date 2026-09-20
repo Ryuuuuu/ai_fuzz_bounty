@@ -451,9 +451,18 @@ class PipelineRunner:
             state["stage"] = "quartet_gate"
             state["status"] = "quartet_repair_pending"
         else:
+            attempts = state.setdefault("attempts", {})
             state["stage"] = "quartet_gate"
             state["status"] = "quartet_review_required"
-        state["last_error"] = None
+            state["bounded_exhaustion"] = "quartet_gate"
+            state["last_error"] = (
+                "Quartet quality gate exhausted its bounded target and repair attempts"
+            )
+            attempts["worker_failures"] = max(
+                1, int(attempts.get("worker_failures", 0))
+            )
+        if state.get("status") != "quartet_review_required":
+            state["last_error"] = None
         state["updated_at"] = utc_now()
         if count_attempt:
             state.setdefault("attempts", {})["quartet_gate"] = (

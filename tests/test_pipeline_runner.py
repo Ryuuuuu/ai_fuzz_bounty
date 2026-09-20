@@ -1627,6 +1627,11 @@ class PipelineRunnerTests(unittest.TestCase):
             runner.progress = lambda _message: None
             result = runner.quartet(job_id)
             self.assertEqual(result["state"]["status"], "quartet_review_required")
+            self.assertEqual(
+                result["state"]["bounded_exhaustion"], "quartet_gate"
+            )
+            self.assertEqual(result["state"]["attempts"]["worker_failures"], 1)
+            self.assertIn("exhausted", result["state"]["last_error"])
             self.assertTrue((artifacts / "quartet-review.json").exists())
 
 

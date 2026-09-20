@@ -1139,8 +1139,16 @@ class CentralAgent:
         stage = str(state.get("stage") or overview.get("stage") or "")
         error = str(state.get("last_error") or overview.get("last_error") or "")
         failures = int((state.get("attempts") or {}).get("worker_failures", 0))
+        bounded_exhaustion = str(state.get("bounded_exhaustion") or "")
+        if status == "quartet_review_required" and stage == "quartet_gate":
+            bounded_exhaustion = bounded_exhaustion or "quartet_gate"
         eligible = (
-            status in {"recovery_pending", "manual_review"}
+            status
+            in {
+                "recovery_pending",
+                "manual_review",
+                "quartet_review_required",
+            }
             and stage in RECOVERABLE_FAILURE_STAGES
             and failures > 0
             and bool(error)
@@ -1169,7 +1177,7 @@ class CentralAgent:
             for item in applied_for_failure
         }
         options: list[dict[str, str]] = []
-        if len(applied_for_failure) < maximum:
+        if not bounded_exhaustion and len(applied_for_failure) < maximum:
             if "retry_stage" not in attempted:
                 options.append(
                     {
@@ -1209,6 +1217,7 @@ class CentralAgent:
             "automatic_recoveries": len(applied_for_failure),
             "maximum_automatic_recoveries": maximum,
             "attempted_for_failure": sorted(attempted),
+            "bounded_exhaustion": bounded_exhaustion,
             "options": options,
         }
 
