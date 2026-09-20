@@ -98,8 +98,6 @@ RECOVERY_MUTABLE_ARTIFACTS = (
 
 
 FINDING_REPORTS = (
-    "triage-summary.json",
-    "validation-agent-report.json",
     "improvement-run.json",
 )
 SECRET_ENVIRONMENT_NAMES = {
@@ -548,6 +546,7 @@ class CentralAgent:
         overview = self._sanitize(pipeline_overview(self.runs_root))
         resource = plan_resources(self.pipeline)
         events = self._finding_events()
+        judgment_events = self._judgment_events()
         deterministic = self._operational_problems(overview)
         evidence = self._health_evidence(
             overview, resource, deterministic, len(events)
@@ -577,11 +576,13 @@ class CentralAgent:
             "ai_decision": decision,
             "ai_usage": usage,
             "pending_finding_events": len(events),
+            "pending_judgment_events": len(judgment_events),
         }
         self._notify_adaptive_outcomes()
         improvements = self._apply_health_improvements(decision, overview)
         record["improvements"] = improvements
         self._notify_findings(events)
+        self._notify_judgments(judgment_events)
         recovered_job_ids = {
             str(item.get("job_id") or "")
             for item in improvements
@@ -1545,13 +1546,26 @@ class CentralAgent:
     def _notify_findings(self, events: list[dict[str, Any]]) -> None:
         if not events:
             return
-        lines = ["🚨 새로운 fuzz 결과가 생성되었습니다."]
+        has_unverified_crash = any(event["kind"] == "crashes" for event in events)
+        lines = [
+            (
+                "🔎 새로운 fuzz 산출물을 감지했습니다 (검증 전)."
+                if has_unverified_crash
+                else "🔎 새로운 fuzz 결과가 생성되었습니다."
+            )
+        ]
         for event in events[:15]:
+            suffix = " / 검증 전" if event["kind"] == "crashes" else ""
             lines.append(
-                f"- {event['kind']} / {event['job_id']} / {event['path']}"
+                f"- {event['kind']} / {event['job_id']} / {event['path']}{suffix}"
             )
         if len(events) > 15:
             lines.append(f"- 그 외 {len(events) - 15}개")
+        if has_unverified_crash:
+            lines.append(
+                "- 이 알림은 취약점 확정이 아닙니다. 자동 재현과 sanitizer 검증 후 "
+                "별도 판정 알림을 보냅니다."
+            )
         delivered, _ = self._notify(
             "finding:" + hashlib.sha256(
                 "|".join(sorted(item["key"] for item in events)).encode()
@@ -1563,6 +1577,75 @@ class CentralAgent:
             keys = list(self.state.get("notified_finding_keys") or [])
             keys.extend(item["key"] for item in events)
             self.state["notified_finding_keys"] = list(dict.fromkeys(keys))[-5000:]
+
+    def _judgment_events(self) -> list[dict[str, Any]]:
+        state_key = "notified_judgment_keys"
+        delivered = set(self.state.get(state_key) or [])
+        first_scan = state_key not in self.state
+        previous_monitor = _parse_time(str(self.state.get("last_monitor_at") or ""))
+        baseline: list[str] = []
+        events: list[dict[str, Any]] = []
+        for job_dir in sorted(self.runs_root.glob("*")):
+            if job_dir.is_symlink() or not (job_dir / "state.json").is_file():
+                continue
+            artifacts = job_dir / "artifacts"
+            for kind, name in (
+                ("triage", "triage-summary.json"),
+                ("validation", "validation-agent-report.json"),
+            ):
+                path = artifacts / name
+                if path.is_symlink() or not path.is_file():
+                    continue
+                value = _optional_json(path)
+                if not value:
+                    continue
+                key = f"judgment:{kind}:{job_dir.name}:{_sha256_file(path)}"
+                if key in delivered:
+                    continue
+                created = _parse_time(str(value.get("created_at") or ""))
+                if first_scan and previous_monitor and created and created <= previous_monitor:
+                    baseline.append(key)
+                    continue
+                events.append(
+                    {
+                        "key": key,
+                        "kind": kind,
+                        "job_id": job_dir.name,
+                        "job_dir": job_dir,
+                        "created_at": str(value.get("created_at") or ""),
+                        "value": value,
+                    }
+                )
+        if first_scan:
+            self.state[state_key] = list(dict.fromkeys([*delivered, *baseline]))[-5000:]
+        return sorted(
+            events,
+            key=lambda item: (
+                item["created_at"],
+                0 if item["kind"] == "triage" else 1,
+                item["job_id"],
+            ),
+        )[:100]
+
+    def _notify_judgments(self, events: list[dict[str, Any]]) -> None:
+        if not events:
+            return
+        delivered_keys = list(self.state.get("notified_judgment_keys") or [])
+        for event in events:
+            if event["kind"] == "triage":
+                message = _triage_judgment_message(
+                    event["job_id"], event["job_dir"], event["value"]
+                )
+            else:
+                message = _validation_judgment_message(
+                    event["job_id"], event["job_dir"], event["value"]
+                )
+            delivered, _ = self._notify(event["key"], message, deduplicate=False)
+            if delivered:
+                delivered_keys.append(event["key"])
+        self.state["notified_judgment_keys"] = list(
+            dict.fromkeys(delivered_keys)
+        )[-5000:]
 
     def _notify(
         self, key: str, message: str, *, deduplicate: bool = True
@@ -1781,6 +1864,132 @@ class CentralAgent:
             )
             handle.flush()
             os.fsync(handle.fileno())
+
+
+def _triage_judgment_message(
+    job_id: str, job_dir: Path, summary: dict[str, Any]
+) -> str:
+    groups = [item for item in summary.get("groups") or [] if isinstance(item, dict)]
+    input_count = int(summary.get("input_crash_count") or len(groups))
+    reproduced = int(
+        summary.get("validated_group_count")
+        if summary.get("validated_group_count") is not None
+        else sum(bool(item.get("reproduced")) for item in groups)
+    )
+    attempt_counts = []
+    signatures = []
+    for group in groups:
+        representative = group.get("representative") or {}
+        attempts = representative.get("reproduction_attempts") or []
+        if attempts:
+            attempt_counts.append(len(attempts))
+        for attempt in attempts:
+            signature = str(attempt.get("signature") or "").strip()
+            if signature:
+                signatures.append(signature)
+    attempts_text = "확인 불가"
+    if attempt_counts:
+        attempts_text = (
+            f"입력당 {attempt_counts[0]}회"
+            if len(set(attempt_counts)) == 1
+            else ", ".join(str(value) for value in attempt_counts[:6]) + "회"
+        )
+    if reproduced:
+        lines = [
+            "🚨 fuzz 트리아지 판정: 재현 가능한 sanitizer 오류",
+            f"- 대상: {job_id}",
+            f"- 감지 입력: {input_count}개",
+            f"- 재현된 오류 그룹: {reproduced}개 ({attempts_text} 검증)",
+            "- 판정: 취약점 가능성이 있어 검증 에이전트로 전달했습니다.",
+        ]
+        if signatures:
+            lines.append(f"- sanitizer 근거: {', '.join(dict.fromkeys(signatures))[:800]}")
+        validation = job_dir / "artifacts" / "validation-agent-report.json"
+        lines.append(
+            "- PoC·영향도 검증: 완료"
+            if validation.is_file()
+            else "- PoC·영향도 검증: 진행 예정"
+        )
+        lines.append("- 자동 제출: 비활성화, 사람 검토 필요")
+        return "\n".join(lines)
+
+    false_positive_reason = str(summary.get("false_positive_reason") or "")
+    if bool(summary.get("auto_resumable_false_positive")):
+        return "\n".join(
+            [
+                "✅ fuzz 트리아지 판정: 취약점 아님 (현재 증거 기준)",
+                f"- 대상: {job_id}",
+                f"- 감지 입력: {input_count}개",
+                f"- 재현: 0개 ({attempts_text} 검증)",
+                "- 근거: 깨끗한 재현에서 동일한 sanitizer 오류가 관찰되지 않았습니다.",
+                f"- 분류: {_false_positive_label(false_positive_reason)}",
+                "- 조치: 산출물을 보관하고 퍼징을 자동 재개했습니다.",
+                "- PoC·취약점 보고서: 생성하지 않음",
+            ]
+        )
+
+    state = _optional_json(job_dir / "state.json")
+    return "\n".join(
+        [
+            "⚠️ fuzz 트리아지 판정: 자동 판정 불가",
+            f"- 대상: {job_id}",
+            f"- 감지 입력: {input_count}개",
+            f"- 재현된 오류 그룹: {reproduced}개 ({attempts_text} 검증)",
+            "- 판정: 취약점 여부를 확정할 근거가 부족합니다.",
+            f"- 조치: {str(state.get('status') or '사람 검토 대기')}",
+            "- 자동 제출: 비활성화",
+        ]
+    )
+
+
+def _validation_judgment_message(
+    job_id: str, job_dir: Path, report: dict[str, Any]
+) -> str:
+    findings = [item for item in report.get("findings") or [] if isinstance(item, dict)]
+    poc = [item for item in report.get("poc_artifacts") or [] if isinstance(item, dict)]
+    lines = [
+        "🚨 AI 취약점 검증 완료: 사람 검토 필요",
+        f"- 대상: {job_id}",
+        f"- 검증된 후보: {len(findings)}개",
+    ]
+    for item in findings[:3]:
+        title = str(item.get("title") or item.get("group_id") or "제목 없음")[:240]
+        confidence = _confidence_label(str(item.get("confidence") or ""))
+        lines.append(f"- 후보: {title} / 신뢰도 {confidence}")
+        impact = str(item.get("impact_assessment") or "").strip()
+        if impact:
+            lines.append(f"  영향도: {impact[:600]}")
+    if len(findings) > 3:
+        lines.append(f"- 그 외 후보 {len(findings) - 3}개")
+    lines.extend(
+        [
+            f"- 비무기화 로컬 PoC: {len(poc)}개 생성",
+            (
+                "- 버그바운티 보고서 초안: 생성 완료"
+                if (job_dir / "artifacts" / "bug-bounty-report-draft.md").is_file()
+                else "- 버그바운티 보고서 초안: 없음"
+            ),
+            "- 자동 제출: 비활성화, 제출 전 사람 검토 필요",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _false_positive_label(reason: str) -> str:
+    return {
+        "timeout_not_reproduced": "일회성 timeout, 깨끗한 환경에서 재현되지 않음",
+        "process_exit_leak": "프로세스 종료 과정의 LeakSanitizer 산출물",
+        "mixed_runtime_artifacts_not_reproduced": (
+            "timeout·종료 누수 혼합 산출물, 모두 재현되지 않음"
+        ),
+        "resource_limit": "환경 자원 한계, sanitizer 취약점 근거 없음",
+    }.get(reason, reason or "재현되지 않은 실행 산출물")
+
+
+def _confidence_label(value: str) -> str:
+    return {"high": "높음", "medium": "중간", "low": "낮음"}.get(
+        value, value or "미정"
+    )
 
 
 def _followup_available(

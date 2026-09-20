@@ -130,6 +130,9 @@ Telegram 값은 환경변수로만 읽으며 Codex 하위 프로세스에는 전
 끝날 때도 다음 대상을 시작하기 전에 결과를 검토한다. 후속 하네스는 기본 10분 probe,
 Quartet 및 coverage 게이트까지 다시 수행한다. 진행 로그는
 `data/central-agent/progress.jsonl`, AI 결정은 `data/central-agent/decisions/`에 남는다.
+원시 crash와 timeout 알림에는 검증 전임을 표시한다. 트리아지 후에는 재현 횟수와
+sanitizer 근거를 포함해 현재 증거상 취약점인지 별도로 알리고, 재현된 오류는 검증
+에이전트가 만든 영향도, 로컬 PoC와 보고서 초안 상태까지 후속 Telegram으로 전달한다.
 
 현재 진행률, coverage, corpus, crash와 정체 상태 확인:
 

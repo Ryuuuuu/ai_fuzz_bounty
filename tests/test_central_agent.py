@@ -226,6 +226,161 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(len(log_lines), 2)
         self.assertEqual(len(messages), 1)
         self.assertIn("crashes/fuzz/crash-1", messages[0])
+        self.assertIn("검증 전", messages[0])
+        self.assertIn("취약점 확정이 아닙니다", messages[0])
+
+    def test_monitor_notifies_false_positive_triage_judgment_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            runs = root / "runs"
+            config["pipeline"]["runs_path"] = str(runs)
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            job = runs / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(json.dumps({"route": {"name": "test"}}))
+            (job / "state.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job.name,
+                        "stage": "fuzzing",
+                        "status": "running",
+                        "updated_at": "2099-01-01T00:00:00Z",
+                    }
+                )
+            )
+            attempts = [
+                {"returncode": 0, "signature": ""},
+                {"returncode": 0, "signature": ""},
+                {"returncode": 0, "signature": ""},
+            ]
+            (artifacts / "triage-summary.json").write_text(
+                json.dumps(
+                    {
+                        "created_at": "2026-01-02T00:00:00Z",
+                        "input_crash_count": 2,
+                        "validated_group_count": 0,
+                        "auto_resumable_false_positive": True,
+                        "false_positive_reason": (
+                            "mixed_runtime_artifacts_not_reproduced"
+                        ),
+                        "groups": [
+                            {
+                                "reproduced": False,
+                                "representative": {
+                                    "reproduction_attempts": attempts,
+                                },
+                            },
+                            {
+                                "reproduced": False,
+                                "representative": {
+                                    "reproduction_attempts": attempts,
+                                },
+                            },
+                        ],
+                    }
+                )
+            )
+            agent = CentralAgent(config)
+            agent.state["last_monitor_at"] = "2026-01-01T00:00:00Z"
+            agent.reviewer.health = lambda _evidence: (
+                {"severity": "healthy", "notify": False, "summary": "정상", "problems": []},
+                {},
+            )
+            messages = []
+            agent.notifier.send = lambda message: (messages.append(message) or True, "ok")
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ):
+                first = agent.monitor("scheduled_check")
+                second = agent.monitor("scheduled_check")
+
+        self.assertEqual(first["pending_judgment_events"], 1)
+        self.assertEqual(second["pending_judgment_events"], 0)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("취약점 아님", messages[0])
+        self.assertIn("재현: 0개 (입력당 3회 검증)", messages[0])
+        self.assertIn("퍼징을 자동 재개", messages[0])
+
+    def test_monitor_notifies_completed_validation_with_poc_and_impact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            runs = root / "runs"
+            config["pipeline"]["runs_path"] = str(runs)
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            job = runs / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(json.dumps({"route": {"name": "test"}}))
+            (job / "state.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job.name,
+                        "stage": "complete",
+                        "status": "ready_for_human",
+                        "updated_at": "2099-01-01T00:00:00Z",
+                    }
+                )
+            )
+            (artifacts / "validation-agent-report.json").write_text(
+                json.dumps(
+                    {
+                        "created_at": "2026-01-02T00:00:00Z",
+                        "findings": [
+                            {
+                                "group_id": "0123456789abcdef",
+                                "title": "Parser heap overflow",
+                                "impact_assessment": "Parser out-of-bounds memory access.",
+                                "confidence": "high",
+                            }
+                        ],
+                        "poc_artifacts": [{"group_id": "0123456789abcdef"}],
+                    }
+                )
+            )
+            (artifacts / "bug-bounty-report-draft.md").write_text("report")
+            agent = CentralAgent(config)
+            agent.state["last_monitor_at"] = "2026-01-01T00:00:00Z"
+            agent.reviewer.health = lambda _evidence: (
+                {"severity": "healthy", "notify": False, "summary": "정상", "problems": []},
+                {},
+            )
+            messages = []
+            agent.notifier.send = lambda message: (messages.append(message) or True, "ok")
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ):
+                record = agent.monitor("scheduled_check")
+
+        self.assertEqual(record["pending_judgment_events"], 1)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("AI 취약점 검증 완료", messages[0])
+        self.assertIn("Parser heap overflow / 신뢰도 높음", messages[0])
+        self.assertIn("Parser out-of-bounds memory access", messages[0])
+        self.assertIn("로컬 PoC: 1개 생성", messages[0])
+        self.assertIn("보고서 초안: 생성 완료", messages[0])
 
     def test_ai_incident_key_ignores_wording_changes_for_same_problem(self):
         first = {
