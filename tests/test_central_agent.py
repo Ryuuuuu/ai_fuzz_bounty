@@ -1067,6 +1067,56 @@ class CentralAgentTests(unittest.TestCase):
         )
         self.assertEqual(result["completed_batches"], 2)
 
+    def test_restart_resumes_runnable_job_before_refreshing_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            agent.state["batch_count"] = 99
+            allocation = ResourceAllocation(
+                1,
+                2,
+                1920,
+                768,
+                1,
+                1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            order = []
+            agent._runnable_jobs = lambda: [{"job_id": "job-1"}]
+            agent._refresh_candidates_if_due = lambda: order.append("discover")
+            agent._choose_capacity = lambda _count: (allocation, {})
+            agent._run_monitored_batch = lambda _worker, _jobs, _capacity: (
+                order.append("run")
+                or [WorkerResult("job-1", "exhausted", "complete", "fuzz")]
+            )
+            agent._review_cycle = lambda _results, _allocation: {
+                "campaign_action": "continue",
+                "summary": "done",
+                "jobs": [],
+            }
+            agent._apply_cycle_improvements = lambda _review, _results: []
+            agent.monitor = lambda _reason: {}
+
+            class FakeWorker:
+                _non_fuzz_lock = None
+
+            with patch(
+                "fuzz_target_scout.central_agent.PipelineWorker",
+                return_value=FakeWorker(),
+            ):
+                result = agent.run(max_batches=1, discovery=True)
+
+        self.assertEqual(order, ["run"])
+        self.assertEqual(result["completed_batches"], 1)
+
     def test_followup_harness_requires_terminal_gap_and_available_budget(self):
         state = {
             "status": "exhausted",

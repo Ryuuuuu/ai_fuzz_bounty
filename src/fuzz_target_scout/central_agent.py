@@ -455,7 +455,7 @@ class CentralAgent:
                     if max_batches and completed_batches >= max_batches:
                         break
                     runnable = self._runnable_jobs()
-                    discovery_after_batch = int(self.state.get("batch_count") or 0) > 0
+                    discovery_after_batch = completed_batches > 0
                     if discovery and (not runnable or discovery_after_batch):
                         self._refresh_candidates_if_due()
                         runnable = self._runnable_jobs()
