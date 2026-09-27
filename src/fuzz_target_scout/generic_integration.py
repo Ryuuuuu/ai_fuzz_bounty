@@ -377,7 +377,16 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
         and path.is_file()
         and path.suffix.casefold() in HEADER_SUFFIXES
     )
+    excluded_directories = {
+        "bench", "benchmark", "benchmarks", "examples", "test", "tests",
+        "third_party", "third-party", "tools", "vendor",
+    }
     for path in sorted(headers, key=lambda item: _public_header_rank(source, item)):
+        relative_parts = {
+            part.casefold() for part in path.relative_to(source).parts[:-1]
+        }
+        if relative_parts & excluded_directories:
+            continue
         try:
             if path.stat().st_size > 300_000:
                 continue

@@ -207,6 +207,15 @@ class PipelineTests(unittest.TestCase):
                 third.skip_reasons, {"repository_failure_cooldown": 1}
             )
 
+    def test_recent_success_opens_a_repository_diversity_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {**CONFIG, "repository_success_cooldown_hours": 168}
+            first = prepare_jobs([candidate(commit="b" * 40)], directory, config, LOCK)
+            self._complete_job(Path(directory) / first.job_ids[0], "exhausted")
+            second = prepare_jobs([candidate(commit="c" * 40)], directory, config, LOCK)
+            self.assertEqual(second.created, 0)
+            self.assertEqual(second.skip_reasons, {"repository_success_cooldown": 1})
+
     def test_successful_repository_run_resets_failure_sequence(self):
         with tempfile.TemporaryDirectory() as directory:
             config = {

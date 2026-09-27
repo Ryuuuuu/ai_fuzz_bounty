@@ -612,6 +612,7 @@ class CentralAgent:
             "pending_judgment_events": len(judgment_events),
         }
         self._notify_adaptive_outcomes()
+        self._notify_campaign_rotations()
         improvements = self._apply_health_improvements(decision, overview)
         record["improvements"] = improvements
         self._notify_findings(events)
@@ -1556,6 +1557,28 @@ class CentralAgent:
                     f"- 결과: {_strategy_status_label(status)}\n"
                     f"- 세부 내용: {str(item.get('outcome') or '')[:800]}",
                 )
+
+    def _notify_campaign_rotations(self) -> None:
+        for job_dir in sorted(self.runs_root.glob("*")):
+            artifact = job_dir / "artifacts" / "campaign-yield.json"
+            if job_dir.is_symlink() or not artifact.is_file():
+                continue
+            try:
+                decision = json.loads(artifact.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            metrics = decision.get("metrics") or {}
+            reason = str(decision.get("reason") or "low_yield")
+            label = "도달 범위가 너무 얕음" if reason == "shallow_reach" else "커버리지 증가 정체"
+            self._notify(
+                f"campaign_rotation:{job_dir.name}:{decision.get('created_at')}",
+                "🔄 저수익 퍼징 대상을 자동 교체했습니다.\n"
+                f"- 대상: {job_dir.name}\n"
+                f"- 이유: {label}\n"
+                f"- 실행 시간: {float(metrics.get('completed_seconds') or 0) / 3600:.1f}시간\n"
+                f"- 엣지: {metrics.get('baseline_edges', 0)} → {metrics.get('best_edges', 0)}\n"
+                f"- 마지막 증가 이후: {float(metrics.get('trailing_stagnation_seconds') or 0) / 3600:.1f}시간",
+            )
 
     def _operational_problems(
         self, overview: dict[str, Any]

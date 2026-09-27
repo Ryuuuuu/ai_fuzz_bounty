@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
     _build_script,
@@ -34,6 +35,16 @@ class GenericIntegrationTests(unittest.TestCase):
 
         self.assertEqual(candidate["file"], "include/api.h")
         self.assertIn("parse_bytes", candidate["signature"])
+
+    def test_benchmark_only_header_is_not_used_as_a_public_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "benchmarks").mkdir()
+            (source / "benchmarks" / "helper.h").write_text(
+                "int benchmark_helper(const unsigned char* data);\n"
+            )
+            with self.assertRaisesRegex(PipelineError, "no existing harness"):
+                _select_public_candidate(source)
 
     def test_prefers_simple_public_harness_over_static_only_harness(self):
         with tempfile.TemporaryDirectory() as directory:

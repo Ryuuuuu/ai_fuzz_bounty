@@ -48,7 +48,9 @@ corpus의 증거는 삭제하지 않는다. 작업 전체가 `job_disk_limit_mb`
 
 같은 저장소에서 `repository_failure_threshold`번 연속으로 빌드·통합 실패가 끝나면
 `repository_failure_cooldown_hours` 동안 새 커밋을 큐에 넣지 않는다. 이미 큐에 있는
-미시작 작업도 `skipped_repository_cooldown`으로 완료하여 다음 저장소를 탐색한다.
+미시작 작업도 `skipped_repository_cooldown`으로 완료하여 다음 저장소를 탐색한다. 성공적으로 예산을 소진했거나 저수익으로 종료한 저장소도 `repository_success_cooldown_hours` 동안 다시 선택하지 않아 동일 코드 반복을 막는다.
+
+`low_yield_rotation_enabled`가 켜져 있으면 최소 2시간 관찰 뒤 `low_yield_min_coverage_edges`보다 얕고 edge 증가가 기준보다 작은 작업을 종료한다. 도달 범위가 충분해도 edge와 feature가 6시간 동안 함께 늘지 않으면 조기 전환한다. 판정 근거는 `artifacts/campaign-yield.json`에 남고 중앙 에이전트가 Telegram으로 알린다.
 
 `dashboard --json`은 자동화가 읽을 수 있는 상태를 출력한다. 일반 화면에는 작업 단계,
 24시간 예산 진행률, 남은 시간, 처리량, crash 수, 검증 상태와 디스크 사용량이 표시된다.
