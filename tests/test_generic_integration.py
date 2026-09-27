@@ -116,6 +116,74 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("15a6644ba1c45f1acc16ac1e883efc3e56c6bed2", dockerfile)
         self.assertNotIn("attacker_controlled", dockerfile)
 
+    def test_meson_required_dependencies_use_reviewed_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            nested = source / "meson" / "lua"
+            nested.mkdir(parents=True)
+            (source / "meson.build").write_text(
+                "dependency('libssl', required: true)\n"
+                "dependency('attacker-controlled', required: true)\n"
+            )
+            (nested / "meson.build").write_text(
+                "dep_lua = dependency('lua5.4', required: false)\n"
+                "error('No Lua implementation was found')\n"
+            )
+
+            dependencies = _detect_system_dependencies(source, "meson")
+            dockerfile = _dockerfile("meson", "ubuntu:24.04", dependencies)
+
+        self.assertEqual(dependencies, ["liblua5.4-dev", "libssl-dev"])
+        self.assertIn("liblua5.4-dev libssl-dev", dockerfile)
+        self.assertNotIn("attacker-controlled", dockerfile)
+
+    def test_build_feedback_adds_only_reviewed_system_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            artifacts = root / "artifacts"
+            for path in (source, project, artifacts):
+                path.mkdir(parents=True)
+            (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+            (project / "generic_harness.cc").write_text(
+                "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, "
+                "unsigned long) { return 0; }\n"
+            )
+            record = {
+                "project": "fts-test",
+                "build_system": "meson",
+                "execution_mode": "native_container",
+                "base_image": "ubuntu:24.04",
+                "candidate": {"file": "fuzz.cc"},
+                "harness_origin": "existing:fuzz.cc",
+                "system_dependencies": [],
+                "source_dependencies": [],
+                "repair_attempts": [],
+            }
+            (artifacts / "generic-integration.json").write_text(
+                __import__("json").dumps(record)
+            )
+
+            result = repair_generic_harness(
+                job_dir=root,
+                source=source,
+                project_dir=project,
+                pipeline={},
+                build_error="meson/lua/meson.build:43:2: ERROR: No Lua implementation was found",
+                attempt=1,
+            )
+
+            saved = __import__("json").loads(
+                (artifacts / "generic-integration.json").read_text()
+            )
+            dockerfile = (project / "Dockerfile").read_text()
+        self.assertEqual(result["repair_kind"], "deterministic_system_dependency")
+        self.assertEqual(result["added_system_dependencies"], ["liblua5.4-dev"])
+        self.assertTrue(result["requires_clean_build"])
+        self.assertEqual(saved["system_dependencies"], ["liblua5.4-dev"])
+        self.assertIn("liblua5.4-dev", dockerfile)
+
     def test_prefers_first_party_harness_over_vendored_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

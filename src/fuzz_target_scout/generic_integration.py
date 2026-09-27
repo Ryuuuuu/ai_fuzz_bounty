@@ -39,6 +39,26 @@ CMAKE_SYSTEM_DEPENDENCIES = {
     "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
     "zlib": ("zlib1g-dev",),
 }
+MESON_SYSTEM_DEPENDENCIES = {
+    "bzip2": ("libbz2-dev",),
+    "libcurl": ("libcurl4-openssl-dev",),
+    "libpcre2-8": ("libpcre2-dev",),
+    "libsodium": ("libsodium-dev",),
+    "libssl": ("libssl-dev",),
+    "lua": ("liblua5.4-dev",),
+    "lua5.4": ("liblua5.4-dev",),
+    "openssl": ("libssl-dev",),
+    "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
+    "sqlite3": ("libsqlite3-dev",),
+    "yaml-0.1": ("libyaml-dev",),
+    "zlib": ("zlib1g-dev",),
+}
+REVIEWED_SYSTEM_PACKAGES = frozenset(
+    package
+    for mapping in (CMAKE_SYSTEM_DEPENDENCIES, MESON_SYSTEM_DEPENDENCIES)
+    for packages in mapping.values()
+    for package in packages
+)
 CMAKE_SOURCE_DEPENDENCIES = {
     "absl": {
         "url": "https://github.com/abseil/abseil-cpp.git",
@@ -163,6 +183,36 @@ def repair_generic_harness(
 ) -> dict[str, Any]:
     record_path = job_dir / "artifacts" / "generic-integration.json"
     record = _read_json(record_path)
+    inferred_dependencies = _infer_system_dependencies_from_build_error(build_error)
+    current_dependencies = set(record.get("system_dependencies") or ())
+    added_dependencies = sorted(inferred_dependencies - current_dependencies)
+    if added_dependencies:
+        current_dependencies.update(added_dependencies)
+        native_base_image = None
+        if record.get("execution_mode") == "native_container":
+            native_base_image = str(record.get("base_image") or "ubuntu:24.04")
+        dockerfile = _dockerfile(
+            str(record["build_system"]),
+            native_base_image,
+            sorted(current_dependencies),
+            tuple(record.get("source_dependencies") or ()),
+        )
+        dockerfile_path = project_dir / "Dockerfile"
+        dockerfile_path.write_text(dockerfile, encoding="utf-8")
+        item = {
+            "attempt": attempt,
+            "created_at": utc_now(),
+            "ai_usage": {},
+            "repair_kind": "deterministic_system_dependency",
+            "added_system_dependencies": added_dependencies,
+            "requires_clean_build": True,
+            "build_error_sha256": hashlib.sha256(build_error.encode()).hexdigest(),
+        }
+        record["system_dependencies"] = sorted(current_dependencies)
+        record["dockerfile_sha256"] = hashlib.sha256(dockerfile.encode()).hexdigest()
+        record.setdefault("repair_attempts", []).append(item)
+        _write_json(record_path, record)
+        return item
     candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin", ""))
     if harness_origin.startswith("existing:"):
@@ -431,10 +481,18 @@ def _public_header_rank(source: Path, path: Path) -> tuple[int, int, int, str]:
 
 
 def _detect_system_dependencies(source: Path, build_system: str) -> list[str]:
-    packages = _declared_cmake_packages(source) if build_system == "cmake" else set()
+    if build_system == "cmake":
+        packages = _declared_cmake_packages(source)
+        mapping = CMAKE_SYSTEM_DEPENDENCIES
+    elif build_system == "meson":
+        packages = _declared_required_meson_packages(source)
+        mapping = MESON_SYSTEM_DEPENDENCIES
+    else:
+        packages = set()
+        mapping = {}
     dependencies: set[str] = set()
     for package in packages:
-        dependencies.update(CMAKE_SYSTEM_DEPENDENCIES.get(package, ()))
+        dependencies.update(mapping.get(package, ()))
     return sorted(dependencies)
 
 
@@ -496,6 +554,59 @@ def _cmake_metadata_text(source: Path) -> str:
     return "\n".join(chunks)
 
 
+def _declared_required_meson_packages(source: Path) -> set[str]:
+    text = _meson_metadata_text(source)
+    packages = {
+        match.group(1).casefold()
+        for match in re.finditer(
+            r"\bdependency\s*\(\s*['\"]([A-Za-z0-9_+.-]+)['\"]"
+            r"(?:(?!\)).){0,500}?\brequired\s*:\s*true",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+    }
+    lowered = text.casefold()
+    if "no lua implementation was found" in lowered:
+        packages.add("lua5.4")
+    return packages
+
+
+def _meson_metadata_text(source: Path) -> str:
+    files = [
+        path
+        for path in sorted(source.rglob("meson.build"))
+        if path.is_file() and not path.is_symlink()
+    ]
+    chunks: list[str] = []
+    total_bytes = 0
+    for path in files[:100]:
+        try:
+            size = path.stat().st_size
+            if size > 250_000 or total_bytes + size > 1_000_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        total_bytes += size
+        chunks.append(text)
+    return "\n".join(chunks)
+
+
+def _infer_system_dependencies_from_build_error(build_error: str) -> set[str]:
+    error = build_error.casefold()
+    dependencies: set[str] = set()
+    if "no lua implementation was found" in error:
+        dependencies.add("liblua5.4-dev")
+    for dependency, packages in MESON_SYSTEM_DEPENDENCIES.items():
+        escaped = re.escape(dependency.casefold())
+        if re.search(
+            rf"error:\s+dependency\s+['\"]{escaped}['\"]\s+not\s+found",
+            error,
+        ):
+            dependencies.update(packages)
+    return dependencies & REVIEWED_SYSTEM_PACKAGES
+
+
 def _dockerfile(
     build_system: str,
     native_base_image: str | None = None,
@@ -514,12 +625,7 @@ def _dockerfile(
         {
             dependency
             for dependency in system_dependencies
-            if dependency
-            in {
-                package
-                for packages in CMAKE_SYSTEM_DEPENDENCIES.values()
-                for package in packages
-            }
+            if dependency in REVIEWED_SYSTEM_PACKAGES
         }
     )
     dependency_packages = (

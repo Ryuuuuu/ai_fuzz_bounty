@@ -2508,7 +2508,7 @@ class PipelineRunner:
                 if attempt >= maximum:
                     raise
                 error = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
-                repair_generic_harness(
+                repair = repair_generic_harness(
                     job_dir=job_dir,
                     source=build_source,
                     project_dir=project_dir,
@@ -2525,12 +2525,13 @@ class PipelineRunner:
                     log_path,
                     timeout=timeout,
                 )
-                build_command = [
-                    *build_command[:-2],
-                    "-e",
-                    "FUZZ_REUSE_BUILD=1",
-                    *build_command[-2:],
-                ]
+                if not repair.get("requires_clean_build"):
+                    build_command = [
+                        *build_command[:-2],
+                        "-e",
+                        "FUZZ_REUSE_BUILD=1",
+                        *build_command[-2:],
+                    ]
         fuzzers = sorted(
             path.name
             for path in out_dir.iterdir()
