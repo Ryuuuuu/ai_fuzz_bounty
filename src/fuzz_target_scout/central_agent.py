@@ -31,6 +31,7 @@ from .engine import ScoutEngine
 from .operations import pipeline_overview
 from .pipeline import (
     PipelineError,
+    PipelineInterrupted,
     job_status,
     load_jsonl,
     load_oss_fuzz_support_index,
@@ -458,6 +459,8 @@ class CentralAgent:
                     discovery_after_batch = completed_batches > 0
                     if discovery and (not runnable or discovery_after_batch):
                         self._refresh_candidates_if_due()
+                        if self.stop_event.is_set():
+                            break
                         runnable = self._runnable_jobs()
                     if not runnable:
                         monitor = self.monitor("idle")
@@ -1742,7 +1745,12 @@ class CentralAgent:
             return
         self.progress("central agent refreshing fuzz target candidates")
         try:
-            engine = ScoutEngine(self.config, progress=self.progress)
+            def discovery_progress(message: str) -> None:
+                self.progress(message)
+                if self.stop_event.is_set():
+                    raise PipelineInterrupted("candidate discovery interrupted")
+
+            engine = ScoutEngine(self.config, progress=discovery_progress)
             try:
                 limit = int(self.agent["discovery_limit"])
                 summary = engine.scan(
@@ -1761,6 +1769,9 @@ class CentralAgent:
                 "verified": summary.verified,
                 "errors": summary.errors,
             }
+            self._save_state()
+        except PipelineInterrupted:
+            self.state["last_discovery_interrupted_at"] = utc_now()
             self._save_state()
         except Exception as exc:
             self.state["last_discovery_error"] = str(exc)[:1000]

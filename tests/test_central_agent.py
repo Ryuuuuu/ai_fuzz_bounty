@@ -1067,6 +1067,48 @@ class CentralAgentTests(unittest.TestCase):
         )
         self.assertEqual(result["completed_batches"], 2)
 
+    def test_candidate_discovery_honors_stop_without_failure_alert(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["pipeline"]["input_path"] = str(root / "candidates.jsonl")
+            config["storage"]["database_path"] = str(root / "scout.sqlite3")
+            config["storage"]["export_path"] = str(root / "candidates.jsonl")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            messages = []
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True,
+                "ok",
+            )
+
+            class FakeEngine:
+                def __init__(self, _config, progress):
+                    self.progress = progress
+
+                def scan(self, **_kwargs):
+                    agent.stop()
+                    self.progress("discovery checkpoint")
+                    raise AssertionError("stop-aware progress should interrupt")
+
+                def close(self):
+                    pass
+
+            with patch(
+                "fuzz_target_scout.central_agent.ScoutEngine", FakeEngine
+            ):
+                agent._refresh_candidates_if_due()
+
+        self.assertIn("last_discovery_interrupted_at", agent.state)
+        self.assertNotIn("last_discovery_error", agent.state)
+        self.assertEqual(messages, [])
+
     def test_restart_resumes_runnable_job_before_refreshing_candidates(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
