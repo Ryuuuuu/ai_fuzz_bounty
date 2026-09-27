@@ -13,6 +13,11 @@ from .architecture import resolve_host_architecture
 
 COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 CPP_LANGUAGES = {"c", "c++", "cpp"}
+REPOSITORY_FAILURE_STATUSES = {
+    "skipped_after_recovery",
+    "unsupported_integration",
+}
+REPOSITORY_SUCCESS_STATUSES = {"exhausted", "ready_for_human"}
 
 
 class PipelineError(RuntimeError):
@@ -74,6 +79,7 @@ def prepare_jobs(
     reasons: Counter[str] = Counter()
     job_ids: list[str] = []
     planned_repositories = _planned_repositories(root)
+    blocked_repositories = repository_failure_cooldowns(root, pipeline_config)
 
     queued = list(candidates)
     architecture_config = pipeline_config.get("architecture")
@@ -103,6 +109,9 @@ def prepare_jobs(
             existing += 1
             continue
         repository = str((work_order.get("source") or {}).get("repository") or "")
+        if repository.casefold() in blocked_repositories:
+            reasons["repository_failure_cooldown"] += 1
+            continue
         if repository.casefold() in planned_repositories:
             reasons["repository_already_planned"] += 1
             continue
@@ -164,6 +173,130 @@ def _planned_repositories(runs_root: Path) -> set[str]:
         if repository:
             repositories.add(repository.casefold())
     return repositories
+
+
+def repository_failure_cooldowns(
+    runs_root: str | Path,
+    pipeline_config: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return repositories whose latest completed jobs repeatedly failed.
+
+    A successful completed run resets the consecutive failure sequence. Jobs
+    skipped because the circuit was already open do not extend the cooldown.
+    """
+    threshold = max(
+        0, int(pipeline_config.get("repository_failure_threshold", 2))
+    )
+    cooldown_hours = max(
+        0, int(pipeline_config.get("repository_failure_cooldown_hours", 168))
+    )
+    if threshold == 0 or cooldown_hours == 0:
+        return {}
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    histories: dict[str, list[tuple[datetime, str, str]]] = {}
+    root = Path(runs_root)
+    if not root.is_dir() or root.is_symlink():
+        return {}
+    for job_path in root.glob("*/job.json"):
+        state_path = job_path.with_name("state.json")
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if state.get("stage") != "complete":
+            continue
+        repository = str((job.get("source") or {}).get("repository") or "")
+        if not repository:
+            continue
+        observed = _pipeline_timestamp(str(state.get("updated_at") or ""))
+        if observed is None:
+            try:
+                observed = datetime.fromtimestamp(
+                    state_path.stat().st_mtime, timezone.utc
+                )
+            except OSError:
+                continue
+        histories.setdefault(repository.casefold(), []).append(
+            (observed, str(state.get("status") or ""), job_path.parent.name)
+        )
+
+    blocked: dict[str, dict[str, Any]] = {}
+    for repository, entries in histories.items():
+        consecutive: list[tuple[datetime, str, str]] = []
+        for entry in sorted(entries, reverse=True):
+            status = entry[1]
+            if status in REPOSITORY_SUCCESS_STATUSES:
+                break
+            if status in REPOSITORY_FAILURE_STATUSES:
+                consecutive.append(entry)
+                continue
+            if status == "skipped_repository_cooldown":
+                continue
+            break
+        if len(consecutive) < threshold:
+            continue
+        newest = consecutive[0][0]
+        age_seconds = max(0.0, (current - newest).total_seconds())
+        if age_seconds >= cooldown_hours * 3600:
+            continue
+        blocked[repository] = {
+            "failure_count": len(consecutive),
+            "newest_failure_at": newest.isoformat(),
+            "cooldown_until": datetime.fromtimestamp(
+                newest.timestamp() + cooldown_hours * 3600, timezone.utc
+            ).isoformat(),
+            "job_ids": [entry[2] for entry in consecutive],
+        }
+    return blocked
+
+
+def quarantine_repository_cooldown_jobs(
+    runs_root: str | Path, pipeline_config: dict[str, Any]
+) -> list[str]:
+    """Finish untouched queued jobs for repositories with an open circuit."""
+    root = Path(runs_root)
+    blocked = repository_failure_cooldowns(root, pipeline_config)
+    quarantined: list[str] = []
+    for state_path in root.glob("*/state.json"):
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            job = json.loads(
+                state_path.with_name("job.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+        if state.get("stage") != "policy_recheck" or state.get("status") != "queued":
+            continue
+        repository = str(
+            (job.get("source") or {}).get("repository") or ""
+        ).casefold()
+        detail = blocked.get(repository)
+        if not detail:
+            continue
+        state["stage"] = "complete"
+        state["status"] = "skipped_repository_cooldown"
+        state["last_error"] = (
+            "repository circuit open after "
+            f"{detail['failure_count']} consecutive failed jobs"
+        )
+        state["repository_cooldown"] = detail
+        state["updated_at"] = utc_now()
+        _write_json(state_path, state)
+        quarantined.append(state_path.parent.name)
+    return sorted(quarantined)
+
+
+def _pipeline_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def make_work_order(

@@ -36,6 +36,7 @@ from .pipeline import (
     load_oss_fuzz_support_index,
     load_toolchain_lock,
     prepare_jobs,
+    quarantine_repository_cooldown_jobs,
     utc_now,
 )
 from .pipeline_worker import MANUAL_STATUSES, PipelineWorker, WorkerResult
@@ -72,6 +73,12 @@ RESTARTABLE_FAILURE_STAGES = {
     "quartet_gate",
     "coverage_analysis",
     "fuzzing",
+}
+HISTORICAL_JOB_STATUSES = {
+    "exhausted",
+    "skipped_after_recovery",
+    "skipped_repository_cooldown",
+    "unsupported_integration",
 }
 RECOVERY_STAGE_STATUS = {
     "source_checkout": "preparing",
@@ -340,6 +347,10 @@ class TelegramNotifier:
         self.token_env = str(self.agent["telegram_token_env"])
         self.chat_env = str(self.agent["telegram_chat_id_env"])
         self.timeout = int(self.agent["telegram_timeout_seconds"])
+        self.attempts = max(1, int(self.agent.get("telegram_retry_attempts", 3)))
+        self.backoff = max(
+            0, int(self.agent.get("telegram_retry_backoff_seconds", 2))
+        )
 
     @property
     def configured(self) -> bool:
@@ -367,14 +378,22 @@ class TelegramNotifier:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                value = json.load(response)
-        except (OSError, ValueError) as exc:
-            return False, f"telegram request failed: {type(exc).__name__}"
-        if not isinstance(value, dict) or value.get("ok") is not True:
-            return False, "telegram API rejected the message"
-        return True, "delivered"
+        last_error = "unknown error"
+        for attempt in range(self.attempts):
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    value = json.load(response)
+            except (OSError, ValueError) as exc:
+                last_error = type(exc).__name__
+                if attempt + 1 < self.attempts and self.backoff:
+                    time.sleep(self.backoff * (2**attempt))
+                continue
+            if not isinstance(value, dict) or value.get("ok") is not True:
+                return False, "telegram API rejected the message"
+            return True, "delivered"
+        return False, (
+            f"telegram request failed after {self.attempts} attempts: {last_error}"
+        )
 
 
 class CentralAgent:
@@ -571,7 +590,7 @@ class CentralAgent:
             "created_at": utc_now(),
             "reason": reason,
             "resources": resource.as_dict(),
-            "overview": overview,
+            "overview": _health_log_overview(overview),
             "deterministic_problems": deterministic,
             "ai_decision": decision,
             "ai_usage": usage,
@@ -613,33 +632,55 @@ class CentralAgent:
         if adaptive_handling:
             notification_transition = "adaptive_handling"
         elif should_notify:
-            lines = ["⚠️ AI fuzz 중앙 상태 경고", str(decision.get("summary") or "")]
-            for item in remaining_deterministic[:6]:
-                lines.append(
-                    f"- {item.get('job_id', 'system')}: {item.get('reason', '')}"
-                )
-            health_key = _health_incident_key(remaining_deterministic, decision)
             active = self.state.get("active_health_incident") or {}
-            if active.get("key") != health_key or not active.get("alert_delivered"):
-                delivered, detail = self._notify(
-                    f"health_incident:{health_key}",
-                    "\n".join(lines),
-                    deduplicate=False,
-                )
-                self.state["active_health_incident"] = {
-                    "key": health_key,
-                    "started_at": (
-                        active.get("started_at")
-                        if active.get("key") == health_key
-                        else record["created_at"]
-                    ),
-                    "alert_delivered": delivered,
-                    "delivery_detail": detail,
-                    "summary": str(decision.get("summary") or "")[:1000],
-                }
-                notification_transition = "alerted" if delivered else "alert_failed"
+            source = "deterministic" if remaining_deterministic else "ai"
+            severity = str(decision.get("severity") or "warning")
+            cooldown = int(self.agent.get("health_alert_cooldown_seconds", 7200))
+            if _health_alert_in_cooldown(active, source, severity, cooldown):
+                active["suppressed_count"] = int(
+                    active.get("suppressed_count") or 0
+                ) + 1
+                active["last_suppressed_at"] = record["created_at"]
+                active["last_suppressed_summary"] = str(
+                    decision.get("summary") or ""
+                )[:1000]
+                self.state["active_health_incident"] = active
+                notification_transition = "cooldown_suppressed"
             else:
-                notification_transition = "duplicate_suppressed"
+                lines = [
+                    "⚠️ AI fuzz 중앙 상태 경고",
+                    str(decision.get("summary") or ""),
+                ]
+                for item in remaining_deterministic[:6]:
+                    lines.append(
+                        f"- {item.get('job_id', 'system')}: {item.get('reason', '')}"
+                    )
+                health_key = _health_incident_key(
+                    remaining_deterministic, decision
+                )
+                if active.get("key") != health_key or not active.get("alert_delivered"):
+                    delivered, detail = self._notify(
+                        f"health_incident:{health_key}",
+                        "\n".join(lines),
+                        deduplicate=False,
+                    )
+                    self.state["active_health_incident"] = {
+                        "key": health_key,
+                        "started_at": (
+                            active.get("started_at")
+                            if active.get("key") == health_key
+                            else record["created_at"]
+                        ),
+                        "alert_delivered": delivered,
+                        "delivery_detail": detail,
+                        "summary": str(decision.get("summary") or "")[:1000],
+                        "source": source,
+                        "severity": severity,
+                        "last_alert_at": record["created_at"],
+                    }
+                    notification_transition = "alerted" if delivered else "alert_failed"
+                else:
+                    notification_transition = "duplicate_suppressed"
         else:
             active = self.state.get("active_health_incident") or {}
             if active.get("key") and active.get("alert_delivered"):
@@ -994,8 +1035,13 @@ class CentralAgent:
         problems: list[dict[str, str]],
         pending_events: int,
     ) -> dict[str, Any]:
+        active_jobs = [
+            item
+            for item in overview["jobs"]
+            if str(item.get("status") or "") not in HISTORICAL_JOB_STATUSES
+        ]
         jobs = sorted(
-            overview["jobs"],
+            active_jobs,
             key=lambda item: (
                 str(item.get("status")) not in {"running", "ready"},
                 str(item.get("updated_at") or ""),
@@ -1038,7 +1084,11 @@ class CentralAgent:
             "checkpoint_seconds": int(self.pipeline["fuzz_checkpoint_seconds"]),
             "monitor_interval_seconds": int(self.agent["monitor_interval_seconds"]),
             "resources": resource.as_dict(),
-            "status_counts": overview["status_counts"],
+            "status_counts": _active_status_counts(overview),
+            "historical_outcomes": _historical_status_counts(overview),
+            "historical_outcomes_note": (
+                "Completed historical outcomes are informational, not current incidents."
+            ),
             "total_disk_bytes": overview["total_disk_bytes"],
             "jobs": jobs,
             "deltas": deltas,
@@ -1774,6 +1824,19 @@ class CentralAgent:
         self._save_state()
 
     def _runnable_jobs(self) -> list[dict[str, Any]]:
+        quarantined = quarantine_repository_cooldown_jobs(
+            self.runs_root, self.pipeline
+        )
+        if quarantined:
+            self.state["last_repository_quarantine"] = {
+                "created_at": utc_now(),
+                "job_ids": quarantined,
+            }
+            self._save_state()
+            self.progress(
+                "repository failure cooldown quarantined queued jobs: "
+                + ", ".join(quarantined)
+            )
         overview = pipeline_overview(self.runs_root)
         return [
             item
@@ -2210,10 +2273,73 @@ def _adaptive_stall_is_being_handled(
     return True
 
 
+def _active_status_counts(overview: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in overview.get("jobs") or []:
+        status = str(item.get("status") or "unknown")
+        if status in HISTORICAL_JOB_STATUSES:
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _historical_status_counts(overview: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in overview.get("jobs") or []:
+        status = str(item.get("status") or "unknown")
+        if status not in HISTORICAL_JOB_STATUSES:
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _health_log_overview(overview: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": overview.get("schema_version", 1),
+        "created_at": overview.get("created_at"),
+        "runs_root": overview.get("runs_root"),
+        "job_count": overview.get("job_count", 0),
+        "status_counts": _active_status_counts(overview),
+        "historical_outcomes": _historical_status_counts(overview),
+        "total_disk_bytes": overview.get("total_disk_bytes", 0),
+        "jobs": [
+            item
+            for item in overview.get("jobs") or []
+            if str(item.get("status") or "") not in HISTORICAL_JOB_STATUSES
+        ],
+    }
+
+
+def _health_alert_in_cooldown(
+    active: dict[str, Any], source: str, severity: str, cooldown_seconds: int
+) -> bool:
+    if (
+        cooldown_seconds <= 0
+        or not active.get("alert_delivered")
+        or active.get("source") != "ai"
+        or source != "ai"
+    ):
+        return False
+    ranks = {"healthy": 0, "info": 0, "warning": 1, "critical": 2}
+    previous_rank = ranks.get(str(active.get("severity") or "warning"), 1)
+    current_rank = ranks.get(severity, 1)
+    if current_rank > previous_rank:
+        return False
+    observed = _parse_time(
+        str(active.get("last_alert_at") or active.get("started_at") or "")
+    )
+    if observed is None:
+        return False
+    return (
+        datetime.now(timezone.utc) - observed
+    ).total_seconds() < cooldown_seconds
+
+
 def _compact_previous(overview: dict[str, Any]) -> dict[str, Any]:
     return {
         "created_at": overview.get("created_at"),
-        "status_counts": overview.get("status_counts") or {},
+        "status_counts": _active_status_counts(overview),
+        "historical_outcomes": _historical_status_counts(overview),
         "jobs": {
             item["job_id"]: {
                 "status": item.get("status"),
@@ -2222,6 +2348,7 @@ def _compact_previous(overview: dict[str, Any]) -> dict[str, Any]:
                 "coverage_edges": item.get("coverage_edges", 0),
             }
             for item in overview.get("jobs") or []
+            if str(item.get("status") or "") not in HISTORICAL_JOB_STATUSES
         },
     }
 

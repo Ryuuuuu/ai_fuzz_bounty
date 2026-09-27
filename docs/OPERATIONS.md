@@ -33,12 +33,21 @@ fuzz-pipeline agent
 Telegram 전달 내역은 각각 `data/central-agent/progress.jsonl`과
 `data/central-agent/notifications.jsonl`에 기록된다. AI가 같은 문제를 다르게 표현해도
 작업 ID와 문제 종류가 같으면 하나의 활성 경고로 묶고, 상태가 복구되거나 문제 종류가
-바뀔 때만 다시 알린다. 비밀값이나 crash 원본 바이트는 이 로그에 쓰지 않는다.
+바뀔 때만 다시 알린다. AI 판정 문구가 바뀌어도 `health_alert_cooldown_seconds` 동안 같은
+등급의 AI 상태 경고를 다시 보내지 않는다. 누적 완료·실패 통계는 이력으로만 전달하여
+현재 실행 장애로 판정하지 않는다. Telegram의 일시적인 네트워크 오류는 지수 백오프로
+재시도한다. 비밀값이나 crash 원본 바이트는 이 로그에 쓰지 않는다.
 
 `housekeep`은 오래된 로그와 corpus를 설정된 파일 수·용량까지 줄이고 완료 작업의 임시
-실행 복사본을 삭제한다. `artifacts`, `crashes`, `validation`, `poc`의 증거는 삭제하지
-않는다. 작업 전체가 `job_disk_limit_mb`를 넘으면 `resource_limit_required`로 멈춘다.
+실행·빌드 복사본(`runtime-out`, `native-work`, `native-out`, `build-output`,
+`build-source`, `source`)을 삭제한다. `artifacts`, `crashes`, `validation`, `poc`, 로그와
+corpus의 증거는 삭제하지 않는다. 작업 전체가 `job_disk_limit_mb`를 넘으면
+`resource_limit_required`로 멈춘다.
 프로세스가 사라진 `fts-*` Docker 컨테이너도 라벨을 확인한 뒤 정리한다.
+
+같은 저장소에서 `repository_failure_threshold`번 연속으로 빌드·통합 실패가 끝나면
+`repository_failure_cooldown_hours` 동안 새 커밋을 큐에 넣지 않는다. 이미 큐에 있는
+미시작 작업도 `skipped_repository_cooldown`으로 완료하여 다음 저장소를 탐색한다.
 
 `dashboard --json`은 자동화가 읽을 수 있는 상태를 출력한다. 일반 화면에는 작업 단계,
 24시간 예산 진행률, 남은 시간, 처리량, crash 수, 검증 상태와 디스크 사용량이 표시된다.

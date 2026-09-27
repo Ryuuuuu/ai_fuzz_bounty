@@ -12,6 +12,14 @@ from .pipeline import PipelineError, job_status, list_jobs, utc_now
 
 
 EVIDENCE_DIRECTORIES = {"artifacts", "crashes", "validation", "poc"}
+TRANSIENT_WORK_DIRECTORIES = (
+    "runtime-out",
+    "native-work",
+    "native-out",
+    "build-output",
+    "build-source",
+    "source",
+)
 
 
 def pipeline_overview(runs_root: str | Path) -> dict[str, Any]:
@@ -94,6 +102,7 @@ class Housekeeper:
         before = directory_size(job_dir)
         removed_files = 0
         removed_bytes = 0
+        removed_workspaces: list[str] = []
         for corpus in sorted((job_dir / "corpus").glob("*")):
             count, size = self._prune_files(
                 corpus,
@@ -111,11 +120,14 @@ class Housekeeper:
         if state.get("stage") == "complete":
             age = time.time() - self._mtime(job_dir / "state.json")
             if age >= int(self.pipeline["runtime_retention_hours"]) * 3600:
-                runtime = job_dir / "runtime-out"
-                if runtime.is_dir() and not runtime.is_symlink():
-                    size = directory_size(runtime)
-                    shutil.rmtree(runtime)
+                for name in TRANSIENT_WORK_DIRECTORIES:
+                    workspace = job_dir / name
+                    if not workspace.is_dir() or workspace.is_symlink():
+                        continue
+                    size = directory_size(workspace)
+                    shutil.rmtree(workspace)
                     removed_bytes += size
+                    removed_workspaces.append(name)
         after = directory_size(job_dir)
         limit = int(self.pipeline["job_disk_limit_mb"]) * 1024 * 1024
         over_limit = after > limit
@@ -132,6 +144,7 @@ class Housekeeper:
             "after_bytes": after,
             "removed_files": removed_files,
             "removed_bytes": removed_bytes,
+            "removed_workspaces": removed_workspaces,
             "over_limit": over_limit,
         }
 

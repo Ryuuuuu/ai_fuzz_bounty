@@ -120,6 +120,9 @@ corpus_limit_mb = 4096
 corpus_max_files = 100000
 log_max_files = 200
 runtime_retention_hours = 24
+# 같은 저장소의 연속 실패가 누적되면 일정 기간 새 커밋을 대기시킵니다.
+repository_failure_threshold = 2
+repository_failure_cooldown_hours = 168
 max_stage_failures = 3
 dashboard_interval_seconds = 10
 # OSS-Fuzz 정의가 없는 C/C++ 프로젝트에 로컬 통합 생성을 허용합니다.
@@ -149,6 +152,10 @@ cycle_schema_path = "schemas/central-cycle.schema.json"
 telegram_token_env = "FUZZ_TELEGRAM_BOT_TOKEN"
 telegram_chat_id_env = "FUZZ_TELEGRAM_CHAT_ID"
 telegram_timeout_seconds = 15
+telegram_retry_attempts = 3
+telegram_retry_backoff_seconds = 2
+# AI 문구가 흔들려도 같은 등급의 상태 경고를 이 시간 동안 재전송하지 않습니다.
+health_alert_cooldown_seconds = 7200
 auto_discover = true
 discovery_interval_seconds = 21600
 # 실행 가능한 작업이 없을 때는 더 짧은 주기로 새 C/C++ 범위를 찾습니다.

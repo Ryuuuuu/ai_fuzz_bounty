@@ -508,6 +508,87 @@ class CentralAgentTests(unittest.TestCase):
         self.assertIn("중앙 상태 복구", messages[1])
         self.assertIn("실행 또는 준비 중인 작업: 1", messages[1])
 
+    def test_health_evidence_treats_completed_failures_as_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            agent = CentralAgent(config)
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            overview = {
+                "job_count": 3,
+                "status_counts": {"running": 1, "skipped_after_recovery": 2},
+                "total_disk_bytes": 0,
+                "jobs": [
+                    {"job_id": "org-live-aaaaaaaaaaaa", "status": "running"},
+                    {"job_id": "org-old-bbbbbbbbbbbb", "status": "skipped_after_recovery"},
+                    {"job_id": "org-old-cccccccccccc", "status": "skipped_after_recovery"},
+                ],
+            }
+            evidence = agent._health_evidence(overview, allocation, [], 0)
+
+        self.assertEqual(evidence["status_counts"], {"running": 1})
+        self.assertEqual(
+            evidence["historical_outcomes"], {"skipped_after_recovery": 2}
+        )
+        self.assertEqual(
+            [item["job_id"] for item in evidence["jobs"]],
+            ["org-live-aaaaaaaaaaaa"],
+        )
+
+    def test_health_alert_cooldown_suppresses_ai_wording_churn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            messages = []
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True,
+                "ok",
+            )
+            decisions = iter([
+                {"severity": "warning", "notify": True, "summary": "빌드 지연", "problems": ["build slow"]},
+                {"severity": "warning", "notify": True, "summary": "커버리지 지연", "problems": ["coverage slow"]},
+            ])
+            agent.reviewer.health = lambda _evidence: (next(decisions), {})
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            overview = {
+                "job_count": 1,
+                "status_counts": {"running": 1},
+                "total_disk_bytes": 0,
+                "jobs": [{
+                    "job_id": "org-live-aaaaaaaaaaaa",
+                    "status": "running",
+                    "updated_at": "2099-01-01T00:00:00Z",
+                }],
+            }
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                return_value=overview,
+            ):
+                first = agent.monitor("scheduled_check")
+                second = agent.monitor("scheduled_check")
+
+        self.assertEqual(first["notification_transition"], "alerted")
+        self.assertEqual(second["notification_transition"], "cooldown_suppressed")
+        self.assertEqual(len(messages), 1)
+
     def test_monitor_queues_allowlisted_strategy_and_notifies_telegram(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1105,6 +1186,28 @@ class CentralAgentTests(unittest.TestCase):
 
         self.assertTrue(delivered)
         self.assertEqual(detail, "delivered")
+
+    def test_telegram_retries_transient_network_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["agent"]["telegram_retry_backoff_seconds"] = 0
+            response = io.BytesIO(b'{"ok":true}')
+            with patch.dict(
+                "fuzz_target_scout.central_agent.os.environ",
+                {
+                    "FUZZ_TELEGRAM_BOT_TOKEN": "123456:abcdefghijklmnopqrstuvwxyz_12345",
+                    "FUZZ_TELEGRAM_CHAT_ID": "-123456",
+                },
+                clear=True,
+            ), patch(
+                "fuzz_target_scout.central_agent.urlopen",
+                side_effect=[OSError("temporary"), response],
+            ) as request:
+                delivered, detail = TelegramNotifier(config).send("test")
+
+        self.assertTrue(delivered)
+        self.assertEqual(detail, "delivered")
+        self.assertEqual(request.call_count, 2)
 
     def test_operational_logs_redact_environment_and_token_patterns(self):
         with tempfile.TemporaryDirectory() as directory:

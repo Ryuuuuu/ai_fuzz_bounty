@@ -31,6 +31,31 @@ class OperationsTests(unittest.TestCase):
             self.assertTrue(evidence.is_file())
             self.assertEqual(result["jobs"][0]["removed_files"], 1)
 
+    def test_completed_job_removes_transient_workspaces_and_preserves_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = self._job(root)
+            state_path = job / "state.json"
+            state = json.loads(state_path.read_text())
+            state.update({"stage": "complete", "status": "exhausted"})
+            state_path.write_text(json.dumps(state))
+            old = time.time() - 7200
+            os.utime(state_path, (old, old))
+            for name in ("native-work", "native-out", "build-output", "source"):
+                path = job / name
+                path.mkdir()
+                (path / "temporary").write_bytes(b"x" * 10)
+            evidence = job / "artifacts" / "triage-summary.json"
+            evidence.write_text(json.dumps({"validated_group_count": 0}))
+            with patch.object(Housekeeper, "_clean_orphan_containers", return_value=[]):
+                result = Housekeeper(
+                    self._config(root, runtime_retention_hours=1)
+                ).run(job.name)
+            self.assertTrue(evidence.is_file())
+            self.assertFalse((job / "native-work").exists())
+            self.assertFalse((job / "source").exists())
+            self.assertIn("native-work", result["jobs"][0]["removed_workspaces"])
+
     def test_disk_limit_moves_active_job_to_manual_resource_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

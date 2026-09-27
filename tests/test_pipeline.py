@@ -8,6 +8,7 @@ from fuzz_target_scout.pipeline import (
     job_status,
     load_oss_fuzz_support_index,
     prepare_jobs,
+    quarantine_repository_cooldown_jobs,
 )
 
 
@@ -187,6 +188,77 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(same_commit.created, 0)
             self.assertEqual(same_commit.existing, 1)
             self.assertEqual(len(list(Path(directory).glob("*/job.json"))), 2)
+
+    def test_repeated_repository_failures_open_a_planning_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {
+                **CONFIG,
+                "repository_failure_threshold": 2,
+                "repository_failure_cooldown_hours": 168,
+            }
+            first = prepare_jobs([candidate(commit="b" * 40)], directory, config, LOCK)
+            self._complete_job(Path(directory) / first.job_ids[0], "skipped_after_recovery")
+            second = prepare_jobs([candidate(commit="c" * 40)], directory, config, LOCK)
+            self._complete_job(Path(directory) / second.job_ids[0], "skipped_after_recovery")
+            third = prepare_jobs([candidate(commit="d" * 40)], directory, config, LOCK)
+
+            self.assertEqual(third.created, 0)
+            self.assertEqual(
+                third.skip_reasons, {"repository_failure_cooldown": 1}
+            )
+
+    def test_successful_repository_run_resets_failure_sequence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {
+                **CONFIG,
+                "repository_failure_threshold": 2,
+                "repository_failure_cooldown_hours": 168,
+            }
+            first = prepare_jobs([candidate(commit="b" * 40)], directory, config, LOCK)
+            self._complete_job(Path(directory) / first.job_ids[0], "skipped_after_recovery")
+            second = prepare_jobs([candidate(commit="c" * 40)], directory, config, LOCK)
+            self._complete_job(Path(directory) / second.job_ids[0], "exhausted")
+            third = prepare_jobs([candidate(commit="d" * 40)], directory, config, LOCK)
+
+            self.assertEqual(third.created, 1)
+
+    def test_queued_job_is_quarantined_when_repository_circuit_opens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {
+                **CONFIG,
+                "repository_failure_threshold": 2,
+                "repository_failure_cooldown_hours": 168,
+            }
+            root = Path(directory)
+            first = prepare_jobs([candidate(commit="b" * 40)], root, config, LOCK)
+            self._complete_job(root / first.job_ids[0], "skipped_after_recovery")
+            second = prepare_jobs([candidate(commit="c" * 40)], root, config, LOCK)
+            queued = root / second.job_ids[0]
+            third = root / ("org-parser-" + "d" * 12)
+            third.mkdir()
+            (third / "job.json").write_text(json.dumps({
+                "source": {"repository": "org/parser", "commit": "d" * 40}
+            }))
+            (third / "state.json").write_text(json.dumps({
+                "job_id": third.name,
+                "stage": "policy_recheck",
+                "status": "queued",
+                "updated_at": "2026-09-27T00:00:00+00:00",
+            }))
+            self._complete_job(queued, "skipped_after_recovery")
+
+            quarantined = quarantine_repository_cooldown_jobs(root, config)
+            state = json.loads((third / "state.json").read_text())
+            self.assertEqual(quarantined, [third.name])
+            self.assertEqual(state["stage"], "complete")
+            self.assertEqual(state["status"], "skipped_repository_cooldown")
+
+    @staticmethod
+    def _complete_job(job: Path, status: str) -> None:
+        state_path = job / "state.json"
+        state = json.loads(state_path.read_text())
+        state.update({"stage": "complete", "status": status})
+        state_path.write_text(json.dumps(state), encoding="utf-8")
 
     def test_support_index_filters_before_work_order_creation(self):
         with tempfile.TemporaryDirectory() as directory:
