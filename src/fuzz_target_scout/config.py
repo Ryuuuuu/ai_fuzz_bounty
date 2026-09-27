@@ -13,6 +13,8 @@ DEFAULTS: dict[str, Any] = {
         "per_query": 20,
         "max_tree_paths": 5000,
         "timeout_seconds": 20,
+        "retry_attempts": 3,
+        "retry_backoff_seconds": 1,
         "seed_policy_catalog": True,
         "max_search_pages": 20,
         "queries": [
@@ -162,6 +164,7 @@ DEFAULTS: dict[str, Any] = {
         "auto_discover": True,
         "discovery_interval_seconds": 21600,
         "idle_discovery_interval_seconds": 3600,
+        "discovery_error_retry_seconds": 300,
         "discovery_limit": 0,
         "auto_improve": True,
         "auto_recover_failures": True,

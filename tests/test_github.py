@@ -1,10 +1,45 @@
 import base64
+import http.client
+import json
 import unittest
+from unittest.mock import patch
 
 from fuzz_target_scout.github import GitHubClient, _infer_fuzzable_language
 
 
 class GitHubRepositoryFileTests(unittest.TestCase):
+    def test_transient_remote_disconnect_is_retried(self):
+        client = GitHubClient(
+            {
+                "api_url": "https://api.github.com",
+                "timeout_seconds": 10,
+                "retry_attempts": 3,
+                "retry_backoff_seconds": 0,
+                "max_tree_paths": 100,
+            }
+        )
+
+        class Response:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"ok": True}).encode()
+
+        with patch(
+            "fuzz_target_scout.github.urllib.request.urlopen",
+            side_effect=[http.client.RemoteDisconnected(), Response()],
+        ) as request:
+            result = client._request("/rate_limit")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(request.call_count, 2)
+
     def test_repository_file_uses_contents_api_and_decodes_text(self):
         client = GitHubClient(
             {

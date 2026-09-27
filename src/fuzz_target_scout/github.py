@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,8 @@ class GitHubClient:
     def __init__(self, config: dict[str, Any]):
         self.api_url = str(config["api_url"]).rstrip("/")
         self.timeout = int(config["timeout_seconds"])
+        self.retry_attempts = max(1, int(config.get("retry_attempts", 3)))
+        self.retry_backoff = max(0.0, float(config.get("retry_backoff_seconds", 1)))
         self.max_tree_paths = int(config["max_tree_paths"])
         self.max_architecture_files = int(config.get("max_architecture_files", 8))
         self.token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -45,19 +49,36 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         request = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                remaining = response.headers.get("X-RateLimit-Remaining")
-                self.rate_remaining = int(remaining) if remaining else self.rate_remaining
-                self.rate_reset = response.headers.get("X-RateLimit-Reset")
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read(1000).decode("utf-8", errors="replace")
-            if exc.code == 404:
-                return None
-            raise GitHubError(f"GitHub API {exc.code} for {url}: {body}") from exc
-        except urllib.error.URLError as exc:
-            raise GitHubError(f"GitHub request failed for {url}: {exc.reason}") from exc
+        for attempt in range(self.retry_attempts):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    remaining = response.headers.get("X-RateLimit-Remaining")
+                    self.rate_remaining = (
+                        int(remaining) if remaining else self.rate_remaining
+                    )
+                    self.rate_reset = response.headers.get("X-RateLimit-Reset")
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                body = exc.read(1000).decode("utf-8", errors="replace")
+                if exc.code == 404:
+                    return None
+                raise GitHubError(
+                    f"GitHub API {exc.code} for {url}: {body}"
+                ) from exc
+            except (
+                urllib.error.URLError,
+                http.client.HTTPException,
+                OSError,
+                json.JSONDecodeError,
+            ) as exc:
+                if attempt + 1 < self.retry_attempts:
+                    time.sleep(self.retry_backoff * (2**attempt))
+                    continue
+                reason = getattr(exc, "reason", exc)
+                raise GitHubError(
+                    f"GitHub request failed for {url}: {reason}"
+                ) from exc
+        raise GitHubError(f"GitHub request failed for {url}")
 
     @staticmethod
     def _snapshot(item: dict[str, Any]) -> RepoSnapshot:

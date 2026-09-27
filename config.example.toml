@@ -4,6 +4,9 @@ api_url = "https://api.github.com"
 per_query = 20
 max_tree_paths = 5000
 timeout_seconds = 20
+# 일시적인 연결 종료는 저장소 전체 탐색을 중단하지 않고 짧게 재시도합니다.
+retry_attempts = 3
+retry_backoff_seconds = 1
 # 새 탐색도 검증 카탈로그를 먼저 확인한 뒤 일반 GitHub 검색으로 확장합니다.
 seed_policy_catalog = true
 # 각 반복에서 다음 검색 결과 페이지로 이동해 같은 저장소만 다시 보지 않습니다.
@@ -170,6 +173,8 @@ auto_discover = true
 discovery_interval_seconds = 21600
 # 실행 가능한 작업이 없을 때는 더 짧은 주기로 새 C/C++ 범위를 찾습니다.
 idle_discovery_interval_seconds = 3600
+# 후보 갱신 자체가 실패하면 정상 주기를 기다리지 않고 이 시간 뒤 재시도합니다.
+discovery_error_retry_seconds = 300
 discovery_limit = 0
 auto_improve = true
 auto_recover_failures = true

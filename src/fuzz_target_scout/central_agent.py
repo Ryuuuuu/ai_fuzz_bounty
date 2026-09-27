@@ -1785,6 +1785,11 @@ class CentralAgent:
                 interval,
                 int(self.agent.get("idle_discovery_interval_seconds", 3600)),
             )
+        if self.state.get("last_discovery_error"):
+            interval = min(
+                interval,
+                int(self.agent.get("discovery_error_retry_seconds", 300)),
+            )
         previous = _parse_time(str(self.state.get("last_discovery_at") or ""))
         due = previous is None or (
             datetime.now(timezone.utc) - previous
@@ -1816,6 +1821,8 @@ class CentralAgent:
             self._export_verified_candidates()
             self._plan_exported_candidates()
             self.state["last_discovery_at"] = utc_now()
+            self.state.pop("last_discovery_error", None)
+            self.state.pop("last_discovery_error_at", None)
             self.state["last_discovery"] = {
                 "scan_id": summary.scan_id,
                 "discovered": summary.discovered,
@@ -1828,7 +1835,8 @@ class CentralAgent:
             self._save_state()
         except Exception as exc:
             self.state["last_discovery_error"] = str(exc)[:1000]
-            self.state["last_discovery_at"] = utc_now()
+            self.state["last_discovery_error_at"] = utc_now()
+            self.state["last_discovery_at"] = self.state["last_discovery_error_at"]
             self._save_state()
             self._notify(
                 "discovery_error",
