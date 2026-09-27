@@ -217,7 +217,7 @@ worker RSS 제한을 함께 계산한다. 각 실행의 측정값은 `artifacts/
 Docker 컨테이너에서 동시에 실행한다. 준비·빌드·probe·Quartet·coverage 검토와 하네스
 생성은 공유 도구와 빌드 산출물 충돌을 피하도록 직렬화한다. OSS-Fuzz-Gen이나 정체 대응
 Codex 단계에서 생성된 하네스도 동일한 자원 할당을 받아 기존 하네스 작업과 병렬 실행된다.
-각 작업은 24시간을 상한으로 사용한다. 최소 2시간 뒤 도달 범위가 얕거나, edge와 feature 증가가 6시간 정체되면 `campaign-yield.json`을 남기고 `triage_pending`으로 전환하여 다음 저장소를 선택한다. 최근 완료 저장소에는 기본 7일의 성공 cooldown을 적용한다.
+각 작업은 24시간을 상한으로 사용한다. 최소 2시간 뒤 도달 범위가 얕거나, edge와 feature 증가가 6시간 정체되면 `campaign-yield.json`을 남기고 `triage_pending`으로 전환하여 다음 저장소를 선택한다. 최근 완료 저장소에는 기본 30일의 성공 cooldown을 적용한다.
 
 `fuzz-pipeline agent`는 worker를 묶음 단위로 실행한다. 같은 모델이 결정적 자원 계획이
 제시한 선택지 안에서 병렬도를 정하고, 30분마다 압축된 진행 지표를 판정한다. 실행 중

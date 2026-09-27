@@ -126,8 +126,8 @@ runtime_retention_hours = 24
 # 같은 저장소의 연속 실패가 누적되면 일정 기간 새 커밋을 대기시킵니다.
 repository_failure_threshold = 2
 repository_failure_cooldown_hours = 168
-# 성공적으로 소진한 저장소도 일주일 동안 다시 고르지 않아 대상 다양성을 유지합니다.
-repository_success_cooldown_hours = 168
+# 성공적으로 소진한 저장소도 30일 동안 다시 고르지 않아 대상 다양성을 유지합니다.
+repository_success_cooldown_hours = 720
 # 낮은 도달률은 2시간 후, 신규 경로가 없는 정체는 6시간 후 다음 대상으로 전환합니다.
 low_yield_rotation_enabled = true
 low_yield_min_seconds = 7200

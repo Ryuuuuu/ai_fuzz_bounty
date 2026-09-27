@@ -126,7 +126,7 @@ DEFAULTS: dict[str, Any] = {
         "runtime_retention_hours": 24,
         "repository_failure_threshold": 2,
         "repository_failure_cooldown_hours": 168,
-        "repository_success_cooldown_hours": 168,
+        "repository_success_cooldown_hours": 720,
         "low_yield_rotation_enabled": True,
         "low_yield_min_seconds": 7200,
         "low_yield_min_coverage_edges": 750,
