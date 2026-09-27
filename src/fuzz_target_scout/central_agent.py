@@ -224,6 +224,8 @@ class CentralCodex:
                 self.agent["persistent_health_session"]
             )
             session = self._health_session() if persistent else {}
+            if kind == "health" and not persistent:
+                self._save_health_session({})
             completed = self._run_codex(
                 kind, prompt, schema, output, directory, session
             )
@@ -294,7 +296,12 @@ class CentralCodex:
                 "-",
             ]
         else:
-            persistence = [] if kind == "health" else ["--ephemeral"]
+            persistence = (
+                []
+                if kind == "health"
+                and bool(self.agent["persistent_health_session"])
+                else ["--ephemeral"]
+            )
             command = [
                 self.executable,
                 "exec",

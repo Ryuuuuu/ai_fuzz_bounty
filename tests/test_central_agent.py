@@ -27,6 +27,7 @@ class CentralAgentTests(unittest.TestCase):
             root = Path(directory)
             config, _ = load_config(root / "missing.toml")
             config["agent"]["session_state_path"] = str(root / "sessions.json")
+            config["agent"]["persistent_health_session"] = True
             config["agent"]["health_session_rotation_checks"] = 2
             commands = []
 
@@ -73,6 +74,48 @@ class CentralAgentTests(unittest.TestCase):
         self.assertNotIn("resume", commands[0])
         self.assertIn("resume", commands[1])
         self.assertIn("12345678-1234-1234-1234-123456789abc", commands[1])
+
+    def test_health_monitor_is_ephemeral_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["agent"]["session_state_path"] = str(root / "sessions.json")
+            Path(config["agent"]["session_state_path"]).write_text(
+                json.dumps({
+                    "thread_id": "12345678-1234-1234-1234-123456789abc",
+                    "checks": 1,
+                })
+            )
+            commands = []
+
+            def fake_run(command, **_kwargs):
+                commands.append(command)
+                output = Path(command[command.index("--output-last-message") + 1])
+                output.write_text(json.dumps({
+                    "severity": "healthy",
+                    "notify": False,
+                    "summary": "정상",
+                    "problems": [],
+                }))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({"type": "turn.completed", "usage": {}}),
+                    stderr="",
+                )
+
+            with patch(
+                "fuzz_target_scout.central_agent.shutil.which",
+                return_value="/usr/bin/codex",
+            ), patch(
+                "fuzz_target_scout.central_agent.subprocess.run",
+                side_effect=fake_run,
+            ):
+                CentralCodex(config).health({"jobs": []})
+
+        self.assertIn("--ephemeral", commands[0])
+        self.assertNotIn("resume", commands[0])
+        self.assertFalse(Path(config["agent"]["session_state_path"]).exists())
 
     def test_codex_controller_uses_requested_model_and_hides_secrets(self):
         with tempfile.TemporaryDirectory() as directory:

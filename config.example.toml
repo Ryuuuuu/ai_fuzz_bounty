@@ -138,7 +138,8 @@ monitor_interval_seconds = 1800
 stale_after_seconds = 5400
 ai_timeout_seconds = 180
 ai_failure_alert_threshold = 2
-persistent_health_session = true
+# 독립 점검은 오래된 대화 누적과 토큰 증가를 막습니다. 필요할 때만 true로 설정합니다.
+persistent_health_session = false
 health_session_rotation_checks = 24
 state_path = "data/central-agent/state.json"
 log_path = "data/central-agent/progress.jsonl"

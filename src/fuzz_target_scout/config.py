@@ -136,7 +136,7 @@ DEFAULTS: dict[str, Any] = {
         "stale_after_seconds": 5400,
         "ai_timeout_seconds": 180,
         "ai_failure_alert_threshold": 2,
-        "persistent_health_session": True,
+        "persistent_health_session": False,
         "health_session_rotation_checks": 24,
         "state_path": "data/central-agent/state.json",
         "log_path": "data/central-agent/progress.jsonl",
