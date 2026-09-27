@@ -36,6 +36,48 @@ from fuzz_target_scout.quartet_gate import (
 
 
 class PipelineRunnerTests(unittest.TestCase):
+    def test_low_yield_campaign_finishes_early_for_triage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 530, "coverage_features": 2500})
+            )
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            progress = {
+                "completed_seconds": 7200,
+                "sessions": [
+                    {
+                        "accounted_seconds": 7200,
+                        "coverage_edges": 532,
+                        "coverage_features": 2534,
+                    }
+                ],
+            }
+            result = {"fuzz_target": "fuzz_parser", "crash_files": []}
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {}
+
+            finished = runner._finish_low_yield_campaign(
+                job_dir,
+                {"source": {"repository": "org/parser"}},
+                state_path,
+                state,
+                progress,
+                result,
+                7200,
+            )
+
+            saved_state = json.loads(state_path.read_text())
+            decision = json.loads((artifacts / "campaign-yield.json").read_text())
+        self.assertIsNotNone(finished)
+        self.assertEqual(saved_state["stage"], "triage")
+        self.assertEqual(saved_state["campaign_yield_reason"], "shallow_reach")
+        self.assertEqual(decision["decision"], "rotate_target")
+
     def test_quartet_counts_actual_entrypoint_parameter_names(self):
         source = (
             "int LLVMFuzzerTestOneInput(const uint8_t *src, size_t length) {\n"

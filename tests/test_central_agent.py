@@ -273,6 +273,46 @@ class CentralAgentTests(unittest.TestCase):
         self.assertIn("검증 전", messages[0])
         self.assertIn("취약점 확정이 아닙니다", messages[0])
 
+    def test_campaign_rotation_notification_is_sent_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            runs = root / "runs"
+            job = runs / "org-parser-aaaaaaaaaaaa"
+            (job / "artifacts").mkdir(parents=True)
+            (job / "artifacts" / "campaign-yield.json").write_text(
+                json.dumps(
+                    {
+                        "created_at": "2026-09-28T00:00:00+00:00",
+                        "reason": "coverage_stagnation",
+                        "metrics": {
+                            "completed_seconds": 25200,
+                            "baseline_edges": 800,
+                            "best_edges": 900,
+                            "trailing_stagnation_seconds": 21600,
+                        },
+                    }
+                )
+            )
+            config["pipeline"]["runs_path"] = str(runs)
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            agent = CentralAgent(config)
+            messages = []
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True,
+                "ok",
+            )
+
+            agent._notify_campaign_rotations()
+            agent._notify_campaign_rotations()
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("커버리지 증가 정체", messages[0])
+        self.assertIn("800 → 900", messages[0])
+
     def test_monitor_notifies_false_positive_triage_judgment_once(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

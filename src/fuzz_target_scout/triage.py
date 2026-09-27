@@ -130,7 +130,6 @@ class TriageRunner:
             ),
             "automatic_submission": False,
         }
-        _write_json(job_dir / "artifacts" / "triage-summary.json", summary)
         if validated:
             _write_json(
                 job_dir / "artifacts" / "validation-handoff.json",
@@ -157,6 +156,13 @@ class TriageRunner:
         )
         _write_json(state_path, state)
         summary["state"] = state
+        _write_json(job_dir / "artifacts" / "triage-summary.json", summary)
+        history_key = hashlib.sha256(
+            (summary["created_at"] + fuzzer + "\n".join(crash_names)).encode("utf-8")
+        ).hexdigest()[:16]
+        history_dir = job_dir / "artifacts" / "triage-history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(history_dir / f"{history_key}.json", summary)
         return summary
 
     def _safe_crashes(self, root: Path, names: list[str]) -> list[Path]:

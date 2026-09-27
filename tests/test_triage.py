@@ -50,6 +50,11 @@ class TriageTests(unittest.TestCase):
             self.assertEqual(result["validated_group_count"], 0)
             self.assertEqual(result["state"]["status"], "exhausted")
             self.assertFalse((job_dir / "artifacts" / "validation-handoff.json").exists())
+            history = list((job_dir / "artifacts" / "triage-history").glob("*.json"))
+            self.assertEqual(len(history), 1)
+            archived = json.loads(history[0].read_text())
+            self.assertEqual(archived["validated_group_count"], 0)
+            self.assertEqual(archived["state"]["status"], "exhausted")
 
     def test_three_matching_reproductions_create_handoff(self):
         with tempfile.TemporaryDirectory() as directory:

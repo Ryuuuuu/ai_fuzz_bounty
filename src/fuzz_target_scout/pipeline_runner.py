@@ -57,6 +57,7 @@ from .quartet_gate import (
 )
 from .resources import ResourceAllocation, ResourceSnapshot, plan_resources
 from .stagnation import generate_dictionary
+from .yield_policy import evaluate_campaign_yield
 
 
 Progress = Callable[[str], None]
@@ -874,6 +875,19 @@ class PipelineRunner:
         if active_session_id:
             self._remove_container(str(state.get("active_fuzz_container") or ""))
             self._clear_active_fuzz_session(state)
+        if artifact_path.is_file():
+            previous_result = self._read_json(artifact_path)
+            low_yield = self._finish_low_yield_campaign(
+                job_dir,
+                job,
+                state_path,
+                state,
+                progress,
+                previous_result,
+                completed_seconds,
+            )
+            if low_yield is not None:
+                return low_yield
         remaining = max(0, budget - int(completed_seconds))
         if remaining == 0 and artifact_path.is_file():
             result = self._read_json(artifact_path)
@@ -992,6 +1006,7 @@ class PipelineRunner:
                     "completed_at": result.get("completed_at"),
                     "requested_seconds": result.get("requested_seconds"),
                     "elapsed_seconds": result.get("elapsed_seconds"),
+                    "accounted_seconds": round(session_budget, 3),
                     "session_id": session_id,
                     "engine": "libfuzzer",
                     "corpus_files": result.get("corpus_files"),
@@ -1066,6 +1081,11 @@ class PipelineRunner:
             return self._finish_fuzz_state(
                 state_path, state, result, completed_seconds
             )
+        low_yield = self._finish_low_yield_campaign(
+            job_dir, job, state_path, state, progress, result, completed_seconds
+        )
+        if low_yield is not None:
+            return low_yield
         if completed_seconds < budget:
             native_lane = (
                 str((job.get("route") or {}).get("name") or "")
@@ -1129,6 +1149,36 @@ class PipelineRunner:
             self._write_json(state_path, state)
             result["state"] = state
             return result
+        return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+
+    def _finish_low_yield_campaign(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        state_path: Path,
+        state: dict[str, Any],
+        progress: dict[str, Any],
+        result: dict[str, Any],
+        completed_seconds: float,
+    ) -> dict[str, Any] | None:
+        if result.get("crash_files"):
+            return None
+        probe_path = job_dir / "artifacts" / "probe-run.json"
+        if not probe_path.is_file():
+            return None
+        decision = evaluate_campaign_yield(
+            self._read_json(probe_path), progress, getattr(self, "pipeline", {})
+        )
+        if decision is None:
+            return None
+        decision["job_id"] = job_dir.name
+        decision["repository"] = str((job.get("source") or {}).get("repository") or "")
+        decision["fuzz_target"] = str(result.get("fuzz_target") or "")
+        self._write_json(job_dir / "artifacts" / "campaign-yield.json", decision)
+        state["campaign_stop_reason"] = "low_yield"
+        state["campaign_yield_reason"] = decision["reason"]
+        state["coverage_stalled"] = True
+        result["campaign_yield"] = decision
         return self._finish_fuzz_state(state_path, state, result, completed_seconds)
 
     @staticmethod

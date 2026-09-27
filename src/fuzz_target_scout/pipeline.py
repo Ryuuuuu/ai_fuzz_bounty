@@ -79,20 +79,25 @@ def prepare_jobs(
     reasons: Counter[str] = Counter()
     job_ids: list[str] = []
     planned_repositories = _planned_repositories(root)
-    blocked_repositories = repository_failure_cooldowns(root, pipeline_config)
+    failure_cooldowns = repository_failure_cooldowns(root, pipeline_config)
+    success_cooldowns = repository_success_cooldowns(root, pipeline_config)
 
     queued = list(candidates)
     architecture_config = pipeline_config.get("architecture")
     host_arch = resolve_host_architecture(architecture_config or {})
     oss_fuzz_native = architecture_config is None or host_arch == "x86_64"
-    if support_index is not None and oss_fuzz_native:
-        queued.sort(
-            key=lambda item: (
-                str(item.get("repository") or "").casefold() not in support_index,
-                -float((item.get("assessment") or {}).get("fuzz_score") or 0),
-                str(item.get("repository") or "").casefold(),
-            )
+    queued.sort(
+        key=lambda item: (
+            bool(
+                support_index is not None
+                and oss_fuzz_native
+                and str(item.get("repository") or "").casefold()
+                not in support_index
+            ),
+            -float((item.get("assessment") or {}).get("fuzz_score") or 0),
+            str(item.get("repository") or "").casefold(),
         )
+    )
     for candidate in queued:
         if limit is not None and created + existing >= limit:
             break
@@ -109,8 +114,11 @@ def prepare_jobs(
             existing += 1
             continue
         repository = str((work_order.get("source") or {}).get("repository") or "")
-        if repository.casefold() in blocked_repositories:
+        if repository.casefold() in failure_cooldowns:
             reasons["repository_failure_cooldown"] += 1
+            continue
+        if repository.casefold() in success_cooldowns:
+            reasons["repository_success_cooldown"] += 1
             continue
         if repository.casefold() in planned_repositories:
             reasons["repository_already_planned"] += 1
@@ -253,12 +261,71 @@ def repository_failure_cooldowns(
     return blocked
 
 
+def repository_success_cooldowns(
+    runs_root: str | Path,
+    pipeline_config: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return recently completed repositories so scarce time reaches new code."""
+    cooldown_hours = max(
+        0, int(pipeline_config.get("repository_success_cooldown_hours", 0))
+    )
+    if cooldown_hours == 0:
+        return {}
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    newest: dict[str, tuple[datetime, str]] = {}
+    root = Path(runs_root)
+    if not root.is_dir() or root.is_symlink():
+        return {}
+    for job_path in root.glob("*/job.json"):
+        state_path = job_path.with_name("state.json")
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            state.get("stage") != "complete"
+            or state.get("status") not in REPOSITORY_SUCCESS_STATUSES
+        ):
+            continue
+        repository = str((job.get("source") or {}).get("repository") or "").casefold()
+        if not repository:
+            continue
+        observed = _pipeline_timestamp(str(state.get("updated_at") or ""))
+        if observed is None:
+            try:
+                observed = datetime.fromtimestamp(
+                    state_path.stat().st_mtime, timezone.utc
+                )
+            except OSError:
+                continue
+        if repository not in newest or observed > newest[repository][0]:
+            newest[repository] = (observed, job_path.parent.name)
+    blocked: dict[str, dict[str, Any]] = {}
+    for repository, (observed, job_id) in newest.items():
+        age_seconds = max(0.0, (current - observed).total_seconds())
+        if age_seconds >= cooldown_hours * 3600:
+            continue
+        blocked[repository] = {
+            "kind": "success",
+            "newest_success_at": observed.isoformat(),
+            "cooldown_until": datetime.fromtimestamp(
+                observed.timestamp() + cooldown_hours * 3600, timezone.utc
+            ).isoformat(),
+            "job_ids": [job_id],
+        }
+    return blocked
+
+
 def quarantine_repository_cooldown_jobs(
     runs_root: str | Path, pipeline_config: dict[str, Any]
 ) -> list[str]:
     """Finish untouched queued jobs for repositories with an open circuit."""
     root = Path(runs_root)
-    blocked = repository_failure_cooldowns(root, pipeline_config)
+    failure_blocked = repository_failure_cooldowns(root, pipeline_config)
+    success_blocked = repository_success_cooldowns(root, pipeline_config)
     quarantined: list[str] = []
     for state_path in root.glob("*/state.json"):
         try:
@@ -273,15 +340,20 @@ def quarantine_repository_cooldown_jobs(
         repository = str(
             (job.get("source") or {}).get("repository") or ""
         ).casefold()
-        detail = blocked.get(repository)
+        detail = failure_blocked.get(repository) or success_blocked.get(repository)
         if not detail:
             continue
         state["stage"] = "complete"
         state["status"] = "skipped_repository_cooldown"
-        state["last_error"] = (
-            "repository circuit open after "
-            f"{detail['failure_count']} consecutive failed jobs"
-        )
+        if detail.get("kind") == "success":
+            state["last_error"] = (
+                "repository recently completed; rotating to a different target"
+            )
+        else:
+            state["last_error"] = (
+                "repository circuit open after "
+                f"{detail['failure_count']} consecutive failed jobs"
+            )
         state["repository_cooldown"] = detail
         state["updated_at"] = utc_now()
         _write_json(state_path, state)
