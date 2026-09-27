@@ -558,11 +558,12 @@ class CentralAgent:
         }
 
     def stop(self) -> None:
+        # Signal handlers must remain non-blocking. The monitored batch loop
+        # observes these events within one second and performs Docker cleanup.
         self.stop_event.set()
         worker = getattr(self, "_active_worker", None)
         if worker is not None:
             worker.stop()
-        self._stop_active_containers()
 
     def test_telegram(self) -> tuple[bool, str]:
         return self._notify(
@@ -743,16 +744,26 @@ class CentralAgent:
         future = executor.submit(worker.run, jobs)
         self._write_decision("capacity", capacity)
         self.monitor("batch_started")
+        next_monitor = time.monotonic() + interval
+        stopping = False
         try:
             while True:
+                if self.stop_event.is_set() and not stopping:
+                    stopping = True
+                    worker.stop()
+                    self._stop_active_containers()
+                timeout = 1.0 if stopping else min(
+                    1.0, max(0.1, next_monitor - time.monotonic())
+                )
                 try:
-                    results = future.result(timeout=interval)
+                    results = future.result(timeout=timeout)
                     return results
                 except FutureTimeout:
-                    self.monitor("scheduled_check")
-                    if self.stop_event.is_set():
-                        worker.stop()
-                        self._stop_active_containers()
+                    if stopping:
+                        continue
+                    if time.monotonic() >= next_monitor:
+                        self.monitor("scheduled_check")
+                        next_monitor = time.monotonic() + interval
         except KeyboardInterrupt:
             self.stop()
             raise
@@ -1864,23 +1875,26 @@ class CentralAgent:
         ]
 
     def _stop_active_containers(self) -> None:
+        names: set[str] = set()
         for state_path in self.runs_root.glob("*/state.json"):
             state = _optional_json(state_path)
             for key in ("active_fuzz_container", "active_afl_container"):
                 name = str(state.get(key) or "")
-                if not re.fullmatch(r"fts-[a-z0-9-]{3,80}", name):
-                    continue
-                try:
-                    subprocess.run(
-                        ["docker", "rm", "-f", name],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        timeout=30,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                if re.fullmatch(r"fts-[a-z0-9-]{3,80}", name):
+                    names.add(name)
+        if not names:
+            return
+        try:
+            subprocess.run(
+                ["docker", "rm", "-f", *sorted(names)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_path.is_file():

@@ -815,6 +815,9 @@ class PipelineRunner:
             )
         self.progress(f"{job_id}: rechecking bug-bounty authorization before fuzzing")
         self._recheck_policy(job_dir, job)
+        cancel_event = getattr(self, "cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineInterrupted("fuzzing stopped by operator")
         budget = int((job.get("budgets") or {})["fuzz_seconds"])
         progress_path = job_dir / "artifacts" / "fuzz-progress.json"
         progress = (
@@ -3020,34 +3023,52 @@ class PipelineRunner:
             detail = (result.stderr or result.stdout).strip()[-2000:]
             raise PipelineError(f"command failed: {command[0]}: {detail}")
 
-    @staticmethod
     def _run_streaming(
+        self,
         command: list[str],
         log_path: Path,
         timeout: int,
         *,
         allow_failure: bool = False,
     ) -> int:
+        cancel_event = getattr(self, "cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineInterrupted("command stopped by operator")
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"$ {' '.join(command[:6])}\n")
             handle.flush()
-            try:
-                process = subprocess.Popen(
-                    command,
-                    stdout=handle,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    env=_subprocess_environment(),
-                )
-                return_code = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                process.terminate()
+            process = subprocess.Popen(
+                command,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                env=_subprocess_environment(),
+            )
+            deadline = time.monotonic() + timeout
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+                    raise PipelineInterrupted("command stopped by operator")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+                    raise PipelineError(f"command exceeded {timeout}s timeout")
                 try:
-                    process.wait(timeout=10)
+                    return_code = process.wait(timeout=min(1.0, remaining))
+                    break
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                raise PipelineError(f"command exceeded {timeout}s timeout") from exc
+                    continue
             handle.write(f"\nexit={return_code}\n")
         if return_code != 0 and not allow_failure:
             raise PipelineError(

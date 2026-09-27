@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -14,7 +15,11 @@ from fuzz_target_scout.coverage_analysis import (
     deterministic_review,
     validate_review,
 )
-from fuzz_target_scout.pipeline import PipelineError, UnsupportedIntegrationError
+from fuzz_target_scout.pipeline import (
+    PipelineError,
+    PipelineInterrupted,
+    UnsupportedIntegrationError,
+)
 from fuzz_target_scout.pipeline_runner import (
     PipelineRunner,
     _adapt_allocation_for_resource_limits,
@@ -1387,6 +1392,42 @@ class PipelineRunnerTests(unittest.TestCase):
                 command.index("CORPUS_DIR=/tmp/fuzz_parser_corpus"),
                 command.index(corpus_mount),
             )
+
+    def test_streaming_command_stops_when_cancelled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = object.__new__(PipelineRunner)
+            runner.cancel_event = threading.Event()
+
+            class FakeProcess:
+                def __init__(self):
+                    self.waits = 0
+                    self.terminated = False
+
+                def wait(self, timeout):
+                    self.waits += 1
+                    if self.waits == 1:
+                        runner.cancel_event.set()
+                        raise subprocess.TimeoutExpired("docker", timeout)
+                    return 0
+
+                def terminate(self):
+                    self.terminated = True
+
+                def kill(self):
+                    raise AssertionError("cooperative termination should be enough")
+
+            process = FakeProcess()
+            with patch(
+                "fuzz_target_scout.pipeline_runner.subprocess.Popen",
+                return_value=process,
+            ), self.assertRaises(PipelineInterrupted):
+                runner._run_streaming(
+                    ["docker", "run", "image"],
+                    Path(directory) / "run.log",
+                    timeout=30,
+                )
+
+        self.assertTrue(process.terminated)
 
     def test_afl_banner_runs_only_inside_isolated_container(self):
         completed = subprocess.CompletedProcess(

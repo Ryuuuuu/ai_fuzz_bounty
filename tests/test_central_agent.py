@@ -1110,6 +1110,55 @@ class CentralAgentTests(unittest.TestCase):
         )
         self.assertEqual(result["completed_batches"], 2)
 
+    def test_stop_only_sets_events_and_never_blocks_on_docker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+
+            class FakeWorker:
+                stopped = False
+
+                def stop(self):
+                    self.stopped = True
+
+            worker = FakeWorker()
+            agent._active_worker = worker
+            with patch.object(agent, "_stop_active_containers") as cleanup:
+                agent.stop()
+
+        self.assertTrue(agent.stop_event.is_set())
+        self.assertTrue(worker.stopped)
+        cleanup.assert_not_called()
+
+    def test_active_container_cleanup_is_batched_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+            first = agent.runs_root / "first"
+            second = agent.runs_root / "second"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            (first / "state.json").write_text(
+                json.dumps({"active_fuzz_container": "fts-zeta-123"})
+            )
+            (second / "state.json").write_text(
+                json.dumps(
+                    {
+                        "active_fuzz_container": "fts-alpha-123",
+                        "active_afl_container": "invalid container",
+                    }
+                )
+            )
+            with patch("fuzz_target_scout.central_agent.subprocess.run") as run:
+                agent._stop_active_containers()
+
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.args[0],
+            ["docker", "rm", "-f", "fts-alpha-123", "fts-zeta-123"],
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 20)
+
     def test_candidate_discovery_honors_stop_without_failure_alert(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
