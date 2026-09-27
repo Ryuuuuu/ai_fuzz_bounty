@@ -46,6 +46,9 @@ from .resources import ResourceAllocation, plan_resources
 from .storage import Store
 
 
+GRACEFUL_INTERRUPTION_ERRORS = frozenset(
+    {"fuzzing stopped by operator", "command stopped by operator"}
+)
 PROBLEM_STATUSES = {
     "failed",
     "generation_failed",
@@ -1567,7 +1570,7 @@ class CentralAgent:
                 item.get("stage") == "fuzzing"
                 and status in {"running", "ready", "interrupted"}
                 and str(item.get("last_error") or "").casefold()
-                == "fuzzing stopped by operator"
+                in GRACEFUL_INTERRUPTION_ERRORS
             ):
                 continue
             if status in PROBLEM_STATUSES:
@@ -2273,7 +2276,7 @@ def _health_job_view(item: dict[str, Any]) -> dict[str, Any]:
         value.get("stage") == "fuzzing"
         and value.get("status") in {"running", "ready", "interrupted"}
         and str(value.get("last_error") or "").casefold()
-        == "fuzzing stopped by operator"
+        in GRACEFUL_INTERRUPTION_ERRORS
     ):
         value["status"] = "ready" if value.get("status") == "interrupted" else value["status"]
         value["last_error"] = None

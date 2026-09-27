@@ -15,6 +15,7 @@ from fuzz_target_scout.central_agent import (
     _failure_fingerprint,
     _followup_available,
     _health_incident_key,
+    _health_job_view,
 )
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.pipeline_worker import PipelineWorker, WorkerResult
@@ -1038,18 +1039,22 @@ class CentralAgentTests(unittest.TestCase):
     def test_graceful_fuzz_interruption_is_not_an_operational_failure(self):
         config, _ = load_config(Path("missing.toml"))
         agent = CentralAgent(config)
-        overview = {
-            "jobs": [
-                {
-                    "job_id": "org-parser-aaaaaaaaaaaa",
-                    "status": "interrupted",
-                    "stage": "fuzzing",
-                    "last_error": "fuzzing stopped by operator",
-                }
-            ]
-        }
+        for error in (
+            "fuzzing stopped by operator",
+            "command stopped by operator",
+        ):
+            item = {
+                "job_id": "org-parser-aaaaaaaaaaaa",
+                "status": "interrupted",
+                "stage": "fuzzing",
+                "last_error": error,
+            }
 
-        self.assertEqual(agent._operational_problems(overview), [])
+            self.assertEqual(agent._operational_problems({"jobs": [item]}), [])
+            health = _health_job_view(item)
+            self.assertEqual(health["status"], "ready")
+            self.assertIsNone(health["last_error"])
+            self.assertIn("resumable", health["resume_note"])
 
     def test_cycle_review_and_improvement_finish_before_the_next_batch(self):
         with tempfile.TemporaryDirectory() as directory:
