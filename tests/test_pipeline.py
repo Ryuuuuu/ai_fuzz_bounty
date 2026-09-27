@@ -9,6 +9,7 @@ from fuzz_target_scout.pipeline import (
     load_oss_fuzz_support_index,
     prepare_jobs,
     quarantine_repository_cooldown_jobs,
+    repository_discovery_exclusions,
 )
 
 
@@ -205,6 +206,21 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(third.created, 0)
             self.assertEqual(
                 third.skip_reasons, {"repository_failure_cooldown": 1}
+            )
+
+    def test_discovery_exclusions_combine_live_and_success_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {**CONFIG, "repository_success_cooldown_hours": 168}
+            root_path = Path(directory)
+            first = prepare_jobs([candidate(commit="b" * 40)], root_path, config, LOCK)
+            self._complete_job(root_path / first.job_ids[0], "exhausted")
+            live = candidate(commit="c" * 40)
+            live["repository"] = "org/live"
+            live["repository_url"] = "https://github.com/org/live"
+            prepare_jobs([live], root_path, config, LOCK)
+            self.assertEqual(
+                repository_discovery_exclusions(root_path, config),
+                {"org/parser", "org/live"},
             )
 
     def test_recent_success_opens_a_repository_diversity_cooldown(self):

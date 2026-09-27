@@ -7,10 +7,12 @@ from unittest.mock import patch
 
 from fuzz_target_scout.ai import CodexReviewer
 from fuzz_target_scout.engine import (
+    ScoutEngine,
     _enabled_language_queries,
     _language_is_enabled,
     _planned_repositories,
 )
+from fuzz_target_scout.models import RepoSnapshot
 
 
 class CodexReviewerTests(unittest.TestCase):
@@ -33,6 +35,34 @@ class CodexReviewerTests(unittest.TestCase):
                 "stars:20..100",
             ],
         )
+
+    def test_catalog_discovery_skips_excluded_before_repository_lookup(self):
+        engine = object.__new__(ScoutEngine)
+        engine.config = {"pipeline": {"languages": ["C", "C++"]}}
+        engine.policy = type(
+            "Policy", (), {"catalog_names": ["Org/Done", "Org/New"]}
+        )()
+        calls = []
+        snapshots = {
+            "Org/New": RepoSnapshot(
+                "Org/New", "https://github.com/Org/New", "main", "a" * 40,
+                language="C++",
+            )
+        }
+        engine.github = type(
+            "GitHub",
+            (),
+            {
+                "get_repository": lambda _self, name: (
+                    calls.append(name) or snapshots.get(name)
+                )
+            },
+        )()
+
+        result = engine._discover(True, 1, None, {"org/done"})
+
+        self.assertEqual(calls, ["Org/New"])
+        self.assertEqual([item.full_name for item in result], ["Org/New"])
 
     def test_catalog_seed_follows_enabled_pipeline_languages(self):
         self.assertTrue(_language_is_enabled("C++", ["C", "C++"]))

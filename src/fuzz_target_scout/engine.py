@@ -59,6 +59,7 @@ class ScoutEngine:
         limit: int | None = None,
         queries: list[str] | None = None,
         use_ai: bool = True,
+        exclude_repositories: set[str] | None = None,
     ) -> ScanSummary:
         source = "catalog" if catalog_only else "github-search"
         scan_id = self.store.start_scan(source)
@@ -66,7 +67,14 @@ class ScoutEngine:
         errors = 0
         try:
             self._refresh_policy_sources()
-            repos = self._discover(catalog_only, limit, queries)
+            excluded = {
+                str(value).casefold() for value in (exclude_repositories or set())
+            }
+            if excluded:
+                self.progress(
+                    f"excluded {len(excluded)} active or cooldown repositories"
+                )
+            repos = self._discover(catalog_only, limit, queries, excluded)
             self.progress(f"discovered {len(repos)} unique repositories")
             for index, repo in enumerate(repos, 1):
                 self.progress(f"[{index}/{len(repos)}] policy {repo.full_name}")
@@ -173,15 +181,18 @@ class ScoutEngine:
         catalog_only: bool,
         limit: int | None,
         queries: list[str] | None,
+        excluded: set[str] | None = None,
     ) -> list[RepoSnapshot]:
+        excluded = excluded or set()
         unique: dict[str, RepoSnapshot] = {}
         enabled_languages = [
             str(value)
             for value in (self.config.get("pipeline") or {}).get("languages", [])
         ]
         if catalog_only:
-            names = self.policy.catalog_names[:limit] if limit else self.policy.catalog_names
-            for name in names:
+            for name in self.policy.catalog_names:
+                if name.casefold() in excluded:
+                    continue
                 try:
                     repo = self.github.get_repository(name)
                 except GitHubError as exc:
@@ -191,10 +202,14 @@ class ScoutEngine:
                     if not _language_is_enabled(repo.language, enabled_languages):
                         continue
                     unique[repo.full_name.casefold()] = repo
+                    if limit and len(unique) >= limit:
+                        break
             return list(unique.values())
 
         if bool(self.config["github"].get("seed_policy_catalog", True)):
             for name in self.policy.catalog_names:
+                if name.casefold() in excluded:
+                    continue
                 try:
                     repo = self.github.get_repository(name)
                 except GitHubError as exc:
@@ -234,6 +249,8 @@ class ScoutEngine:
                 max_pages=max_pages,
             )
             for repo in results:
+                if repo.full_name.casefold() in excluded:
+                    continue
                 unique.setdefault(repo.full_name.casefold(), repo)
                 if limit and len(unique) >= limit:
                     return list(unique.values())

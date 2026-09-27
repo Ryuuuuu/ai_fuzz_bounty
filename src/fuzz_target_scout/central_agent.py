@@ -38,6 +38,7 @@ from .pipeline import (
     load_toolchain_lock,
     prepare_jobs,
     quarantine_repository_cooldown_jobs,
+    repository_discovery_exclusions,
     utc_now,
 )
 from .pipeline_worker import MANUAL_STATUSES, PipelineWorker, WorkerResult
@@ -1801,10 +1802,14 @@ class CentralAgent:
             engine = ScoutEngine(self.config, progress=discovery_progress)
             try:
                 limit = int(self.agent["discovery_limit"])
+                exclusions = repository_discovery_exclusions(
+                    self.runs_root, self.pipeline
+                )
                 summary = engine.scan(
                     catalog_only=False,
                     limit=limit if limit > 0 else None,
                     use_ai=True,
+                    exclude_repositories=exclusions,
                 )
             finally:
                 engine.close()

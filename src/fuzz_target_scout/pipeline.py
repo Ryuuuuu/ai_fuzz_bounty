@@ -183,6 +183,18 @@ def _planned_repositories(runs_root: Path) -> set[str]:
     return repositories
 
 
+def repository_discovery_exclusions(
+    runs_root: str | Path, pipeline_config: dict[str, Any]
+) -> set[str]:
+    """Return repositories that should be skipped before GitHub detail lookups."""
+    root = Path(runs_root)
+    return (
+        _planned_repositories(root)
+        | set(repository_failure_cooldowns(root, pipeline_config))
+        | set(repository_success_cooldowns(root, pipeline_config))
+    )
+
+
 def repository_failure_cooldowns(
     runs_root: str | Path,
     pipeline_config: dict[str, Any],
