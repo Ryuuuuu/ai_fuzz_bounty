@@ -49,6 +49,7 @@ DEFAULTS: dict[str, Any] = {
         "mode": "native_only",
         "host_arch": "auto",
         "require_explicit_support": True,
+        "allow_portable_native_probe": True,
         "max_evidence_files": 8,
         "native_builder_image": "ubuntu:24.04",
     },

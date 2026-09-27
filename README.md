@@ -16,6 +16,8 @@ Clang/libFuzzer를 쓰는 네이티브 CMake, Meson, Autotools 경로로 초기 
    정확히 일치할 때만 verified로 판정합니다.
 4. verified와 conditional 후보에 대해서만 파일 트리, README와 제한된 CI·빌드
    파일을 읽어 현재 호스트의 ARM64/aarch64 또는 x86_64 지원 근거를 확인합니다.
+   명시적 ARM 근거가 없어도 루트의 이식 가능한 빌드와 first-party 퍼즈 하네스가
+   함께 있으면 ARM 서버의 실제 빌드 성공을 최종 호환성 증거로 사용합니다.
 5. 현재 호스트와 호환되고 정적 점수를 통과한 verified 후보만 AI가 재평가합니다.
 6. 기본 export는 verified만 JSONL로 내보냅니다. needs_review, rejected,
    초대제인 conditional은 자동 파이프라인에서 제외됩니다.

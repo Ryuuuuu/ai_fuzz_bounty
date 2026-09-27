@@ -137,8 +137,11 @@ logs/             빌드와 실행 로그
 
 `architecture.mode=native_only`가 기본값이다. 탐색기는 호스트 아키텍처를 자동
 감지하고 README, CI, Docker와 빌드 설정에서 같은 아키텍처의 명시적 근거를 찾는다.
-근거가 없거나 다른 아키텍처인 후보는 export와 작업 생성에서 각각 차단한다.
-ARM64/aarch64 호스트에서는 amd64 전용인 공식 OSS-Fuzz 빌더·러너를 사용하지 않는다.
+다른 아키텍처이거나 명시적 비지원 근거가 있는 후보는 차단한다. 명시적 ARM 근거가
+없더라도 루트의 CMake, Meson 또는 Autotools 정의와 first-party 퍼즈 하네스가 모두
+있으면 ARM 호스트의 실제 네이티브 빌드를 제한된 호환성 probe로 사용한다. 이 빌드가
+실패하면 퍼징으로 넘어가지 않는다. ARM64/aarch64 호스트에서는 amd64 전용인 공식
+OSS-Fuzz 빌더·러너를 사용하지 않는다.
 대신 `ubuntu:24.04`의 현재 호스트 변형에 Clang, ASan/UBSan과 libFuzzer를 설치해
 CMake, Meson 또는 Autotools 프로젝트를 네이티브 빌드한다. 이미지 메타데이터와
 컨테이너 안의 `uname -m`이 작업 주문의 아키텍처와 모두 일치해야 빌드를 인정한다.

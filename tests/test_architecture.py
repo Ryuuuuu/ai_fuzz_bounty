@@ -32,6 +32,46 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(result.host_arch, "aarch64")
         self.assertTrue(result.evidence)
 
+    def test_portable_root_build_with_fuzz_harness_allows_native_probe(self):
+        repo = RepoSnapshot(
+            full_name="org/parser",
+            html_url="https://github.com/org/parser",
+            default_branch="main",
+            head_sha="a" * 40,
+            paths=["CMakeLists.txt", "src/parser.cc", "fuzz/parser_fuzzer.cc"],
+        )
+        result = assess_architecture(
+            repo,
+            {
+                "mode": "native_only",
+                "host_arch": "arm64",
+                "require_explicit_support": True,
+                "allow_portable_native_probe": True,
+            },
+        )
+        self.assertTrue(result.compatible)
+        self.assertEqual(result.confidence, 60)
+        self.assertIn("native_build_probe", result.evidence[0])
+
+    def test_portable_probe_rejects_vendored_fuzz_harness(self):
+        repo = RepoSnapshot(
+            full_name="org/parser",
+            html_url="https://github.com/org/parser",
+            default_branch="main",
+            head_sha="a" * 40,
+            paths=["CMakeLists.txt", "third_party/lib/fuzz/fuzzer.cc"],
+        )
+        result = assess_architecture(
+            repo,
+            {
+                "mode": "native_only",
+                "host_arch": "arm64",
+                "require_explicit_support": True,
+                "allow_portable_native_probe": True,
+            },
+        )
+        self.assertFalse(result.compatible)
+
     def test_missing_explicit_evidence_is_rejected(self):
         repo = RepoSnapshot(
             full_name="org/parser",

@@ -41,6 +41,8 @@ google_oss_vrp_program_url = "https://bughunters.google.com/about/rules/open-sou
 mode = "native_only"
 host_arch = "auto"
 require_explicit_support = true
+# 명시적 ARM 문서가 없어도 루트 빌드와 퍼즈 하네스가 있으면 ARM 네이티브 빌드로 검증합니다.
+allow_portable_native_probe = true
 max_evidence_files = 8
 # Ubuntu 공식 이미지는 amd64와 arm64를 모두 제공하며 현재 호스트 변형을 받습니다.
 native_builder_image = "ubuntu:24.04"

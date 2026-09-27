@@ -32,6 +32,27 @@ NEGATIVE_PATTERNS = {
 }
 
 
+def _portable_native_probe_candidate(repo: RepoSnapshot) -> bool:
+    """Allow an ARM build probe only for a small, portable, fuzz-ready shape."""
+    paths = [str(value).replace("\\", "/") for value in repo.paths]
+    roots = {path.casefold() for path in paths if "/" not in path}
+    portable_build = bool(
+        roots & {"cmakelists.txt", "meson.build", "configure.ac", "configure.in"}
+    )
+    source_suffixes = (".c", ".cc", ".cpp", ".cxx", ".c++")
+    fuzz_harness = False
+    for path in paths:
+        lowered = path.casefold()
+        parts = lowered.split("/")
+        if any(part in {"third_party", "third-party", "vendor", "vendored"} for part in parts):
+            continue
+        name = parts[-1]
+        if name.endswith(source_suffixes) and any("fuzz" in part for part in parts):
+            fuzz_harness = True
+            break
+    return portable_build and fuzz_harness
+
+
 def normalize_architecture(value: str) -> str:
     normalized = value.strip().casefold().replace(" ", "")
     return ARCH_ALIASES.get(normalized, normalized)
@@ -93,13 +114,27 @@ def assess_architecture(
     evidence = list(dict.fromkeys(evidence))[:16]
     blockers = list(dict.fromkeys(blockers))[:8]
     require_explicit = bool(config.get("require_explicit_support", True))
-    compatible = not blockers and (bool(evidence) or not require_explicit)
+    portable_probe = (
+        not blockers
+        and not evidence
+        and bool(config.get("allow_portable_native_probe", True))
+        and _portable_native_probe_candidate(repo)
+    )
+    if portable_probe:
+        evidence.append(
+            "native_build_probe:root_portable_build_and_existing_fuzz_harness"
+        )
+    compatible = not blockers and (
+        bool(evidence) or not require_explicit
+    )
     if not evidence and require_explicit:
         blockers.append(f"no_explicit_native_support_evidence:{host_arch}")
     return ArchitectureAssessment(
         host_arch=host_arch,
         compatible=compatible,
-        confidence=100 if blockers else (90 if evidence else 50),
+        confidence=(
+            100 if blockers else (60 if portable_probe else (90 if evidence else 50))
+        ),
         evidence=evidence,
         blockers=blockers,
     )
