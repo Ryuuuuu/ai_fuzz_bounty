@@ -40,6 +40,12 @@ CMAKE_SYSTEM_DEPENDENCIES = {
     "zlib": ("zlib1g-dev",),
 }
 MESON_SYSTEM_DEPENDENCIES = {
+    "boost": (
+        "libboost-context-dev",
+        "libboost-dev",
+        "libboost-program-options-dev",
+        "libboost-serialization-dev",
+    ),
     "bzip2": ("libbz2-dev",),
     "libcurl": ("libcurl4-openssl-dev",),
     "libcrypto": ("libssl-dev",),

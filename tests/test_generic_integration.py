@@ -172,7 +172,8 @@ class GenericIntegrationTests(unittest.TestCase):
                 pipeline={},
                 build_error=(
                     "meson/lua/meson.build:43:2: ERROR: No Lua implementation was found\n"
-                    'meson/libcrypto/meson.build:22:18: ERROR: Dependency "libcrypto" not found'
+                    'meson/libcrypto/meson.build:22:18: ERROR: Dependency "libcrypto" not found\n'
+                    'meson/boost/meson.build:1:12: ERROR: Dependency "boost" not found'
                 ),
                 attempt=1,
             )
@@ -184,13 +185,30 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertEqual(result["repair_kind"], "deterministic_system_dependency")
         self.assertEqual(
             result["added_system_dependencies"],
-            ["liblua5.4-dev", "libssl-dev"],
+            [
+                "libboost-context-dev",
+                "libboost-dev",
+                "libboost-program-options-dev",
+                "libboost-serialization-dev",
+                "liblua5.4-dev",
+                "libssl-dev",
+            ],
         )
         self.assertTrue(result["requires_clean_build"])
         self.assertEqual(
             saved["system_dependencies"],
-            ["liblua5.4-dev", "libssl-dev"],
+            [
+                "libboost-context-dev",
+                "libboost-dev",
+                "libboost-program-options-dev",
+                "libboost-serialization-dev",
+                "liblua5.4-dev",
+                "libssl-dev",
+            ],
         )
+        self.assertIn("libboost-context-dev", dockerfile)
+        self.assertIn("libboost-program-options-dev", dockerfile)
+        self.assertIn("libboost-serialization-dev", dockerfile)
         self.assertIn("liblua5.4-dev", dockerfile)
         self.assertIn("libssl-dev", dockerfile)
 
