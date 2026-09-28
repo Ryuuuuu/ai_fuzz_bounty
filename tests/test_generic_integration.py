@@ -81,6 +81,10 @@ class GenericIntegrationTests(unittest.TestCase):
         dockerfile = _dockerfile("cmake", "ubuntu:24.04")
         self.assertIn("FROM ubuntu:24.04", dockerfile)
         self.assertIn("clang lld llvm", dockerfile)
+        self.assertIn("ARG FUZZ_UID=1000", dockerfile)
+        self.assertIn("ARG FUZZ_GID=1000", dockerfile)
+        self.assertIn('getent passwd "$FUZZ_UID"', dockerfile)
+        self.assertIn('useradd --uid "$FUZZ_UID"', dockerfile)
         self.assertIn("COPY --chmod=0644 generic_harness.cc", dockerfile)
         self.assertNotIn("gcr.io/oss-fuzz-base", dockerfile)
 

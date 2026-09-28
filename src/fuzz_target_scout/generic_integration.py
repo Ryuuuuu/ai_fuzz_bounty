@@ -665,10 +665,15 @@ WORKDIR $SRC/project
     if not re.fullmatch(r"[A-Za-z0-9./:_-]{3,200}", native_base_image):
         raise PipelineError("native builder image reference is invalid")
     return f"""FROM {native_base_image}
+ARG FUZZ_UID=1000
+ARG FUZZ_GID=1000
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates clang lld llvm file libclang-rt-dev libc++-dev libc++abi-dev \
-    build-essential {packages}{dependency_packages}{source_package} \
+    build-essential passwd {packages}{dependency_packages}{source_package} \
     && rm -rf /var/lib/apt/lists/*
+RUN if ! getent group "$FUZZ_GID" >/dev/null; then groupadd --gid "$FUZZ_GID" fuzzbuild; fi \
+    && if ! getent passwd "$FUZZ_UID" >/dev/null; then useradd --uid "$FUZZ_UID" \
+      --gid "$FUZZ_GID" --no-create-home --shell /usr/sbin/nologin fuzzbuild; fi
 {source_checkout}ENV SRC=/src WORK=/work OUT=/out \
     CC=clang CXX=clang++ \
     CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,fuzzer-no-link" \

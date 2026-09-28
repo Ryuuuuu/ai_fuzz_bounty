@@ -2459,12 +2459,15 @@ class PipelineRunner:
         log_path = job_dir / "logs" / "native-build.log"
         timeout = int(self.pipeline["setup_timeout_seconds"])
         self._sync_submodules(build_source, log_path)
+        image_build_command = [
+            "docker", "build", "--pull", "--label", "fuzz-target-scout=true",
+            "--label", f"fuzz-target-scout.job={job_dir.name}",
+            "--build-arg", f"FUZZ_UID={os.getuid()}",
+            "--build-arg", f"FUZZ_GID={os.getgid()}",
+            "-t", image_tag, str(project_dir),
+        ]
         self._run_streaming(
-            [
-                "docker", "build", "--pull", "--label", "fuzz-target-scout=true",
-                "--label", f"fuzz-target-scout.job={job_dir.name}",
-                "-t", image_tag, str(project_dir),
-            ],
+            image_build_command,
             log_path,
             timeout=timeout,
         )
@@ -2517,11 +2520,7 @@ class PipelineRunner:
                     attempt=attempt,
                 )
                 self._run_streaming(
-                    [
-                        "docker", "build", "--label", "fuzz-target-scout=true",
-                        "--label", f"fuzz-target-scout.job={job_dir.name}",
-                        "-t", image_tag, str(project_dir),
-                    ],
+                    image_build_command,
                     log_path,
                     timeout=timeout,
                 )
