@@ -42,6 +42,7 @@ CMAKE_SYSTEM_DEPENDENCIES = {
 MESON_SYSTEM_DEPENDENCIES = {
     "bzip2": ("libbz2-dev",),
     "libcurl": ("libcurl4-openssl-dev",),
+    "libcrypto": ("libssl-dev",),
     "libpcre2-8": ("libpcre2-dev",),
     "libsodium": ("libsodium-dev",),
     "libssl": ("libssl-dev",),

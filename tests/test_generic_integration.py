@@ -170,7 +170,10 @@ class GenericIntegrationTests(unittest.TestCase):
                 source=source,
                 project_dir=project,
                 pipeline={},
-                build_error="meson/lua/meson.build:43:2: ERROR: No Lua implementation was found",
+                build_error=(
+                    "meson/lua/meson.build:43:2: ERROR: No Lua implementation was found\n"
+                    'meson/libcrypto/meson.build:22:18: ERROR: Dependency "libcrypto" not found'
+                ),
                 attempt=1,
             )
 
@@ -179,10 +182,17 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             dockerfile = (project / "Dockerfile").read_text()
         self.assertEqual(result["repair_kind"], "deterministic_system_dependency")
-        self.assertEqual(result["added_system_dependencies"], ["liblua5.4-dev"])
+        self.assertEqual(
+            result["added_system_dependencies"],
+            ["liblua5.4-dev", "libssl-dev"],
+        )
         self.assertTrue(result["requires_clean_build"])
-        self.assertEqual(saved["system_dependencies"], ["liblua5.4-dev"])
+        self.assertEqual(
+            saved["system_dependencies"],
+            ["liblua5.4-dev", "libssl-dev"],
+        )
         self.assertIn("liblua5.4-dev", dockerfile)
+        self.assertIn("libssl-dev", dockerfile)
 
     def test_prefers_first_party_harness_over_vendored_harness(self):
         with tempfile.TemporaryDirectory() as directory:
