@@ -624,7 +624,7 @@ def _dockerfile(
         # CMake projects commonly generate sources and tables with Python at
         # configure time, including native ARM microkernel projects.
         "cmake": "cmake ninja-build pkg-config python3",
-        "meson": "meson ninja-build pkg-config",
+        "meson": "meson ninja-build pkg-config python3 python3-yaml ragel",
         "autotools": "autoconf automake libtool make pkg-config",
         "cargo": "cargo rustc pkg-config",
     }[build_system]

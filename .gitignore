@@ -9,8 +9,6 @@ __pycache__/
 config.toml
 .pytest_cache/
 .tools/
-data/runs/
-data/job-archive/
-data/central-agent/
+data/
 !.codex/
 !.codex/config.toml

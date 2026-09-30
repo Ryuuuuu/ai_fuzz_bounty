@@ -89,6 +89,11 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("COPY --chmod=0644 generic_harness.cc", dockerfile)
         self.assertNotIn("gcr.io/oss-fuzz-base", dockerfile)
 
+    def test_native_meson_builder_has_source_generation_tools(self):
+        dockerfile = _dockerfile("meson", "ubuntu:24.04")
+        self.assertIn("meson ninja-build pkg-config python3 python3-yaml ragel", dockerfile)
+        self.assertIn("git flex bison", dockerfile)
+
     def test_cmake_dependencies_are_inferred_from_a_reviewed_allow_list(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
