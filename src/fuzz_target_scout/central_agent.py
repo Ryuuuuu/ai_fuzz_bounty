@@ -707,7 +707,15 @@ class CentralAgent:
                     notification_transition = "duplicate_suppressed"
         else:
             active = self.state.get("active_health_incident") or {}
-            if active.get("key") and active.get("alert_delivered"):
+            if (
+                active.get("key")
+                and self.state.get("no_runnable_since")
+                and not any(_is_runnable_job(item) for item in overview.get("jobs") or [])
+            ):
+                # An AI decision changing its notification preference cannot
+                # recover a campaign with no runnable work.
+                notification_transition = "still_unavailable"
+            elif active.get("key") and active.get("alert_delivered"):
                 counts = overview.get("status_counts") or {}
                 live = int(counts.get("running") or 0) + int(counts.get("ready") or 0)
                 runnable_count = sum(
@@ -1648,22 +1656,15 @@ class CentralAgent:
                         }
                     )
         idle_since = _parse_time(str(self.state.get("no_runnable_since") or ""))
-        idle_grace = max(
-            60, 2 * int(self.agent.get("idle_discovery_interval_seconds", 3600))
-        )
         if (
             bool(self.agent.get("auto_discover"))
             and idle_since is not None
-            and (now - idle_since).total_seconds() >= idle_grace
             and not any(_is_runnable_job(item) for item in overview.get("jobs") or [])
         ):
             result.append(
                 {
                     "job_id": "system",
-                    "reason": (
-                        "no_runnable_targets: 자동 탐색 후 "
-                        f"{idle_grace // 60}분 이상 실행 가능한 작업이 없습니다"
-                    ),
+                    "reason": "no_runnable_targets: 자동 탐색 후 실행 가능한 작업이 없습니다",
                 }
             )
         return result

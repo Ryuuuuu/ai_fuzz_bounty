@@ -647,21 +647,24 @@ class CentralAgentTests(unittest.TestCase):
                 before_discovery = agent.monitor("idle")
                 self.assertNotIn("no_runnable_since", agent.state)
                 agent.state["last_discovery"] = {"scan_id": 1, "discovered": 0}
-                during_grace = agent.monitor("idle")
+                agent.reviewer.health = lambda _evidence: (
+                    {"severity": "warning", "notify": True,
+                     "summary": "실행 가능한 작업이 없음", "problems": []},
+                    {},
+                )
+                warning = agent.monitor("idle")
                 self.assertIn("no_runnable_since", agent.state)
-                agent.state["no_runnable_since"] = "2020-01-01T00:00:00Z"
-                agent._save_state()
                 restarted = CentralAgent(config)
                 configure(restarted)
-                warning = restarted.monitor("idle")
+                still_idle = restarted.monitor("idle")
                 duplicate = restarted.monitor("idle")
                 recovery = restarted.monitor("idle")
 
             self.assertEqual(before_discovery["notification_transition"], "unchanged")
-            self.assertEqual(during_grace["notification_transition"], "unchanged")
-            self.assertEqual(warning["ai_decision"]["severity"], "healthy")
-            self.assertEqual(warning["effective_severity"], "warning")
             self.assertEqual(warning["notification_transition"], "alerted")
+            self.assertEqual(still_idle["ai_decision"]["severity"], "healthy")
+            self.assertEqual(still_idle["effective_severity"], "warning")
+            self.assertEqual(still_idle["notification_transition"], "duplicate_suppressed")
             self.assertEqual(duplicate["notification_transition"], "duplicate_suppressed")
             self.assertEqual(recovery["notification_transition"], "recovered")
             self.assertEqual(len(messages), 2)
@@ -669,6 +672,52 @@ class CentralAgentTests(unittest.TestCase):
             self.assertIn("실행 가능한 작업: 1", messages[1])
             self.assertNotIn("no_runnable_since", restarted.state)
             self.assertNotIn("no_runnable_since", CentralAgent(config).state)
+
+    def test_empty_campaign_never_recovers_on_ai_notify_flip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            empty = {"job_count": 0, "status_counts": {},
+                     "total_disk_bytes": 0, "jobs": []}
+            messages = []
+            agent = CentralAgent(config)
+            agent.state["last_discovery"] = {"scan_id": 1}
+            decisions = iter([
+                {"severity": "warning", "notify": True,
+                 "summary": "후보 없음", "problems": []},
+                {"severity": "healthy", "notify": False,
+                 "summary": "정상", "problems": []},
+            ])
+            agent.reviewer.health = lambda _evidence: (next(decisions), {})
+            agent.notifier.send = lambda message: (
+                messages.append(message) or True, "ok"
+            )
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                return_value=empty,
+            ), patch.object(
+                agent, "_operational_problems", return_value=[]
+            ):
+                warning = agent.monitor("idle")
+                still_idle = agent.monitor("idle")
+            self.assertEqual(warning["notification_transition"], "alerted")
+            self.assertEqual(still_idle["notification_transition"], "still_unavailable")
+            self.assertEqual(len(messages), 1)
+            self.assertIn("active_health_incident", agent.state)
 
     def test_health_evidence_treats_completed_failures_as_history(self):
         with tempfile.TemporaryDirectory() as directory:
