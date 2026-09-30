@@ -81,6 +81,7 @@ class GenericIntegrationTests(unittest.TestCase):
         dockerfile = _dockerfile("cmake", "ubuntu:24.04")
         self.assertIn("FROM ubuntu:24.04", dockerfile)
         self.assertIn("clang lld llvm", dockerfile)
+        self.assertIn("git flex bison", dockerfile)
         self.assertIn("ARG FUZZ_UID=1000", dockerfile)
         self.assertIn("ARG FUZZ_GID=1000", dockerfile)
         self.assertIn('getent passwd "$FUZZ_UID"', dockerfile)

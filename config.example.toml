@@ -175,6 +175,8 @@ auto_discover = true
 discovery_interval_seconds = 21600
 # 실행 가능한 작업이 없을 때는 더 짧은 주기로 새 C/C++ 범위를 찾습니다.
 idle_discovery_interval_seconds = 3600
+# 작업이 비면 검색 쿼리마다 연속된 페이지를 더 살펴봅니다.
+idle_search_pages_per_query = 2
 # 후보 갱신 자체가 실패하면 정상 주기를 기다리지 않고 이 시간 뒤 재시도합니다.
 discovery_error_retry_seconds = 300
 discovery_limit = 0

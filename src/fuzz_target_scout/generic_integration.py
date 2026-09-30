@@ -646,6 +646,7 @@ def _dockerfile(
         }
     )
     source_package = " git" if allowed_sources else ""
+    native_tools = " flex bison" if allowed_sources else " git flex bison"
     source_checkout = ""
     for name in allowed_sources:
         dependency = CMAKE_SOURCE_DEPENDENCIES[name]
@@ -669,7 +670,7 @@ ARG FUZZ_UID=1000
 ARG FUZZ_GID=1000
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates clang lld llvm file libclang-rt-dev libc++-dev libc++abi-dev \
-    build-essential passwd {packages}{dependency_packages}{source_package} \
+    build-essential passwd {packages}{dependency_packages}{source_package}{native_tools} \
     && rm -rf /var/lib/apt/lists/*
 RUN if ! getent group "$FUZZ_GID" >/dev/null; then groupadd --gid "$FUZZ_GID" fuzzbuild; fi \
     && if ! getent passwd "$FUZZ_UID" >/dev/null; then useradd --uid "$FUZZ_UID" \

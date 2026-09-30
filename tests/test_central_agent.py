@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fuzz_target_scout.central_agent import (
@@ -591,6 +592,83 @@ class CentralAgentTests(unittest.TestCase):
         self.assertIn("중앙 상태 경고", messages[0])
         self.assertIn("중앙 상태 복구", messages[1])
         self.assertIn("실행 또는 준비 중인 작업: 1", messages[1])
+
+    def test_empty_campaign_alerts_after_successful_discovery_and_recovers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            config["agent"]["idle_discovery_interval_seconds"] = 3600
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            empty = {
+                "job_count": 0,
+                "status_counts": {},
+                "total_disk_bytes": 0,
+                "jobs": [],
+            }
+            runnable = {
+                **empty,
+                "job_count": 1,
+                "jobs": [{
+                    "job_id": "org-parser-aaaaaaaaaaaa",
+                    "status": "running",
+                    "stage": "fuzzing",
+                    "updated_at": "2099-01-01T00:00:00Z",
+                }],
+            }
+            messages = []
+            def configure(agent):
+                agent.reviewer.health = lambda _evidence: (
+                    {"severity": "healthy", "notify": False, "summary": "정상", "problems": []},
+                    {},
+                )
+                agent.notifier.send = lambda message: (
+                    messages.append(message) or True, "ok"
+                )
+
+            agent = CentralAgent(config)
+            configure(agent)
+            with patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                side_effect=[empty, empty, empty, empty, runnable],
+            ):
+                before_discovery = agent.monitor("idle")
+                self.assertNotIn("no_runnable_since", agent.state)
+                agent.state["last_discovery"] = {"scan_id": 1, "discovered": 0}
+                during_grace = agent.monitor("idle")
+                self.assertIn("no_runnable_since", agent.state)
+                agent.state["no_runnable_since"] = "2020-01-01T00:00:00Z"
+                agent._save_state()
+                restarted = CentralAgent(config)
+                configure(restarted)
+                warning = restarted.monitor("idle")
+                duplicate = restarted.monitor("idle")
+                recovery = restarted.monitor("idle")
+
+            self.assertEqual(before_discovery["notification_transition"], "unchanged")
+            self.assertEqual(during_grace["notification_transition"], "unchanged")
+            self.assertEqual(warning["ai_decision"]["severity"], "healthy")
+            self.assertEqual(warning["effective_severity"], "warning")
+            self.assertEqual(warning["notification_transition"], "alerted")
+            self.assertEqual(duplicate["notification_transition"], "duplicate_suppressed")
+            self.assertEqual(recovery["notification_transition"], "recovered")
+            self.assertEqual(len(messages), 2)
+            self.assertIn("no_runnable_targets", messages[0])
+            self.assertIn("실행 가능한 작업: 1", messages[1])
+            self.assertNotIn("no_runnable_since", restarted.state)
+            self.assertNotIn("no_runnable_since", CentralAgent(config).state)
 
     def test_health_evidence_treats_completed_failures_as_history(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1203,6 +1281,42 @@ class CentralAgentTests(unittest.TestCase):
             ["docker", "rm", "-f", "fts-alpha-123", "fts-zeta-123"],
         )
         self.assertEqual(run.call_args.kwargs["timeout"], 20)
+
+    def test_idle_discovery_uses_wider_search_than_active_campaign(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["idle_search_pages_per_query"] = 3
+            agent = CentralAgent(config)
+            calls = []
+
+            class FakeEngine:
+                def __init__(self, _config, progress):
+                    pass
+
+                def scan(self, **kwargs):
+                    calls.append(kwargs)
+                    return SimpleNamespace(
+                        scan_id=len(calls), discovered=0, verified=0, errors=0
+                    )
+
+                def close(self):
+                    pass
+
+            agent._export_verified_candidates = lambda _scan_id: None
+            agent._plan_exported_candidates = lambda: None
+            agent._runnable_jobs = lambda: []
+            with patch("fuzz_target_scout.central_agent.ScoutEngine", FakeEngine):
+                agent._refresh_candidates_if_due()
+                agent.state["last_discovery_at"] = "2020-01-01T00:00:00Z"
+                agent._runnable_jobs = lambda: [{"job_id": "ready-job"}]
+                agent._refresh_candidates_if_due()
+
+        self.assertEqual(
+            [call["search_pages_per_query"] for call in calls], [3, 1]
+        )
 
     def test_candidate_discovery_honors_stop_without_failure_alert(self):
         with tempfile.TemporaryDirectory() as directory:

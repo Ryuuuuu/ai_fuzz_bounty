@@ -276,6 +276,8 @@ class Store:
         minimum_score: int,
         include_conditional: bool,
         enabled_languages: Iterable[str] | None = None,
+        *,
+        scan_id: int | None = None,
     ) -> Iterable[dict[str, Any]]:
         statuses = ("verified", "conditional") if include_conditional else ("verified",)
         placeholders = ",".join("?" for _ in statuses)
@@ -293,14 +295,16 @@ class Store:
             if languages
             else ""
         )
+        scan_clause = " AND last_scan_id = ?" if scan_id is not None else ""
+        scan_values = (scan_id,) if scan_id is not None else ()
         rows = self.connection.execute(
             f"""
             SELECT *
               FROM candidates
-             WHERE policy_status IN ({placeholders}) AND final_score >= ?{language_clause}
+             WHERE policy_status IN ({placeholders}) AND final_score >= ?{language_clause}{scan_clause}
              ORDER BY final_score DESC, full_name
             """,
-            (*statuses, minimum_score, *languages),
+            (*statuses, minimum_score, *languages, *scan_values),
         )
         for row in rows:
             details = json.loads(row["details_json"])

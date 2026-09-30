@@ -578,6 +578,7 @@ class CentralAgent:
 
     def monitor(self, reason: str) -> dict[str, Any]:
         overview = self._sanitize(pipeline_overview(self.runs_root))
+        self._sync_runnable_availability(overview)
         resource = plan_resources(self.pipeline)
         events = self._finding_events()
         judgment_events = self._judgment_events()
@@ -635,6 +636,10 @@ class CentralAgent:
             if not isinstance(item, dict)
             or str(item.get("job_id") or "") not in recovered_job_ids
         ]
+        effective_severity = str(decision.get("severity") or "healthy")
+        if remaining_deterministic and effective_severity in {"healthy", "info"}:
+            effective_severity = "warning"
+        record["effective_severity"] = effective_severity
         should_notify = bool(remaining_deterministic) or (
             bool(decision.get("notify"))
             and (bool(remaining_ai_problems) or not recovered_job_ids)
@@ -650,7 +655,7 @@ class CentralAgent:
         elif should_notify:
             active = self.state.get("active_health_incident") or {}
             source = "deterministic" if remaining_deterministic else "ai"
-            severity = str(decision.get("severity") or "warning")
+            severity = effective_severity
             cooldown = int(self.agent.get("health_alert_cooldown_seconds", 7200))
             if _health_alert_in_cooldown(active, source, severity, cooldown):
                 active["suppressed_count"] = int(
@@ -663,9 +668,12 @@ class CentralAgent:
                 self.state["active_health_incident"] = active
                 notification_transition = "cooldown_suppressed"
             else:
+                alert_summary = str(decision.get("summary") or "")
+                if remaining_deterministic and decision.get("severity") in {"healthy", "info"}:
+                    alert_summary = "운영 점검에서 실행 장애를 확인했습니다."
                 lines = [
                     "⚠️ AI fuzz 중앙 상태 경고",
-                    str(decision.get("summary") or ""),
+                    alert_summary,
                 ]
                 for item in remaining_deterministic[:6]:
                     lines.append(
@@ -689,7 +697,7 @@ class CentralAgent:
                         ),
                         "alert_delivered": delivered,
                         "delivery_detail": detail,
-                        "summary": str(decision.get("summary") or "")[:1000],
+                        "summary": alert_summary[:1000],
                         "source": source,
                         "severity": severity,
                         "last_alert_at": record["created_at"],
@@ -702,10 +710,14 @@ class CentralAgent:
             if active.get("key") and active.get("alert_delivered"):
                 counts = overview.get("status_counts") or {}
                 live = int(counts.get("running") or 0) + int(counts.get("ready") or 0)
+                runnable_count = sum(
+                    _is_runnable_job(item) for item in overview.get("jobs") or []
+                )
                 recovery = [
                     "✅ AI fuzz 중앙 상태 복구",
                     str(decision.get("summary") or "퍼징 파이프라인이 정상 상태로 돌아왔습니다."),
                     f"- 실행 또는 준비 중인 작업: {live}",
+                    f"- 실행 가능한 작업: {runnable_count}",
                 ]
                 delivered, detail = self._notify(
                     f"health_recovery:{active['key']}",
@@ -730,7 +742,7 @@ class CentralAgent:
         self._write_decision("health", record)
         self.progress(
             "central health: "
-            f"severity={decision.get('severity')} jobs={overview['job_count']} "
+            f"severity={effective_severity} jobs={overview['job_count']} "
             f"findings={len(events)}"
         )
         self.state["last_monitor_at"] = record["created_at"]
@@ -1120,6 +1132,7 @@ class CentralAgent:
             "deltas": deltas,
             "deterministic_problems": problems,
             "pending_finding_events": pending_events,
+            "no_runnable_since": self.state.get("no_runnable_since"),
         }
 
     def _adaptive_strategy_evidence(
@@ -1585,6 +1598,22 @@ class CentralAgent:
                 f"- 마지막 증가 이후: {float(metrics.get('trailing_stagnation_seconds') or 0) / 3600:.1f}시간",
             )
 
+    def _sync_runnable_availability(self, overview: dict[str, Any]) -> None:
+        if any(_is_runnable_job(item) for item in overview.get("jobs") or []):
+            if self.state.pop("no_runnable_since", None) is not None:
+                self._save_state()
+            return
+        discovery = self.state.get("last_discovery")
+        if (
+            not bool(self.agent.get("auto_discover"))
+            or not isinstance(discovery, dict)
+            or not discovery.get("scan_id")
+            or self.state.get("no_runnable_since")
+        ):
+            return
+        self.state["no_runnable_since"] = utc_now()
+        self._save_state()
+
     def _operational_problems(
         self, overview: dict[str, Any]
     ) -> list[dict[str, str]]:
@@ -1618,6 +1647,25 @@ class CentralAgent:
                             "reason": f"running state has not updated for {stale_after} seconds",
                         }
                     )
+        idle_since = _parse_time(str(self.state.get("no_runnable_since") or ""))
+        idle_grace = max(
+            60, 2 * int(self.agent.get("idle_discovery_interval_seconds", 3600))
+        )
+        if (
+            bool(self.agent.get("auto_discover"))
+            and idle_since is not None
+            and (now - idle_since).total_seconds() >= idle_grace
+            and not any(_is_runnable_job(item) for item in overview.get("jobs") or [])
+        ):
+            result.append(
+                {
+                    "job_id": "system",
+                    "reason": (
+                        "no_runnable_targets: 자동 탐색 후 "
+                        f"{idle_grace // 60}분 이상 실행 가능한 작업이 없습니다"
+                    ),
+                }
+            )
         return result
 
     def _finding_events(self) -> list[dict[str, Any]]:
@@ -1780,7 +1828,8 @@ class CentralAgent:
             self._plan_exported_candidates()
             return
         interval = int(self.agent["discovery_interval_seconds"])
-        if not self._runnable_jobs():
+        idle = not self._runnable_jobs()
+        if idle:
             interval = min(
                 interval,
                 int(self.agent.get("idle_discovery_interval_seconds", 3600)),
@@ -1815,10 +1864,15 @@ class CentralAgent:
                     limit=limit if limit > 0 else None,
                     use_ai=True,
                     exclude_repositories=exclusions,
+                    search_pages_per_query=(
+                        int(self.agent.get("idle_search_pages_per_query", 2))
+                        if idle
+                        else 1
+                    ),
                 )
             finally:
                 engine.close()
-            self._export_verified_candidates()
+            self._export_verified_candidates(summary.scan_id)
             self._plan_exported_candidates()
             self.state["last_discovery_at"] = utc_now()
             self.state.pop("last_discovery_error", None)
@@ -1843,7 +1897,7 @@ class CentralAgent:
                 "⚠️ fuzz 대상 갱신에 실패했습니다.\n" + str(exc)[:1000],
             )
 
-    def _export_verified_candidates(self) -> None:
+    def _export_verified_candidates(self, scan_id: int) -> None:
         output = Path(self.config["storage"]["export_path"])
         output.parent.mkdir(parents=True, exist_ok=True)
         store = Store(self.config["storage"]["database_path"])
@@ -1854,6 +1908,7 @@ class CentralAgent:
                     int(self.config["scoring"]["minimum_handoff_score"]),
                     False,
                     self.pipeline.get("languages"),
+                    scan_id=scan_id,
                 )
                 if (
                     str(self.config["architecture"].get("mode")) != "native_only"
@@ -1913,8 +1968,7 @@ class CentralAgent:
         return [
             item
             for item in overview["jobs"]
-            if str(item.get("status") or "") not in MANUAL_STATUSES
-            and str(item.get("stage") or "") != "complete"
+            if _is_runnable_job(item)
         ]
 
     def _stop_active_containers(self) -> None:
@@ -2308,6 +2362,13 @@ def _strategy_status_label(status: str) -> str:
         "failed": "적용 실패",
         "scheduled": "후속 하네스 작업 예약",
     }.get(status, status)
+
+
+def _is_runnable_job(item: dict[str, Any]) -> bool:
+    return (
+        str(item.get("status") or "") not in MANUAL_STATUSES
+        and str(item.get("stage") or "") != "complete"
+    )
 
 
 def _health_job_view(item: dict[str, Any]) -> dict[str, Any]:

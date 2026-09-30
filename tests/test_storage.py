@@ -2,8 +2,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from fuzz_target_scout.central_agent import CentralAgent
+from fuzz_target_scout.config import load_config
 from fuzz_target_scout.models import (
+    ArchitectureAssessment,
     Candidate,
     PolicyAssessment,
     RepoSnapshot,
@@ -110,6 +114,95 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual([row["repository"] for row in rows], ["org/native"])
 
+
+    def test_central_export_uses_current_scan_and_preserves_candidate_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["architecture"]["mode"] = "native_only"
+            config["storage"]["database_path"] = str(root / "scout.sqlite3")
+            config["storage"]["export_path"] = str(root / "verified.jsonl")
+            store = Store(config["storage"]["database_path"])
+
+            def candidate(name, *, status="verified", compatible=True):
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=name,
+                        html_url=f"https://github.com/{name}",
+                        default_branch="main",
+                        head_sha="a" * 40,
+                        language="C",
+                        security_url=f"https://github.com/{name}/security/policy",
+                        security_text="policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=80,
+                        reproduce_difficulty=2,
+                        signals=["standard_build:cmakelists.txt"],
+                        blockers=[],
+                        suggested_entry_kind="existing_harness",
+                    ),
+                    policy=PolicyAssessment(
+                        status=status,
+                        confidence=100,
+                        source="catalog",
+                        program_url="https://hackerone.com/example",
+                        note="test",
+                    ),
+                    final_score=80,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64",
+                        compatible=compatible,
+                        confidence=90,
+                    ),
+                )
+
+            first_scan = store.start_scan("test")
+            store.upsert_candidate(candidate("org/previous"), first_scan)
+            store.finish_scan(first_scan, "completed", 1, 1)
+            second_scan = store.start_scan("test")
+            store.upsert_candidate(candidate("org/current"), second_scan)
+            store.upsert_candidate(
+                candidate("org/wrong-architecture", compatible=False), second_scan
+            )
+            store.upsert_candidate(
+                candidate("org/conditional", status="conditional"), second_scan
+            )
+            store.finish_scan(second_scan, "completed", 3, 2)
+
+            historical = list(store.export_rows(50, False))
+            scoped = list(store.export_rows(50, False, scan_id=second_scan))
+            store.close()
+            self.assertEqual(len(historical), 3)
+            self.assertEqual(
+                {row["repository"] for row in scoped},
+                {"org/current", "org/wrong-architecture"},
+            )
+
+            CentralAgent(config)._export_verified_candidates(second_scan)
+            exported = [
+                json.loads(line)
+                for line in Path(config["storage"]["export_path"]).read_text().splitlines()
+            ]
+            self.assertEqual([row["repository"] for row in exported], ["org/current"])
+
+    def test_failed_discovery_preserves_previous_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            output = root / "verified.jsonl"
+            output.write_text("previous export\n", encoding="utf-8")
+            config["storage"]["export_path"] = str(output)
+            agent = CentralAgent(config)
+
+            with patch("fuzz_target_scout.central_agent.ScoutEngine") as engine, patch.object(
+                agent, "_notify"
+            ):
+                engine.return_value.scan.side_effect = RuntimeError("discovery failed")
+                agent._refresh_candidates_if_due()
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "previous export\n")
+            self.assertIn("discovery failed", agent.state["last_discovery_error"])
 
 if __name__ == "__main__":
     unittest.main()

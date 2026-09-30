@@ -60,6 +60,7 @@ class ScoutEngine:
         queries: list[str] | None = None,
         use_ai: bool = True,
         exclude_repositories: set[str] | None = None,
+        search_pages_per_query: int = 1,
     ) -> ScanSummary:
         source = "catalog" if catalog_only else "github-search"
         scan_id = self.store.start_scan(source)
@@ -74,7 +75,9 @@ class ScoutEngine:
                 self.progress(
                     f"excluded {len(excluded)} active or cooldown repositories"
                 )
-            repos = self._discover(catalog_only, limit, queries, excluded)
+            repos = self._discover(
+                catalog_only, limit, queries, excluded, search_pages_per_query
+            )
             self.progress(f"discovered {len(repos)} unique repositories")
             for index, repo in enumerate(repos, 1):
                 self.progress(f"[{index}/{len(repos)}] policy {repo.full_name}")
@@ -182,6 +185,7 @@ class ScoutEngine:
         limit: int | None,
         queries: list[str] | None,
         excluded: set[str] | None = None,
+        search_pages_per_query: int = 1,
     ) -> list[RepoSnapshot]:
         excluded = excluded or set()
         unique: dict[str, RepoSnapshot] = {}
@@ -235,25 +239,28 @@ class ScoutEngine:
         pushed_after = (date.today() - timedelta(days=365)).isoformat()
         for query_template in selected_queries:
             query = query_template.replace("{pushed_after}", pushed_after)
-            page = self.store.get_search_page(query_template, max_pages)
-            self.progress(f"search page {page}: {query}")
-            results = self.github.search_repositories(
-                query,
-                per_query,
-                start_page=page,
-            )
-            self.store.advance_search_page(
-                query_template,
-                page,
-                had_results=bool(results),
-                max_pages=max_pages,
-            )
-            for repo in results:
-                if repo.full_name.casefold() in excluded:
-                    continue
-                unique.setdefault(repo.full_name.casefold(), repo)
-                if limit and len(unique) >= limit:
-                    return list(unique.values())
+            for _ in range(min(max_pages, max(1, search_pages_per_query))):
+                page = self.store.get_search_page(query_template, max_pages)
+                self.progress(f"search page {page}: {query}")
+                results = self.github.search_repositories(
+                    query,
+                    per_query,
+                    start_page=page,
+                )
+                self.store.advance_search_page(
+                    query_template,
+                    page,
+                    had_results=bool(results),
+                    max_pages=max_pages,
+                )
+                for repo in results:
+                    if repo.full_name.casefold() in excluded:
+                        continue
+                    unique.setdefault(repo.full_name.casefold(), repo)
+                    if limit and len(unique) >= limit:
+                        return list(unique.values())
+                if not results:
+                    break
         values = list(unique.values())
         return values[:limit] if limit else values
 
