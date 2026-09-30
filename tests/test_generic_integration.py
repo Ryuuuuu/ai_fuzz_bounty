@@ -10,6 +10,7 @@ from fuzz_target_scout.generic_integration import (
     _candidate_support_dependencies,
     _detect_source_dependencies,
     _detect_system_dependencies,
+    _infer_system_dependencies_from_build_error,
     _find_existing_harness,
     _select_public_candidate,
     create_generic_project,
@@ -146,6 +147,20 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertEqual(dependencies, ["liblua5.4-dev", "libssl-dev"])
         self.assertIn("liblua5.4-dev libssl-dev", dockerfile)
         self.assertNotIn("attacker-controlled", dockerfile)
+
+    def test_missing_reviewed_build_tools_are_inferred_from_fatal_errors(self):
+        dependencies = _infer_system_dependencies_from_build_error(
+            "Program curl found: NO\n"
+            "meson.build:347:10: ERROR: Program 'ragel' not found or not executable\n"
+            "ModuleNotFoundError: No module named 'yaml'\n"
+            "meson.build:400:10: ERROR: Program 'unapproved-tool' not found"
+        )
+        self.assertEqual(dependencies, {"ragel", "python3-yaml"})
+        dockerfile = _dockerfile(
+            "meson", "ubuntu:24.04", sorted(dependencies)
+        )
+        self.assertIn("python3-yaml ragel", dockerfile)
+        self.assertNotIn("unapproved-tool", dockerfile)
 
     def test_build_feedback_adds_only_reviewed_system_dependency(self):
         with tempfile.TemporaryDirectory() as directory:

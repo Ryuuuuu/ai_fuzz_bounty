@@ -60,12 +60,15 @@ MESON_SYSTEM_DEPENDENCIES = {
     "yaml-0.1": ("libyaml-dev",),
     "zlib": ("zlib1g-dev",),
 }
+REVIEWED_BUILD_TOOL_PACKAGES = frozenset(
+    {"bison", "flex", "gperf", "ragel", "socat", "python3-yaml"}
+)
 REVIEWED_SYSTEM_PACKAGES = frozenset(
     package
     for mapping in (CMAKE_SYSTEM_DEPENDENCIES, MESON_SYSTEM_DEPENDENCIES)
     for packages in mapping.values()
     for package in packages
-)
+) | REVIEWED_BUILD_TOOL_PACKAGES
 CMAKE_SOURCE_DEPENDENCIES = {
     "absl": {
         "url": "https://github.com/abseil/abseil-cpp.git",
@@ -604,6 +607,14 @@ def _infer_system_dependencies_from_build_error(build_error: str) -> set[str]:
     dependencies: set[str] = set()
     if "no lua implementation was found" in error:
         dependencies.add("liblua5.4-dev")
+    for tool in REVIEWED_BUILD_TOOL_PACKAGES - {"python3-yaml"}:
+        if re.search(
+            rf"\berror:\s+program\s+['\"]?{re.escape(tool)}['\"]?\s+not\s+found",
+            error,
+        ):
+            dependencies.add(tool)
+    if re.search(r"no module named ['\"]yaml['\"]", error):
+        dependencies.add("python3-yaml")
     for dependency, packages in MESON_SYSTEM_DEPENDENCIES.items():
         escaped = re.escape(dependency.casefold())
         if re.search(
