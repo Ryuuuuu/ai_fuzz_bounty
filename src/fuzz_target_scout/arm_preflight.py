@@ -22,15 +22,172 @@ DOCKERFILE = """FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev && rm -rf /var/lib/apt/lists/*
 """
 
-# Project-controlled CMake code runs only inside the restricted, networkless
-# container. A successful configure alone is never ARM compatibility evidence.
-BUILD_AND_SMOKE = """cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-cmake --build /work/build --parallel 2
-ctest --test-dir /work/build -N | grep -Eq '^Total Tests: [1-9][0-9]*$'
-ctest --test-dir /work/build --output-on-failure -I 1,1 --timeout 30 > /work/smoke.log 2>&1
-grep -Eq '^100% tests passed, 0 tests failed out of 1$' /work/smoke.log
+# These scripts run inside the networkless container. The CMake File API ties
+# the selected CTest executable to a target with a real C/C++ compile command.
+SELECT_NATIVE_TEST = r"""import json
+import sys
+from pathlib import Path
+
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".c++"}
+
+
+def resolved(base, raw):
+    path = Path(raw)
+    return (path if path.is_absolute() else base / path).resolve()
+
+
+def within(root, path):
+    try:
+        path.relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def select_native_test(build, source, tests_path):
+    commands = json.loads((build / "compile_commands.json").read_text())
+    compiled = {
+        resolved(Path(item["directory"]), item["file"])
+        for item in commands
+        if isinstance(item, dict)
+        and item.get("directory")
+        and item.get("file")
+        and Path(item["file"]).suffix.casefold() in SOURCE_SUFFIXES
+    }
+    if not compiled:
+        raise ValueError("no C/C++ compile commands")
+
+    reply = build / ".cmake/api/v1/reply"
+    indexes = sorted(reply.glob("index-*.json"))
+    if not indexes:
+        raise ValueError("CMake File API reply is missing")
+    index = json.loads(indexes[-1].read_text())
+    model_ref = (index.get("reply") or {}).get("codemodel-v2")
+    if not model_ref:
+        raise ValueError("CMake codemodel is missing")
+    model = json.loads((reply / model_ref["jsonFile"]).read_text())
+    targets = []
+    for configuration in model.get("configurations", []):
+        for reference in configuration.get("targets", []):
+            target = json.loads((reply / reference["jsonFile"]).read_text())
+            if target.get("type") != "EXECUTABLE":
+                continue
+            c_groups = {
+                number
+                for number, group in enumerate(target.get("compileGroups", []))
+                if group.get("language") in {"C", "CXX"}
+            }
+            target_sources = set()
+            for item in target.get("sources", []):
+                if item.get("compileGroupIndex") not in c_groups:
+                    continue
+                raw = item.get("path")
+                if raw:
+                    target_sources.add(resolved(source, raw))
+                    target_sources.add(resolved(build, raw))
+            if not target_sources.intersection(compiled):
+                continue
+            for artifact in target.get("artifacts", []):
+                path = resolved(build, artifact.get("path", ""))
+                if within(build, path):
+                    targets.append((path, reference["name"]))
+
+    tests = json.loads(tests_path.read_text()).get("tests", [])
+    for number, test in enumerate(tests, 1):
+        command = test.get("command") or []
+        if not command or not isinstance(command[0], str):
+            continue
+        executable = resolved(build, command[0])
+        if not within(build, executable):
+            continue
+        for artifact, target_name in targets:
+            if artifact == executable:
+                return {
+                    "artifact": str(artifact),
+                    "target": target_name,
+                    "test_index": number,
+                    "test_name": test.get("name", ""),
+                }
+    raise ValueError("no CTest executable backed by a C/C++ CMake target")
+
+
+if __name__ == "__main__":
+    try:
+        selected = select_native_test(
+            Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+        )
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(f"native test selection failed: {exc}")
+    Path(sys.argv[4]).write_text(json.dumps(selected))
+"""
+
+VERIFY_NATIVE_TEST = r"""import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def verify_native_test(build, selection_path):
+    selection = json.loads(selection_path.read_text())
+    artifact = Path(selection["artifact"]).resolve(strict=True)
+    try:
+        artifact.relative_to(build.resolve())
+    except ValueError:
+        raise ValueError("test executable escapes build directory")
+    if not artifact.is_file() or not os.access(artifact, os.X_OK):
+        raise ValueError("test executable is missing")
+    with artifact.open("rb") as binary:
+        header = binary.read(20)
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        raise ValueError("test executable is not ELF")
+    endian = {1: "little", 2: "big"}.get(header[5])
+    if endian is None or int.from_bytes(header[18:20], endian) != 183:
+        raise ValueError("test executable is not AArch64")
+    number = int(selection["test_index"])
+    result = subprocess.run(
+        [
+            "ctest", "--test-dir", str(build), "--output-on-failure",
+            "-I", f"{number},{number}", "--timeout", "30",
+        ],
+        capture_output=True, text=True, timeout=40, check=False,
+    )
+    output = result.stdout + result.stderr
+    print(output[-8192:])
+    if result.returncode != 0 or not re.search(
+        r"^100% tests passed, 0 tests failed out of 1$", output, re.MULTILINE
+    ):
+        raise ValueError("selected native CTest did not pass")
+
+
+if __name__ == "__main__":
+    try:
+        verify_native_test(Path(sys.argv[1]), Path(sys.argv[2]))
+    except (OSError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit(f"native test smoke failed: {exc}")
+"""
+
+BUILD_AND_SMOKE = (
+    """mkdir -p /work/build/.cmake/api/v1/query
+: > /work/build/.cmake/api/v1/query/codemodel-v2
+cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
+cat > /work/select_native_test.py <<'PY'
+"""
+    + SELECT_NATIVE_TEST
+    + """PY
+python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json
+target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
+cmake --build /work/build --target "$target" --parallel 2
+cat > /work/verify_native_test.py <<'PY'
+"""
+    + VERIFY_NATIVE_TEST
+    + """PY
+python3 /work/verify_native_test.py /work/build /work/selection.json
 printf 'FTS_ARM_PREFLIGHT_OK\\n'
 """
+)
 
 PREFLIGHT_VERSION = hashlib.sha256(
     (DOCKERFILE + "\n" + BUILD_AND_SMOKE).encode("utf-8")

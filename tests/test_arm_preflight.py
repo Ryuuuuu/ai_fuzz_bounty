@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -11,6 +12,8 @@ from fuzz_target_scout.arm_preflight import (
     ArmPreflight,
     ArmPreflightResult,
     PREFLIGHT_VERSION,
+    SELECT_NATIVE_TEST,
+    VERIFY_NATIVE_TEST,
 )
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
@@ -133,6 +136,95 @@ class ArmPreflightTests(unittest.TestCase):
             result = checker.check(repository())
         self.assertFalse(result.passed)
         self.assertEqual(result.reason, "smoke_marker_missing")
+
+    def test_selector_requires_real_compiled_ctest_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            build = root / "build"
+            reply = build / ".cmake/api/v1/reply"
+            source.mkdir()
+            reply.mkdir(parents=True)
+            cpp = source / "unit.cpp"
+            cpp.write_text("int main() { return 0; }\n")
+            (build / "compile_commands.json").write_text(json.dumps([{
+                "directory": str(build),
+                "file": str(cpp),
+                "command": f"clang++ -c {cpp}",
+            }]))
+            (reply / "index-fixture.json").write_text(json.dumps({
+                "reply": {"codemodel-v2": {"jsonFile": "model.json"}}
+            }))
+            (reply / "model.json").write_text(json.dumps({
+                "configurations": [{"targets": [{
+                    "name": "unit", "jsonFile": "target.json",
+                }]}]
+            }))
+            (reply / "target.json").write_text(json.dumps({
+                "type": "EXECUTABLE",
+                "compileGroups": [{"language": "CXX"}],
+                "sources": [{"path": str(cpp), "compileGroupIndex": 0}],
+                "artifacts": [{"path": "unit"}],
+            }))
+            tests_path = root / "tests.json"
+            tests_path.write_text(json.dumps({"tests": [
+                {"name": "script", "command": ["/usr/bin/cmake", "-E", "echo", "ok"]},
+                {"name": "unit", "command": [str(build / "unit")]},
+            ]}))
+            scope = {"__name__": "selector_fixture"}
+            exec(SELECT_NATIVE_TEST, scope)
+            chosen = scope["select_native_test"](build, source, tests_path)
+            self.assertEqual(chosen["target"], "unit")
+            self.assertEqual(chosen["test_index"], 2)
+            self.assertEqual(chosen["artifact"], str(build / "unit"))
+
+            tests_path.write_text(json.dumps({"tests": [
+                {"name": "script", "command": ["/usr/bin/cmake", "-E", "echo", "ok"]},
+            ]}))
+            with self.assertRaisesRegex(ValueError, "no CTest executable"):
+                scope["select_native_test"](build, source, tests_path)
+
+            tests_path.write_text(json.dumps({"tests": [
+                {"name": "unit", "command": [str(build / "unit")]},
+            ]}))
+            (reply / "target.json").write_text(json.dumps({
+                "type": "EXECUTABLE",
+                "compileGroups": [],
+                "sources": [{"path": str(cpp)}],
+                "artifacts": [{"path": "unit"}],
+            }))
+            with self.assertRaisesRegex(ValueError, "no CTest executable"):
+                scope["select_native_test"](build, source, tests_path)
+
+    def test_smoke_requires_aarch64_elf_and_runs_selected_test(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            artifact = build / "unit"
+            header = bytearray(20)
+            header[:4] = b"\x7fELF"
+            header[5] = 1
+            header[18:20] = (183).to_bytes(2, "little")
+            artifact.write_bytes(header)
+            artifact.chmod(0o755)
+            selection = build / "selection.json"
+            selection.write_text(json.dumps({
+                "artifact": str(artifact), "test_index": 2,
+            }))
+            scope = {"__name__": "smoke_fixture"}
+            exec(VERIFY_NATIVE_TEST, scope)
+            result = subprocess.CompletedProcess(
+                [], 0, "100% tests passed, 0 tests failed out of 1\n", ""
+            )
+            with patch("subprocess.run", return_value=result) as run:
+                scope["verify_native_test"](build, selection)
+            self.assertIn("2,2", run.call_args.args[0])
+
+            header[18:20] = (62).to_bytes(2, "little")
+            artifact.write_bytes(header)
+            with patch("subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "not AArch64"):
+                    scope["verify_native_test"](build, selection)
+                run.assert_not_called()
 
     def test_non_native_host_never_starts_preflight(self):
         checker = ArmPreflight({"host_arch": "aarch64"})

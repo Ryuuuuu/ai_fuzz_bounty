@@ -1,3 +1,5 @@
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,6 +103,57 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("target.get('type') != 'static library'", build)
         self.assertIn('ninja -C "$WORK/build" "${archive_targets[@]}"', build)
         self.assertNotIn('meson compile -C "$WORK/build"', build)
+
+    def test_meson_ninja_include_paths_resolve_from_build_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            build = work / "build"
+            source_dir = root / "source"
+            binary_dir = root / "bin"
+            build.mkdir(parents=True)
+            (source_dir / "project").mkdir(parents=True)
+            binary_dir.mkdir()
+            (build / "build.ninja").write_text("")
+            ninja = binary_dir / "ninja"
+            ninja.write_text(
+                "#!/bin/sh" + chr(10)
+                + "echo 'cc -Igenerated -I ../project/from-build "
+                  "-isystemvendor -isystem /usr/include "
+                  "-iquotequote -iquote ../project/quoted -I /opt/external'"
+                + chr(10)
+            )
+            ninja.chmod(0o755)
+
+            script = _build_script("meson")
+            start = script.index('include_flags=')
+            end = script.index('if (( ${#archives[@]} == 0 )); then', start)
+            snippet = script[start:end] + (
+                'for flag in "${include_flags[@]}"; do echo "$flag"; done'
+            )
+            result = subprocess.run(
+                ["bash", "-c", "set -euo pipefail" + chr(10) + snippet],
+                env={
+                    **os.environ,
+                    "SRC": str(source_dir),
+                    "WORK": str(work),
+                    "PATH": str(binary_dir) + os.pathsep + os.environ["PATH"],
+                },
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            flags = result.stdout.splitlines()
+            self.assertIn(f"-I{source_dir / 'project'}", flags)
+            self.assertIn(f"-I{build}", flags)
+            self.assertIn(f"-I{build / 'generated'}", flags)
+            self.assertIn(f"-I{build / '../project/from-build'}", flags)
+            self.assertIn(f"-isystem{build / 'vendor'}", flags)
+            self.assertIn("-isystem/usr/include", flags)
+            self.assertIn(f"-iquote{build / 'quote'}", flags)
+            self.assertIn(f"-iquote{build / '../project/quoted'}", flags)
+            self.assertIn("-I/opt/external", flags)
 
     def test_cmake_dependencies_are_inferred_from_a_reviewed_allow_list(self):
         with tempfile.TemporaryDirectory() as directory:

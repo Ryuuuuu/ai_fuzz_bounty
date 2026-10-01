@@ -1019,12 +1019,25 @@ mapfile -d '' dependency_archives < <(
 include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)
 if [[ -f "$WORK/build/build.ninja" ]]; then
   while IFS= read -r flag; do
-    include_flags+=("$flag")
+    case "$flag" in
+      -I*) include_option=-I; include_path="${flag#-I}" ;;
+      -isystem*) include_option=-isystem; include_path="${flag#-isystem}" ;;
+      -iquote*) include_option=-iquote; include_path="${flag#-iquote}" ;;
+      *) continue ;;
+    esac
+    [[ -n "$include_path" ]] || continue
+    if [[ "$include_path" != /* ]]; then
+      include_path="$WORK/build/$include_path"
+    fi
+    include_flags+=("$include_option$include_path")
   done < <(
     ninja -C "$WORK/build" -t commands 2>/dev/null |
       awk '{for (i=1; i<=NF; i++) {
-        if ($i ~ /^-I.+/) print $i;
-        else if (($i == "-isystem" || $i == "-iquote") && i < NF) print $i $(i+1);
+        if (($i == "-I" || $i == "-isystem" || $i == "-iquote") && i < NF) {
+          option=$i; i++; print option $i;
+        } else if ($i ~ /^-I.+/ || $i ~ /^-isystem.+/ || $i ~ /^-iquote.+/) {
+          print $i;
+        }
       }}' | sort -u
   )
 fi
@@ -1036,6 +1049,7 @@ if (( ${#include_flags[@]} == 1 )); then
       -regex '.*/(include|inc)' -print 2>/dev/null | sort -u | head -n 100
   )
 fi
+include_flags+=("-I$WORK/build")
 if (( ${#archives[@]} == 0 )); then
   echo 'generic integration found no static libraries' >&2
   exit 1

@@ -54,10 +54,10 @@ corpus의 증거는 삭제하지 않는다. 작업 전체가 `job_disk_limit_mb`
 ARM 호스트의 중앙 에이전트는 현재 정책이 유상 바운티 `verified`이고 C/C++이며
 점수 기준을 넘지만 명시적인 ARM 근거가 없는 후보 가운데 루트 CMake 빌드가 있는
 저장소를 스캔마다 최대 1개 사전 검증한다. Git 고정 SHA를 별도 디렉터리에 가져온 뒤
-네트워크가 끊긴 비root ARM 컨테이너에서 실제 빌드와 CTest 1개를 실행한다. 소스는
+네트워크가 끊긴 비root ARM 컨테이너에서 CMake 파일 API와 컴파일 명령 목록으로 C/C++ CTest 실행 파일을 고르고 해당 타깃만 빌드한다. 생성된 AArch64 ELF를 확인한 뒤 그 테스트 1개를 실행한다. 소스는
 읽기 전용으로 마운트하고 CPU 2개, 메모리 2GB, 프로세스 256개, 실행 시간 15분으로
 제한한다. 빌드와 테스트가 모두 통과해야만 ARM 호환 근거가 기록되고 작업 계획에
-들어간다. CTest가 없거나 빌드·테스트가 실패하면 ARM 미승인 상태를 유지한다.
+들어간다. 컴파일된 네이티브 CTest 실행 파일이 없거나 빌드·테스트가 실패하면 ARM 미승인 상태를 유지한다. 명시적 ARM 근거가 없는 Meson·Autotools 후보도 현재는 CMake 전용 사전 검사 대상이 아니므로 미승인 상태를 유지한다.
 결과는 저장소와 고정 SHA, 검증기 버전별로 캐시하며 실패는 기본 24시간 뒤 재시도한다.
 `arm_preflight_enabled`, `arm_preflight_max_per_scan`, `arm_preflight_timeout_seconds`,
 `arm_preflight_max_repository_kb`, `arm_preflight_failure_retry_hours`로 비용을 조절한다.
