@@ -25,6 +25,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 # These scripts run inside the networkless container. The CMake File API ties
 # the selected CTest executable to a target with a real C/C++ compile command.
 SELECT_NATIVE_TEST = r"""import json
+import re
 import sys
 from pathlib import Path
 
@@ -44,7 +45,24 @@ def within(root, path):
         return False
 
 
-def select_native_test(build, source, tests_path):
+def candidate_targets(targets):
+    # Choose a small set of buildable test-like C/C++ executables.
+    ranked = []
+    seen = set()
+    for _artifact, name in targets:
+        # Each name becomes one quoted cmake --build argument in the shell.
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*", name) or name in seen:
+            continue
+        lower = name.casefold()
+        if not re.search(r"test|unit|smoke|check|spec", lower):
+            continue
+        seen.add(name)
+        priority = 0 if "test" in lower else 1 if "unit" in lower else 2
+        ranked.append((priority, len(name), name))
+    return [name for _priority, _length, name in sorted(ranked)[:3]]
+
+
+def select_native_test(build, source, tests_path, *, candidates=False):
     commands = json.loads((build / "compile_commands.json").read_text())
     compiled = {
         resolved(Path(item["directory"]), item["file"])
@@ -92,6 +110,9 @@ def select_native_test(build, source, tests_path):
                 if within(build, path):
                     targets.append((path, reference["name"]))
 
+    if candidates:
+        return candidate_targets(targets)
+
     tests = json.loads(tests_path.read_text()).get("tests", [])
     for number, test in enumerate(tests, 1):
         command = test.get("command") or []
@@ -113,12 +134,19 @@ def select_native_test(build, source, tests_path):
 
 if __name__ == "__main__":
     try:
-        selected = select_native_test(
-            Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-        )
-    except (OSError, KeyError, TypeError, ValueError) as exc:
+        if sys.argv[1:2] == ["--candidates"]:
+            names = select_native_test(
+                Path(sys.argv[2]), Path(sys.argv[3]), None, candidates=True
+            )
+            if names:
+                print("\n".join(names))
+        else:
+            selected = select_native_test(
+                Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+            )
+            Path(sys.argv[4]).write_text(json.dumps(selected))
+    except (OSError, IndexError, KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f"native test selection failed: {exc}")
-    Path(sys.argv[4]).write_text(json.dumps(selected))
 """
 
 VERIFY_NATIVE_TEST = r"""import json
@@ -191,7 +219,39 @@ cat > /work/select_native_test.py <<'PY'
 """
     + SELECT_NATIVE_TEST
     + """PY
-python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json
+if ! python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json; then
+  # Some CTest entries, including gtest_discover_tests, gain a command only
+  # after their executable has been built. Probe at most three likely targets.
+  python3 /work/select_native_test.py --candidates /work/build /src > /work/candidates.txt
+  if [ ! -s /work/candidates.txt ]; then
+    printf 'native test selection failed: no CTest executable backed by a C/C++ CMake target\n' >&2
+    exit 1
+  fi
+  built_any=0
+  while IFS= read -r candidate; do
+    stage=build
+    printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
+    if cmake --build /work/build --target "$candidate" --parallel 2; then
+      built_any=1
+      stage=select_native_test
+      printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
+      ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
+      if python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json; then
+        break
+      fi
+    fi
+  done < /work/candidates.txt
+fi
+if [ ! -s /work/selection.json ]; then
+  if [ "$built_any" -eq 0 ]; then
+    stage=build
+    printf 'native test candidate builds failed\n' >&2
+  else
+    stage=select_native_test
+    printf 'native test selection failed: no CTest executable backed by a C/C++ CMake target\n' >&2
+  fi
+  exit 1
+fi
 target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
 stage=build
 printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"

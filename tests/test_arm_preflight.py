@@ -135,6 +135,12 @@ class ArmPreflightTests(unittest.TestCase):
         self.assertIn("set --\nfi\ncmake -S /src", BUILD_AND_SMOKE)
         self.assertIn('-DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"', BUILD_AND_SMOKE)
         self.assertIn("verify_native_test.py", BUILD_AND_SMOKE)
+        self.assertIn("--candidates /work/build /src > /work/candidates.txt", BUILD_AND_SMOKE)
+        self.assertIn(
+            'if cmake --build /work/build --target "$candidate" --parallel 2; then',
+            BUILD_AND_SMOKE,
+        )
+        self.assertIn('if [ "$built_any" -eq 0 ]; then', BUILD_AND_SMOKE)
         result = subprocess.run(
             ["/bin/sh", "-n"], input=BUILD_AND_SMOKE,
             capture_output=True, text=True, check=False,
@@ -222,10 +228,22 @@ class ArmPreflightTests(unittest.TestCase):
             ]}))
             with self.assertRaisesRegex(ValueError, "no CTest executable"):
                 scope["select_native_test"](build, source, tests_path)
-
+            self.assertEqual(
+                scope["select_native_test"](build, source, tests_path, candidates=True),
+                ["unit"],
+            )
+            # CTest can omit the command of an unbuilt executable. Building
+            # the File API candidate makes its command discoverable.
+            tests_path.write_text(json.dumps({"tests": [{"name": "unit"}]}))
+            with self.assertRaisesRegex(ValueError, "no CTest executable"):
+                scope["select_native_test"](build, source, tests_path)
             tests_path.write_text(json.dumps({"tests": [
                 {"name": "unit", "command": [str(build / "unit")]},
             ]}))
+            self.assertEqual(
+                scope["select_native_test"](build, source, tests_path)["target"],
+                "unit",
+            )
             (reply / "target.json").write_text(json.dumps({
                 "type": "EXECUTABLE",
                 "compileGroups": [],
@@ -234,6 +252,19 @@ class ArmPreflightTests(unittest.TestCase):
             }))
             with self.assertRaisesRegex(ValueError, "no CTest executable"):
                 scope["select_native_test"](build, source, tests_path)
+
+    def test_candidate_target_selection_is_bounded_and_safe(self):
+        scope = {"__name__": "selector_fixture"}
+        exec(SELECT_NATIVE_TEST, scope)
+        names = [
+            "smoke_a", "test_b", "benchmark", "test_a", "unit_a",
+            "test;bad", "test_a", "spec_a",
+        ]
+        targets = [(Path("/work/build") / name, name) for name in names]
+        self.assertEqual(
+            scope["candidate_targets"](targets),
+            ["test_a", "test_b", "unit_a"],
+        )
 
     def test_smoke_requires_aarch64_elf_and_runs_selected_test(self):
         with tempfile.TemporaryDirectory() as directory:
