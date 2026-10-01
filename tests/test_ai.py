@@ -102,7 +102,7 @@ class CodexReviewerTests(unittest.TestCase):
             reviewer = CodexReviewer(
                 {
                     "executable": "codex",
-                    "model": "gpt-daybreak-blue-latest",
+                    "model": "gpt-6-astra",
                     "reasoning_effort": "high",
                     "prompt_version": "test-v1",
                     "timeout_seconds": 30,
@@ -170,7 +170,7 @@ class CodexReviewerTests(unittest.TestCase):
             command = captured["command"]
             self.assertEqual(
                 command[command.index("--model") + 1],
-                "gpt-daybreak-blue-latest",
+                "gpt-6-astra",
             )
             self.assertIn("model_reasoning_effort=high", command)
             self.assertIn("read-only", command)

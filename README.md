@@ -56,8 +56,8 @@ GitHub의 비인증 API 제한은 반복 탐색에 부족하므로 읽기 전용
 
 AI 재평가는 Linux 환경에 설치되고 로그인된 Codex CLI를 비대화식으로 호출합니다.
 별도 OPENAI_API_KEY는 필요하지 않습니다. 기본 모델은
-gpt-daybreak-blue-latest, reasoning effort는 high입니다. Daybreak 프로그램
-접근 권한이 계정에 별도로 준비되어 있어야 합니다.
+gpt-6-astra, reasoning effort는 high입니다. 해당 모델 사용 권한이 계정에
+있어야 합니다.
 
 ## 사용
 

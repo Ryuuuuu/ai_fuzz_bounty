@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     response_dir = Path(args.response)
     response_dir.mkdir(parents=True, exist_ok=True)
 
-    model = os.environ.get("CODEX_MODEL", "gpt-daybreak-blue-latest")
+    model = os.environ.get("CODEX_MODEL", "gpt-6-astra")
     reasoning = os.environ.get("CODEX_REASONING_EFFORT", "high")
     timeout = int(os.environ.get("CODEX_ADAPTER_TIMEOUT_SECONDS", "180"))
     sample_cap = max(1, int(os.environ.get("CODEX_ADAPTER_SAMPLE_CAP", "1")))

@@ -172,7 +172,7 @@ class CentralAgentTests(unittest.TestCase):
         command = captured["command"]
         self.assertEqual(
             command[command.index("--model") + 1],
-            "gpt-daybreak-blue-latest",
+            "gpt-6-astra",
         )
         self.assertIn("model_reasoning_effort=high", command)
         self.assertNotIn("GITHUB_TOKEN", captured["env"])

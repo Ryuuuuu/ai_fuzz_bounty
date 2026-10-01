@@ -20,7 +20,7 @@ export GITHUB_TOKEN='github_pat_...'
 ```
 
 Codex CLI 로그인 세션을 사용하므로 OpenAI API 키는 필요하지 않다. 기본 모델은
-`gpt-daybreak-blue-latest`, 추론 강도는 `high`다.
+`gpt-6-astra`, 추론 강도는 `high`다.
 
 릴리스 wheel을 설치할 때는 별도 가상환경을 사용한다.
 

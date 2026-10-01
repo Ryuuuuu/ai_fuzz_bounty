@@ -1,2 +1,2 @@
-model = "gpt-daybreak-blue-latest"
+model = "gpt-6-astra"
 model_reasoning_effort = "high"

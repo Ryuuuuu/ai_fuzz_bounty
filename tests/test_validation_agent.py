@@ -118,7 +118,7 @@ class ValidationAgentTests(unittest.TestCase):
         config = {"pipeline": {
             "runs_path": str(root), "container_memory_mb": 1024,
             "input_timeout_seconds": 2, "ai_executable": "codex",
-            "ai_model": "gpt-daybreak-blue-latest", "ai_reasoning_effort": "high",
+            "ai_model": "gpt-6-astra", "ai_reasoning_effort": "high",
             "validation_schema_path": str(root / "schema.json"),
             "triage_timeout_seconds": 60,
         }}

@@ -38,7 +38,7 @@ LOCK = {
 
 CONFIG = {
     "languages": ["C", "C++"],
-    "ai_model": "gpt-daybreak-blue-latest",
+    "ai_model": "gpt-6-astra",
     "ai_reasoning_effort": "high",
     "max_harness_attempts": 3,
     "setup_timeout_seconds": 5400,
