@@ -2735,6 +2735,14 @@ class PipelineRunner:
             self.progress(
                 f"{job_dir.name}: restarting after a long-running libFuzzer RSS limit"
             )
+        if resource_limit_restart:
+            accounted_seconds = elapsed
+        elif crashes:
+            # A finding can stop a checkpoint early. Count only time actually fuzzed
+            # so triage and automatic resume do not shorten the campaign budget.
+            accounted_seconds = min(float(seconds), max(0.001, elapsed))
+        else:
+            accounted_seconds = float(seconds)
         result = {
             "schema_version": 1,
             "session_id": result_session_id,
@@ -2757,7 +2765,7 @@ class PipelineRunner:
                 else "sanitizer_finding" if crashes else "passed"
             ),
             "exit_code": exit_code,
-            "accounted_seconds": elapsed if resource_limit_restart else seconds,
+            "accounted_seconds": accounted_seconds,
             "resource_limit": (
                 "libfuzzer_rss" if resource_limit_restart else None
             ),

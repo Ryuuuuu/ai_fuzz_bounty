@@ -510,6 +510,97 @@ class PipelineRunnerTests(unittest.TestCase):
                 command.index(corpus_mount),
             )
 
+    def test_fuzz_checkpoint_accounts_early_finding_without_shortening_campaign(self):
+        cases = (
+            ("early_finding", 10.719, True, 10.719),
+            ("full_checkpoint", 3601.551, False, 3600.0),
+            ("late_finding", 3601.551, True, 3600.0),
+        )
+        for name, elapsed, has_finding, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                job_dir = Path(directory) / "job"
+                artifacts = job_dir / "artifacts"
+                output = job_dir / "build-output" / "asan"
+                for path in (artifacts, output, job_dir / "logs"):
+                    path.mkdir(parents=True)
+                (output / "fuzz_parser").write_bytes(b"fuzzer")
+                (artifacts / "build-manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "oss_fuzz_project": "parser",
+                            "fuzz_targets": ["fuzz_parser"],
+                            "output_directory": str(output),
+                        }
+                    )
+                )
+                (artifacts / "smoke.json").write_text(
+                    json.dumps({"fuzz_target": "fuzz_parser"})
+                )
+                (artifacts / "coverage-plan.json").write_text(
+                    json.dumps(
+                        {"review": {"selected_fuzz_target": "fuzz_parser"}}
+                    )
+                )
+                runner = object.__new__(PipelineRunner)
+                runner.pipeline = {
+                    "container_memory_mb": 1024,
+                    "fuzzer_rss_limit_mb": 512,
+                    "input_timeout_seconds": 10,
+                }
+
+                def fake_run(_command, log_path, **_kwargs):
+                    log_path.write_text(
+                        "SUMMARY: AddressSanitizer: heap-buffer-overflow\n"
+                        if has_finding
+                        else "",
+                        encoding="utf-8",
+                    )
+                    if has_finding:
+                        crash_dir = job_dir / "crashes" / "fuzz_parser"
+                        (crash_dir / "fuzz_parser-crash-deadbeef").write_bytes(
+                            b"input"
+                        )
+                    return 1 if has_finding else 0
+
+                with patch.object(
+                    runner, "_run_streaming", side_effect=fake_run
+                ), patch(
+                    "fuzz_target_scout.pipeline_runner.time.monotonic",
+                    side_effect=[0.0, elapsed],
+                ):
+                    result = runner._fuzz_session(
+                        job_dir,
+                        {},
+                        seconds=3600,
+                        workers=1,
+                        label="fuzz",
+                        session_id=name,
+                    )
+
+                self.assertEqual(
+                    result["status"],
+                    "sanitizer_finding" if has_finding else "passed",
+                )
+                self.assertEqual(result["accounted_seconds"], expected)
+                state_path = job_dir / "state.json"
+                progress_path = artifacts / "fuzz-progress.json"
+                state = {"stage": "fuzzing", "status": "running", "attempts": {}}
+                progress = {"completed_seconds": 0, "sessions": []}
+                state_path.write_text(json.dumps(state))
+                progress_path.write_text(json.dumps(progress))
+                runner._apply_fuzz_result(
+                    job_dir,
+                    {"budgets": {"fuzz_seconds": 86400}, "route": {}},
+                    state_path,
+                    state,
+                    progress_path,
+                    progress,
+                    result,
+                )
+                saved = json.loads(progress_path.read_text())
+                self.assertEqual(saved["completed_seconds"], expected)
+                self.assertEqual(saved["sessions"][0]["accounted_seconds"], expected)
+
     def test_long_running_libfuzzer_oom_is_archived_and_restartable(self):
         with tempfile.TemporaryDirectory() as directory:
             job = Path(directory) / "job"
