@@ -17,6 +17,7 @@ REPOSITORY_FAILURE_STATUSES = {
     "skipped_after_recovery",
     "unsupported_integration",
 }
+OFFLINE_DEPENDENCY_REASON = "offline_external_dependency"
 REPOSITORY_SUCCESS_STATUSES = {"exhausted", "ready_for_human"}
 
 
@@ -30,6 +31,10 @@ class PipelineInterrupted(PipelineError):
 
 class UnsupportedIntegrationError(PipelineError):
     """The target is valid but has no safely reusable build integration."""
+
+
+class OfflineDependencyError(UnsupportedIntegrationError):
+    """The isolated build requires an unavailable external dependency."""
 
 
 @dataclass(slots=True)
@@ -215,7 +220,7 @@ def repository_failure_cooldowns(
     if threshold == 0 or cooldown_hours == 0:
         return {}
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    histories: dict[str, list[tuple[datetime, str, str]]] = {}
+    histories: dict[str, list[tuple[datetime, str, str, str]]] = {}
     root = Path(runs_root)
     if not root.is_dir() or root.is_symlink():
         return {}
@@ -240,12 +245,17 @@ def repository_failure_cooldowns(
             except OSError:
                 continue
         histories.setdefault(repository.casefold(), []).append(
-            (observed, str(state.get("status") or ""), job_path.parent.name)
+            (
+                observed,
+                str(state.get("status") or ""),
+                job_path.parent.name,
+                str(state.get("failure_reason") or ""),
+            )
         )
 
     blocked: dict[str, dict[str, Any]] = {}
     for repository, entries in histories.items():
-        consecutive: list[tuple[datetime, str, str]] = []
+        consecutive: list[tuple[datetime, str, str, str]] = []
         for entry in sorted(entries, reverse=True):
             status = entry[1]
             if status in REPOSITORY_SUCCESS_STATUSES:
@@ -256,7 +266,15 @@ def repository_failure_cooldowns(
             if status == "skipped_repository_cooldown":
                 continue
             break
-        if len(consecutive) < threshold:
+        # An external download cannot succeed inside the networkless build.
+        # Cool down that repository after the first such failure; keep the
+        # configured threshold for ordinary failures.
+        required = (
+            1
+            if consecutive and consecutive[0][3] == OFFLINE_DEPENDENCY_REASON
+            else threshold
+        )
+        if len(consecutive) < required:
             continue
         newest = consecutive[0][0]
         age_seconds = max(0.0, (current - newest).total_seconds())

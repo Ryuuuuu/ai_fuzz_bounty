@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fuzz_target_scout.pipeline import PipelineError, PipelineInterrupted
+from fuzz_target_scout.pipeline import (
+    OfflineDependencyError,
+    PipelineError,
+    PipelineInterrupted,
+)
 from fuzz_target_scout.pipeline_worker import PipelineWorker
 from fuzz_target_scout.pipeline_worker import WorkerResult
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
@@ -95,6 +99,32 @@ class PipelineWorkerTests(unittest.TestCase):
 
         self.assertEqual(result.action, "interrupted")
         self.assertEqual(result.status, "interrupted")
+        self.assertNotIn("worker_failures", state.get("attempts", {}))
+
+    def test_offline_dependency_finishes_without_recovery_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            self._job(
+                runs, "offline-job", created="2026-01-01T00:00:00Z",
+                stage="build", status="integrated",
+            )
+
+            class StubRunner:
+                @staticmethod
+                def build(_job_id):
+                    raise OfflineDependencyError("uncached external dependency")
+
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {"max_stage_failures": 2}
+            worker.progress = lambda _message: None
+            worker.runner = StubRunner()
+            result = worker._advance("offline-job", setup_only=True)
+            state = json.loads((runs / "offline-job" / "state.json").read_text())
+
+        self.assertEqual(result.status, "unsupported_integration")
+        self.assertEqual(state["stage"], "complete")
+        self.assertEqual(state["failure_reason"], "offline_external_dependency")
         self.assertNotIn("worker_failures", state.get("attempts", {}))
 
     def test_repeated_worker_failure_stops_at_configured_limit(self):

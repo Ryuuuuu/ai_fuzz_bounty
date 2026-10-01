@@ -1,5 +1,6 @@
 import json
 import tempfile
+from datetime import datetime, timedelta
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fuzz_target_scout.pipeline import (
     prepare_jobs,
     quarantine_repository_cooldown_jobs,
     repository_discovery_exclusions,
+    repository_failure_cooldowns,
 )
 
 
@@ -206,6 +208,40 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(third.created, 0)
             self.assertEqual(
                 third.skip_reasons, {"repository_failure_cooldown": 1}
+            )
+
+    def test_offline_dependency_opens_finite_cooldown_after_one_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {
+                **CONFIG,
+                "repository_failure_threshold": 2,
+                "repository_failure_cooldown_hours": 168,
+            }
+            root = Path(directory)
+            first = prepare_jobs([candidate(commit="b" * 40)], root, config, LOCK)
+            job = root / first.job_ids[0]
+            self._complete_job(job, "unsupported_integration")
+            state_path = job / "state.json"
+            state = json.loads(state_path.read_text())
+            state["failure_reason"] = "offline_external_dependency"
+            state_path.write_text(json.dumps(state))
+            next_commit = prepare_jobs(
+                [candidate(commit="c" * 40)], root, config, LOCK
+            )
+
+            self.assertEqual(next_commit.created, 0)
+            self.assertEqual(
+                next_commit.skip_reasons, {"repository_failure_cooldown": 1}
+            )
+            self.assertIn(
+                "org/parser", repository_discovery_exclusions(root, config)
+            )
+            expired = datetime.fromisoformat(state["updated_at"]) + timedelta(
+                hours=169
+            )
+            self.assertNotIn(
+                "org/parser",
+                repository_failure_cooldowns(root, config, now=expired),
             )
 
     def test_discovery_exclusions_combine_live_and_success_cooldown(self):

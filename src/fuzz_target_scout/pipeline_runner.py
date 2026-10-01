@@ -43,6 +43,8 @@ from .harness_generation import (
 )
 from .pipeline import (
     COMMIT_PATTERN,
+    OFFLINE_DEPENDENCY_REASON,
+    OfflineDependencyError,
     PipelineError,
     PipelineInterrupted,
     UnsupportedIntegrationError,
@@ -715,6 +717,8 @@ class PipelineRunner:
                     build_harness.write_text(code, encoding="utf-8")
                     self._build_fuzzers(job_dir, job)
                 except PipelineError as exc:
+                    if isinstance(exc, OfflineDependencyError):
+                        raise
                     build_error = str(exc)
                     build_log = job_dir / "logs" / (
                         "native-build.log"
@@ -1782,11 +1786,12 @@ class PipelineRunner:
         try:
             action(job_dir, job)
         except Exception as exc:
-            state["status"] = (
-                "unsupported_integration"
-                if isinstance(exc, UnsupportedIntegrationError)
-                else "failed"
-            )
+            unsupported = isinstance(exc, UnsupportedIntegrationError)
+            state["status"] = "unsupported_integration" if unsupported else "failed"
+            if unsupported:
+                state["stage"] = "complete"
+            if isinstance(exc, OfflineDependencyError):
+                state["failure_reason"] = OFFLINE_DEPENDENCY_REASON
             state["last_error"] = str(exc)[:2000]
             state["updated_at"] = utc_now()
             self._write_json(state_path, state)
@@ -2504,13 +2509,21 @@ class PipelineRunner:
         ]
         maximum = int(self.pipeline.get("max_harness_attempts", 3))
         for attempt in range(1, maximum + 1):
+            log_start = log_path.stat().st_size if log_path.is_file() else 0
             try:
                 self._run_streaming(build_command, log_path, timeout=timeout)
                 break
-            except PipelineError:
+            except PipelineError as exc:
+                with log_path.open("rb") as handle:
+                    log_end = handle.seek(0, os.SEEK_END)
+                    handle.seek(max(log_start, log_end - 65536))
+                    error = handle.read().decode("utf-8", errors="replace")
+                if _offline_external_dependency_failure(error):
+                    raise OfflineDependencyError(
+                        "networkless native build requires an uncached external dependency"
+                    ) from exc
                 if attempt >= maximum:
                     raise
-                error = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
                 repair = repair_generic_harness(
                     job_dir=job_dir,
                     source=build_source,
@@ -3125,6 +3138,34 @@ class PipelineRunner:
                 f"command failed with exit {return_code}; see {log_path}"
             )
         return return_code
+
+
+def _offline_external_dependency_failure(log: str) -> bool:
+    """Identify downloads that cannot work in the isolated native build."""
+    lower = log.casefold()
+    download = any(
+        marker in lower
+        for marker in (
+            "fetchcontent",
+            "externalproject",
+            "performing download",
+            "download step",
+            "downloading 'http",
+            'downloading "http',
+            "subproject download",
+        )
+    )
+    network_failure = any(
+        marker in lower
+        for marker in (
+            "could not resolve host",
+            "couldn't resolve host name",
+            "temporary failure in name resolution",
+            "network is unreachable",
+            "could not resolve proxy",
+        )
+    )
+    return download and network_failure
 
 
 def _subprocess_environment() -> dict[str, str]:

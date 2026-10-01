@@ -7,6 +7,7 @@ import threading
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fuzz_target_scout.coverage_analysis import (
@@ -16,6 +17,7 @@ from fuzz_target_scout.coverage_analysis import (
     validate_review,
 )
 from fuzz_target_scout.pipeline import (
+    OfflineDependencyError,
     PipelineError,
     PipelineInterrupted,
     UnsupportedIntegrationError,
@@ -23,6 +25,7 @@ from fuzz_target_scout.pipeline import (
 from fuzz_target_scout.pipeline_runner import (
     PipelineRunner,
     _adapt_allocation_for_resource_limits,
+    _offline_external_dependency_failure,
     _select_smoke_target,
 )
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
@@ -77,6 +80,74 @@ class PipelineRunnerTests(unittest.TestCase):
         self.assertEqual(saved_state["stage"], "triage")
         self.assertEqual(saved_state["campaign_yield_reason"], "shallow_reach")
         self.assertEqual(decision["decision"], "rotate_target")
+
+    def test_offline_dependency_classifier_requires_download_and_network_failure(self):
+        self.assertTrue(
+            _offline_external_dependency_failure(
+                "CMake FetchContent: downloading 'https://example.test/library' failed\\n"
+                "Could not resolve host: example.test"
+            )
+        )
+        self.assertFalse(
+            _offline_external_dependency_failure(
+                "CMake FetchContent: dependency compile failed with missing header"
+            )
+        )
+        self.assertFalse(
+            _offline_external_dependency_failure(
+                "Could not resolve host: example.test"
+            )
+        )
+
+    def test_offline_native_dependency_stops_before_harness_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            project_dir = job_dir / "integration" / "native"
+            build_source = job_dir / "build-source"
+            project_dir.mkdir(parents=True)
+            build_source.mkdir()
+            (job_dir / "logs").mkdir()
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "setup_timeout_seconds": 30,
+                "max_harness_attempts": 3,
+            }
+            manifest = {
+                "oss_fuzz_project": "native",
+                "native_project_directory": str(project_dir),
+                "build_worktree": str(build_source),
+                "host_arch": "aarch64",
+            }
+            build_runs = []
+
+            def stream(command, log_path, timeout):
+                if command[:2] == ["docker", "build"]:
+                    return 0
+                build_runs.append(command)
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        "CMake FetchContent: downloading 'https://example.test/lib' failed\\n"
+                        "Could not resolve host: example.test\\n"
+                    )
+                raise PipelineError("build failed")
+
+            with (
+                patch.object(runner, "_sync_submodules"),
+                patch.object(runner, "_run_streaming", side_effect=stream),
+                patch.object(runner, "_capture", return_value="aarch64"),
+                patch.object(
+                    runner,
+                    "_resource_allocation",
+                    return_value=SimpleNamespace(workers_per_job=1),
+                ),
+                patch(
+                    "fuzz_target_scout.pipeline_runner.repair_generic_harness"
+                ) as repair,
+            ):
+                with self.assertRaises(OfflineDependencyError):
+                    runner._build_native_fuzzers(job_dir, {}, manifest)
+                repair.assert_not_called()
+            self.assertEqual(len(build_runs), 1)
 
     def test_quartet_counts_actual_entrypoint_parameter_names(self):
         source = (

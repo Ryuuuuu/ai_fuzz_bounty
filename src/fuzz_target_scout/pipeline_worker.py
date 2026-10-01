@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .pipeline import PipelineError, PipelineInterrupted, utc_now
+from .pipeline import (
+    OFFLINE_DEPENDENCY_REASON,
+    OfflineDependencyError,
+    PipelineError,
+    PipelineInterrupted,
+    UnsupportedIntegrationError,
+    utc_now,
+)
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .triage import TriageRunner
 from .operations import Housekeeper
@@ -329,6 +336,21 @@ class PipelineWorker:
         path = self.runs_root / job_id / "state.json"
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(exc, UnsupportedIntegrationError):
+                state["stage"] = "complete"
+                state["status"] = "unsupported_integration"
+                if isinstance(exc, OfflineDependencyError):
+                    state["failure_reason"] = OFFLINE_DEPENDENCY_REASON
+                state["last_error"] = str(exc)[:2000]
+                state["updated_at"] = utc_now()
+                temporary = path.with_suffix(".json.tmp")
+                temporary.write_text(
+                    json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                temporary.replace(path)
+                return
             if state.get("status") != "interrupted":
                 state["status"] = "recovery_pending"
             attempts = state.setdefault("attempts", {})
