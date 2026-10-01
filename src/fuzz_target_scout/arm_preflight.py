@@ -196,6 +196,16 @@ IMAGE_TAG = f"fts-arm-preflight:{PREFLIGHT_VERSION}"
 REPOSITORY_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
 COMMIT = re.compile(r"^[0-9a-fA-F]{40}$")
 
+# Infrastructure failures can clear without a change to the candidate's commit.
+# Keep their retry interval short while preserving the configured cooldown for
+# build and smoke failures that reflect the pinned source.
+TRANSIENT_FAILURE_REASONS = frozenset({
+    "checkout_failed",
+    "builder_unavailable",
+    "preflight_timeout",
+    "preflight_unavailable_or_timed_out",
+})
+
 
 @dataclass(frozen=True, slots=True)
 class ArmPreflightResult:
@@ -351,7 +361,8 @@ class ArmPreflight:
         return remaining
 
     def _try_run(
-        self, command: list[str], deadline: float, environment: dict[str, str]
+        self, command: list[str], deadline: float, environment: dict[str, str],
+        *, preserve_failure: bool = False,
     ) -> subprocess.CompletedProcess[str] | None:
         output = bytearray()
         process = None
@@ -375,24 +386,40 @@ class ArmPreflight:
                         if len(output) > 65536:
                             del output[:-65536]
             returncode = process.wait(timeout=self._remaining(deadline))
-        except (_StepFailure, OSError, subprocess.TimeoutExpired):
+        except (_StepFailure, subprocess.TimeoutExpired) as exc:
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
-            return None
+            raise _StepFailure("preflight_timeout") from exc
+        except OSError as exc:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            raise _StepFailure("preflight_unavailable_or_timed_out") from exc
         finally:
             if process is not None and process.stdout is not None:
                 process.stdout.close()
         result = subprocess.CompletedProcess(
             command, returncode, output.decode("utf-8", errors="replace"), ""
         )
-        return result if result.returncode == 0 else None
+        return result if result.returncode == 0 or preserve_failure else None
 
     def _run(
         self, command: list[str], deadline: float,
         environment: dict[str, str], failure: str,
     ) -> subprocess.CompletedProcess[str]:
-        result = self._try_run(command, deadline, environment)
+        result = self._try_run(
+            command, deadline, environment, preserve_failure=True
+        )
         if result is None:
             raise _StepFailure(failure)
+        if result.returncode != 0:
+            # Docker returns 125 when its own run operation fails before the
+            # container command starts. This is not evidence of a bad source build.
+            reason = (
+                "builder_unavailable"
+                if command[:2] == ["docker", "run"] and result.returncode == 125
+                else failure
+            )
+            raise _StepFailure(reason)
         return result

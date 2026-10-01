@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .ai import AIError, CodexReviewer, compact_evidence, evidence_hash
 from .architecture import assess_architecture, resolve_host_architecture
-from .arm_preflight import ArmPreflight, PREFLIGHT_VERSION
+from .arm_preflight import ArmPreflight, PREFLIGHT_VERSION, TRANSIENT_FAILURE_REASONS
 from .github import GitHubClient, GitHubError
 from .models import ArchitectureAssessment, Candidate, RepoSnapshot
 from .policy import PolicyVerifier
@@ -305,6 +305,7 @@ class ScoutEngine:
             100000, max(1, int(architecture.get("arm_preflight_max_repository_kb", 50000)))
         )
         retry_hours = max(0, int(architecture.get("arm_preflight_failure_retry_hours", 24)))
+        transient_retry_seconds = min(retry_hours * 3600, 15 * 60)
         pending: list[Candidate] = []
         passed = 0
         for candidate in candidates:
@@ -345,7 +346,12 @@ class ScoutEngine:
                     if checked.tzinfo is None:
                         checked = checked.replace(tzinfo=timezone.utc)
                     age = datetime.now(timezone.utc) - checked
-                    if age.total_seconds() < retry_hours * 3600:
+                    retry_seconds = (
+                        transient_retry_seconds
+                        if cached["reason"] in TRANSIENT_FAILURE_REASONS
+                        else retry_hours * 3600
+                    )
+                    if age.total_seconds() < retry_seconds:
                         continue
                 except ValueError:
                     pass

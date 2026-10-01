@@ -1,8 +1,10 @@
 import json
+import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fuzz_target_scout.pipeline import (
     PipelineError,
@@ -71,6 +73,209 @@ def candidate(status="verified", language="C++", commit="b" * 40):
 
 
 class PipelineTests(unittest.TestCase):
+    @staticmethod
+    def _running_fuzz_job(directory: str) -> Path:
+        prepare_jobs(
+            [candidate()],
+            directory,
+            CONFIG,
+            LOCK,
+            {"org/parser": {"project": "parser", "language": "c++"}},
+        )
+        job_dir = next(Path(directory).glob("org-parser-*"))
+        state_path = job_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update(
+            {
+                "stage": "fuzzing",
+                "status": "running",
+                "active_fuzz_session_id": "fuzz-active",
+                "active_fuzz_session_started_at": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            }
+        )
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        (job_dir / "artifacts" / "coverage-plan.json").write_text(
+            json.dumps({"review": {"selected_fuzz_target": "fuzz_parser"}}),
+            encoding="utf-8",
+        )
+        return job_dir
+
+    def test_job_status_reads_current_worker_logs_and_host_corpus(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = self._running_fuzz_job(directory)
+            artifacts = job_dir / "artifacts"
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps({"completed_seconds": 3600}), encoding="utf-8"
+            )
+            (artifacts / "fuzz-run.json").write_text(
+                json.dumps(
+                    {
+                        "fuzz_target": "previous_target",
+                        "worker_stats": [
+                            {
+                                "average_exec_per_sec": 3,
+                                "coverage_edges": 13,
+                                "coverage_features": 30,
+                            }
+                        ],
+                        "corpus_files": 99,
+                        "crash_files": ["previous"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = job_dir / "runtime-out" / "fuzz"
+            runtime.mkdir(parents=True)
+            (runtime / "fuzz-0.log").write_text(
+                "#1 NEW cov: 10 ft: 20 corp: 1/1b exec/s: 100 rss: 10Mb\n"
+                "#2 NEW cov: 12 ft: 22 corp: 2/2b exec/s: 95 rss: 10Mb\n",
+                encoding="utf-8",
+            )
+            (runtime / "fuzz-1.log").write_text(
+                "#3 pulse cov: 15 ft: 25 corp: 3/3b exec/s: 105 rss: 10Mb\n",
+                encoding="utf-8",
+            )
+            corpus = job_dir / "corpus" / "fuzz_parser"
+            crashes = job_dir / "crashes" / "fuzz_parser"
+            corpus.mkdir()
+            crashes.mkdir()
+            (corpus / "a").write_bytes(b"a")
+            (corpus / "b").write_bytes(b"b")
+            (corpus / "linked").symlink_to(Path(directory) / "outside")
+            (crashes / "crash-a").write_bytes(b"crash")
+            (crashes / "linked").symlink_to(Path(directory) / "outside")
+
+            value = job_status(directory, job_dir.name)
+            self.assertEqual(value["fuzz_target"], "fuzz_parser")
+            self.assertEqual(value["fuzz_completed_seconds"], 3600)
+            self.assertEqual(value["exec_per_second"], 200)
+            self.assertEqual(value["coverage_edges"], 15)
+            self.assertEqual(value["coverage_features"], 30)
+            self.assertEqual(value["corpus_files"], 2)
+            self.assertEqual(value["crash_files"], 1)
+            self.assertEqual(value["total_crashes"], 1)
+            self.assertIsNotNone(value["live_metrics_updated_at"])
+            self.assertFalse(value["live_metrics_truncated"])
+
+    def test_job_status_ignores_stale_logs_and_stops_live_reads_when_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = self._running_fuzz_job(directory)
+            (job_dir / "artifacts" / "fuzz-run.json").write_text(
+                json.dumps(
+                    {
+                        "worker_stats": [
+                            {
+                                "average_exec_per_sec": 7,
+                                "coverage_edges": 8,
+                                "coverage_features": 9,
+                            }
+                        ],
+                        "corpus_files": 4,
+                        "crash_files": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = job_dir / "runtime-out" / "fuzz"
+            runtime.mkdir(parents=True)
+            log = runtime / "fuzz-0.log"
+            log.write_text(
+                "#1 NEW cov: 100 ft: 200 corp: 1/1b exec/s: 999\n",
+                encoding="utf-8",
+            )
+            state_path = job_dir / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            old = datetime.fromisoformat(
+                state["active_fuzz_session_started_at"]
+            ).timestamp() - 30
+            os.utime(log, (old, old))
+            corpus = job_dir / "corpus" / "fuzz_parser"
+            corpus.mkdir()
+            (corpus / "current").write_bytes(b"current")
+
+            running = job_status(directory, job_dir.name)
+            self.assertEqual(running["exec_per_second"], 7)
+            self.assertEqual(running["coverage_edges"], 8)
+            self.assertEqual(running["coverage_features"], 9)
+            self.assertEqual(running["corpus_files"], 1)
+            self.assertIsNone(running["live_metrics_updated_at"])
+
+            os.utime(log, None)
+            state["status"] = "ready"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            ready = job_status(directory, job_dir.name)
+            self.assertEqual(ready["exec_per_second"], 7)
+            self.assertEqual(ready["corpus_files"], 4)
+            self.assertIsNone(ready["live_metrics_updated_at"])
+
+    def test_job_status_does_not_follow_live_metric_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = self._running_fuzz_job(directory)
+            external = Path(directory) / "external"
+            external.mkdir()
+            (external / "fuzz-0.log").write_text(
+                "#1 NEW cov: 999 ft: 999 corp: 1/1b exec/s: 999\n",
+                encoding="utf-8",
+            )
+            (external / "item").write_bytes(b"external")
+            runtime_root = job_dir / "runtime-out"
+            runtime_root.mkdir()
+            (runtime_root / "fuzz").symlink_to(external, target_is_directory=True)
+            (job_dir / "corpus" / "fuzz_parser").symlink_to(
+                external, target_is_directory=True
+            )
+            value = job_status(directory, job_dir.name)
+            self.assertEqual(value["exec_per_second"], 0)
+            self.assertEqual(value["coverage_edges"], 0)
+            self.assertEqual(value["corpus_files"], 0)
+
+            (runtime_root / "fuzz").unlink()
+            runtime = runtime_root / "fuzz"
+            runtime.mkdir()
+            (runtime / "fuzz-0.log").symlink_to(external / "fuzz-0.log")
+            (runtime / "fuzz-64.log").write_text(
+                "#1 NEW cov: 888 ft: 888 corp: 1/1b exec/s: 888\n",
+                encoding="utf-8",
+            )
+            (runtime / "fuzz-other.log").write_text(
+                "#1 NEW cov: 777 ft: 777 corp: 1/1b exec/s: 777\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(job_status(directory, job_dir.name)["exec_per_second"], 0)
+
+    def test_job_status_reads_only_the_recent_log_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = self._running_fuzz_job(directory)
+            runtime = job_dir / "runtime-out" / "fuzz"
+            runtime.mkdir(parents=True)
+            log = runtime / "fuzz-0.log"
+            log.write_text(
+                "#1 NEW cov: 999 ft: 999 corp: 1/1b exec/s: 999\n"
+                + ("x" * 70_000),
+                encoding="utf-8",
+            )
+            self.assertEqual(job_status(directory, job_dir.name)["exec_per_second"], 0)
+
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "\n#2 NEW cov: 10 ft: 20 corp: 2/2b exec/s: 42\n"
+                )
+            self.assertEqual(job_status(directory, job_dir.name)["exec_per_second"], 42)
+
+    def test_job_status_marks_bounded_corpus_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = self._running_fuzz_job(directory)
+            corpus = job_dir / "corpus" / "fuzz_parser"
+            corpus.mkdir()
+            for name in ("a", "b", "c"):
+                (corpus / name).write_bytes(b"x")
+            with patch("fuzz_target_scout.pipeline._LIVE_FILE_LIMIT", 2):
+                value = job_status(directory, job_dir.name)
+            self.assertEqual(value["corpus_files"], 2)
+            self.assertTrue(value["live_metrics_truncated"])
+
     def test_job_status_reports_checkpoint_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             prepare_jobs(
@@ -189,8 +394,47 @@ class PipelineTests(unittest.TestCase):
 
             self.assertEqual(second.created, 1)
             self.assertEqual(same_commit.created, 0)
-            self.assertEqual(same_commit.existing, 1)
+            self.assertEqual(same_commit.existing, 0)
+            self.assertEqual(same_commit.job_ids, [])
+            self.assertEqual(
+                same_commit.skip_reasons, {"historical_exact_commit": 1}
+            )
             self.assertEqual(len(list(Path(directory).glob("*/job.json"))), 2)
+
+    def test_terminal_exact_commits_do_not_consume_new_job_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def named(repository: str):
+                value = candidate()
+                value["repository"] = repository
+                value["repository_url"] = f"https://github.com/{repository}"
+                value["policy"]["security_url"] = (
+                    f"https://github.com/{repository}/security/policy"
+                )
+                return value
+
+            old_a = named("org/aa-old")
+            old_b = named("org/ab-old")
+            fresh = named("org/zz-fresh")
+            for value in (old_a, old_b):
+                created = prepare_jobs([value], root, CONFIG, LOCK)
+                self._complete_job(root / created.job_ids[0], "skipped_after_recovery")
+
+            summary = prepare_jobs(
+                [old_a, old_b, fresh], root, CONFIG, LOCK, limit=1
+            )
+            self.assertEqual(summary.created, 1)
+            self.assertEqual(summary.existing, 0)
+            self.assertEqual(summary.skip_reasons, {"historical_exact_commit": 2})
+            self.assertEqual(summary.job_ids, ["org-zz-fresh-" + "b" * 12])
+            self.assertEqual(len(list(root.glob("*/job.json"))), 3)
+
+            another = named("org/zzz-another")
+            followup = prepare_jobs([fresh, another], root, CONFIG, LOCK, limit=1)
+            self.assertEqual(followup.created, 0)
+            self.assertEqual(followup.existing, 1)
+            self.assertEqual(followup.job_ids, summary.job_ids)
 
     def test_repeated_repository_failures_open_a_planning_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:

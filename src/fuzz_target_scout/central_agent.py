@@ -1874,7 +1874,9 @@ class CentralAgent:
                 )
             finally:
                 engine.close()
-            self._export_verified_candidates(summary.scan_id)
+            export_preserved = self._export_verified_candidates(
+                summary.scan_id, scan_errors=summary.errors
+            )
             self._plan_exported_candidates()
             self.state["last_discovery_at"] = utc_now()
             self.state.pop("last_discovery_error", None)
@@ -1886,6 +1888,7 @@ class CentralAgent:
                 "errors": summary.errors,
                 "arm_preflight_attempted": summary.arm_preflight_attempted,
                 "arm_preflight_passed": summary.arm_preflight_passed,
+                "export_preserved": bool(export_preserved),
             }
             self._save_state()
         except PipelineInterrupted:
@@ -1901,7 +1904,9 @@ class CentralAgent:
                 "⚠️ fuzz 대상 갱신에 실패했습니다.\n" + str(exc)[:1000],
             )
 
-    def _export_verified_candidates(self, scan_id: int) -> None:
+    def _export_verified_candidates(
+        self, scan_id: int, *, scan_errors: int = 0
+    ) -> bool:
         output = Path(self.config["storage"]["export_path"])
         output.parent.mkdir(parents=True, exist_ok=True)
         store = Store(self.config["storage"]["database_path"])
@@ -1921,6 +1926,44 @@ class CentralAgent:
             ]
         finally:
             store.close()
+        if scan_errors > 0 and not rows and output.is_file():
+            try:
+                previous = list(load_jsonl(output))
+            except (OSError, PipelineError):
+                previous = []
+            enabled_languages = {
+                str(language).casefold()
+                for language in self.pipeline.get("languages") or []
+            }
+            minimum_score = int(self.config["scoring"]["minimum_handoff_score"])
+            if previous and all(
+                row.get("repository")
+                and re.fullmatch(r"[0-9a-fA-F]{40}", str(row.get("commit") or ""))
+                and isinstance(row.get("policy"), dict)
+                and row["policy"].get("status") == "verified"
+                and row["policy"].get("program_url")
+                and row["policy"].get("security_url")
+                and isinstance(row.get("assessment"), dict)
+                and isinstance(row["assessment"].get("final_score"), (int, float))
+                and row["assessment"]["final_score"] >= minimum_score
+                and (
+                    not enabled_languages
+                    or str(row.get("language") or "").casefold()
+                    in enabled_languages
+                )
+                and (
+                    str(self.config["architecture"].get("mode")) != "native_only"
+                    or (
+                        isinstance(row.get("architecture"), dict)
+                        and bool(row["architecture"].get("compatible"))
+                    )
+                )
+                for row in previous
+            ):
+                self.progress(
+                    "candidate export retained: incomplete scan had no eligible candidates"
+                )
+                return True
         temporary = output.with_suffix(output.suffix + ".tmp")
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             for row in rows:
@@ -1928,6 +1971,7 @@ class CentralAgent:
                     json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
                 )
         temporary.replace(output)
+        return False
 
     def _plan_exported_candidates(self) -> None:
         source = Path(self.pipeline["input_path"])

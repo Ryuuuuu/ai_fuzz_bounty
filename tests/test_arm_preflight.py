@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +17,7 @@ from fuzz_target_scout.arm_preflight import (
     PREFLIGHT_VERSION,
     SELECT_NATIVE_TEST,
     VERIFY_NATIVE_TEST,
+    _StepFailure,
 )
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
@@ -226,6 +230,27 @@ class ArmPreflightTests(unittest.TestCase):
                     scope["verify_native_test"](build, selection)
                 run.assert_not_called()
 
+    def test_process_deadline_is_not_reported_as_build_failure(self):
+        checker = ArmPreflight({"host_arch": "aarch64"})
+        with self.assertRaisesRegex(_StepFailure, "preflight_timeout"):
+            checker._try_run(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                time.monotonic() - 1,
+                {},
+            )
+
+    def test_docker_run_startup_error_is_not_a_source_build_failure(self):
+        checker = ArmPreflight({"host_arch": "aarch64"})
+        command = ["docker", "run", "image"]
+        with patch.object(
+            checker, "_try_run",
+            return_value=subprocess.CompletedProcess(command, 125, "", ""),
+        ):
+            with self.assertRaisesRegex(_StepFailure, "builder_unavailable"):
+                checker._run(
+                    command, time.monotonic() + 10, {}, "native_build_or_smoke_failed"
+                )
+
     def test_non_native_host_never_starts_preflight(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
         with patch("fuzz_target_scout.arm_preflight.platform.machine", return_value="x86_64"), patch.object(
@@ -307,8 +332,68 @@ class ArmPreflightTests(unittest.TestCase):
                     "org/parser", SHA, "aarch64", PREFLIGHT_VERSION
                 )
                 self.assertEqual(cached["reason"], "native_build_or_smoke_failed")
+                engine.store.connection.execute(
+                    "UPDATE arm_preflight_cache SET checked_at=? WHERE full_name=?",
+                    (
+                        (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(),
+                        "org/parser",
+                    ),
+                )
+                engine.store.connection.commit()
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([candidate()]), (0, 0)
+                    )
+                    runner.return_value.check.assert_not_called()
             finally:
                 engine.close()
+
+    def test_transient_probe_failure_retries_after_short_cooldown(self):
+        reasons = (
+            "checkout_failed",
+            "builder_unavailable",
+            "preflight_timeout",
+            "preflight_unavailable_or_timed_out",
+        )
+        for reason in reasons:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                config, _ = load_config(Path(directory) / "missing.toml")
+                config["architecture"]["host_arch"] = "aarch64"
+                engine = ScoutEngine(config)
+                try:
+                    evidence = (
+                        f"native_arm_preflight:{PREFLIGHT_VERSION}:"
+                        f"cmake_build_ctest:{SHA}"
+                    )
+                    with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                        runner.return_value.check.side_effect = [
+                            ArmPreflightResult(False, reason),
+                            ArmPreflightResult(
+                                True, "native_arm_build_and_ctest_passed", evidence
+                            ),
+                        ]
+                        self.assertEqual(
+                            engine._preflight_arm_candidates([candidate()]), (1, 0)
+                        )
+                        self.assertEqual(
+                            engine._preflight_arm_candidates([candidate()]), (0, 0)
+                        )
+                        engine.store.connection.execute(
+                            "UPDATE arm_preflight_cache SET checked_at=? WHERE full_name=?",
+                            (
+                                (
+                                    datetime.now(timezone.utc) - timedelta(minutes=16)
+                                ).isoformat(),
+                                "org/parser",
+                            ),
+                        )
+                        engine.store.connection.commit()
+                        self.assertEqual(
+                            engine._preflight_arm_candidates([candidate()]), (1, 1)
+                        )
+                        self.assertEqual(runner.return_value.check.call_count, 2)
+                finally:
+                    engine.close()
 
     def test_portable_source_shape_still_requires_successful_probe(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1340,6 +1340,7 @@ class CentralAgentTests(unittest.TestCase):
             config["agent"]["idle_search_pages_per_query"] = 3
             agent = CentralAgent(config)
             calls = []
+            exports = []
 
             class FakeEngine:
                 def __init__(self, _config, progress):
@@ -1348,13 +1349,17 @@ class CentralAgentTests(unittest.TestCase):
                 def scan(self, **kwargs):
                     calls.append(kwargs)
                     return SimpleNamespace(
-                        scan_id=len(calls), discovered=0, verified=0, errors=0
+                        scan_id=len(calls), discovered=0, verified=0,
+                        errors=2 if len(calls) == 1 else 0,
+                        arm_preflight_attempted=0, arm_preflight_passed=0,
                     )
 
                 def close(self):
                     pass
 
-            agent._export_verified_candidates = lambda _scan_id: None
+            agent._export_verified_candidates = (
+                lambda scan_id, *, scan_errors: exports.append((scan_id, scan_errors))
+            )
             agent._plan_exported_candidates = lambda: None
             agent._runnable_jobs = lambda: []
             with patch("fuzz_target_scout.central_agent.ScoutEngine", FakeEngine):
@@ -1366,6 +1371,123 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(
             [call["search_pages_per_query"] for call in calls], [3, 1]
         )
+        self.assertEqual(exports, [(1, 2), (2, 0)])
+
+    def test_partial_empty_scan_retains_only_a_usable_verified_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "verified-candidates.jsonl"
+            previous = {
+                "repository": "org/previous",
+                "commit": "a" * 40,
+                "language": "C++",
+                "policy": {
+                    "status": "verified",
+                    "program_url": "https://example.test/bounty",
+                    "security_url": "https://example.test/security",
+                },
+                "architecture": {"compatible": True},
+                "assessment": {"final_score": 75},
+            }
+            original = json.dumps(previous) + "\n"
+            output.write_text(original, encoding="utf-8")
+            messages = []
+            agent = SimpleNamespace(
+                config={
+                    "storage": {
+                        "export_path": str(output),
+                        "database_path": str(Path(directory) / "unused.sqlite3"),
+                    },
+                    "scoring": {"minimum_handoff_score": 55},
+                    "architecture": {"mode": "native_only"},
+                },
+                pipeline={"languages": ["C++"]},
+                progress=messages.append,
+            )
+
+            class EmptyStore:
+                def __init__(self, _path):
+                    pass
+
+                def export_rows(self, *_args, **_kwargs):
+                    return iter(())
+
+                def close(self):
+                    pass
+
+            with patch("fuzz_target_scout.central_agent.Store", EmptyStore):
+                preserved = CentralAgent._export_verified_candidates(
+                    agent, 7, scan_errors=2
+                )
+                self.assertTrue(preserved)
+                self.assertEqual(output.read_text(encoding="utf-8"), original)
+                self.assertTrue(messages)
+
+                replaced = CentralAgent._export_verified_candidates(
+                    agent, 8, scan_errors=0
+                )
+                self.assertFalse(replaced)
+                self.assertEqual(output.read_text(encoding="utf-8"), "")
+
+                previous["policy"]["status"] = "conditional"
+                output.write_text(json.dumps(previous) + "\n", encoding="utf-8")
+                preserved = CentralAgent._export_verified_candidates(
+                    agent, 9, scan_errors=1
+                )
+                self.assertFalse(preserved)
+                self.assertEqual(output.read_text(encoding="utf-8"), "")
+
+                previous["policy"]["status"] = "verified"
+                output.write_text(
+                    json.dumps(previous) + "\n" + '{"repository":"org/invalid"}\n',
+                    encoding="utf-8",
+                )
+                preserved = CentralAgent._export_verified_candidates(
+                    agent, 10, scan_errors=1
+                )
+                self.assertFalse(preserved)
+                self.assertEqual(output.read_text(encoding="utf-8"), "")
+
+    def test_partial_scan_with_new_eligible_candidate_replaces_old_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "verified-candidates.jsonl"
+            output.write_text('{"repository":"org/old"}\n', encoding="utf-8")
+            fresh = {
+                "repository": "org/new",
+                "policy": {"status": "verified"},
+                "architecture": {"compatible": True},
+            }
+            agent = SimpleNamespace(
+                config={
+                    "storage": {
+                        "export_path": str(output),
+                        "database_path": str(Path(directory) / "unused.sqlite3"),
+                    },
+                    "scoring": {"minimum_handoff_score": 55},
+                    "architecture": {"mode": "native_only"},
+                },
+                pipeline={"languages": ["C++"]},
+                progress=lambda _message: None,
+            )
+
+            class FreshStore:
+                def __init__(self, _path):
+                    pass
+
+                def export_rows(self, *_args, **_kwargs):
+                    return iter((fresh,))
+
+                def close(self):
+                    pass
+
+            with patch("fuzz_target_scout.central_agent.Store", FreshStore):
+                preserved = CentralAgent._export_verified_candidates(
+                    agent, 10, scan_errors=1
+                )
+            self.assertFalse(preserved)
+            self.assertEqual(
+                [json.loads(line) for line in output.read_text().splitlines()],
+                [fresh],
+            )
 
     def test_candidate_discovery_honors_stop_without_failure_alert(self):
         with tempfile.TemporaryDirectory() as directory:

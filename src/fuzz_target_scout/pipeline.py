@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +21,14 @@ REPOSITORY_FAILURE_STATUSES = {
 }
 OFFLINE_DEPENDENCY_REASON = "offline_external_dependency"
 REPOSITORY_SUCCESS_STATUSES = {"exhausted", "ready_for_human"}
+
+_LIVE_WORKER_LIMIT = 64
+_LIVE_LOG_TAIL_BYTES = 64 * 1024
+_LIVE_FILE_LIMIT = 200_000
+_LIVE_LOG_LINE = re.compile(
+    rb"^#\d+\s+\S+.*?\bcov:\s*(\d+)\s+ft:\s*(\d+)"
+    rb".*?\bexec/s:\s*(\d+)(?:\s|$)"
+)
 
 
 class PipelineError(RuntimeError):
@@ -113,10 +123,17 @@ def prepare_jobs(
             reasons[reason] += 1
             continue
         job_id = work_order["job_id"]
-        job_ids.append(job_id)
         job_dir = root / job_id
         if (job_dir / "job.json").is_file():
+            try:
+                previous = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                previous = {}
+            if previous.get("stage") == "complete":
+                reasons["historical_exact_commit"] += 1
+                continue
             existing += 1
+            job_ids.append(job_id)
             continue
         repository = str((work_order.get("source") or {}).get("repository") or "")
         if repository.casefold() in failure_cooldowns:
@@ -154,6 +171,7 @@ def prepare_jobs(
         )
         planned_repositories.add(repository.casefold())
         created += 1
+        job_ids.append(job_id)
     return PlanSummary(
         created=created,
         existing=existing,
@@ -674,6 +692,19 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
     probe_status = probe_run.get("status")
     if probe_run and not probe_status:
         probe_status = "sanitizer_finding" if probe_findings else "passed"
+    selected_target = str(
+        (coverage_plan.get("review") or {}).get("selected_fuzz_target") or ""
+    )
+    live = _live_fuzz_metrics(job_dir, state, selected_target)
+    fuzz_target = (
+        selected_target
+        if live and selected_target
+        else (
+            fuzz_run.get("fuzz_target")
+            or probe_run.get("fuzz_target")
+            or selected_target
+        )
+    )
     worker_stats = fuzz_run.get("worker_stats") or []
     exec_per_second = sum(
         int(item.get("average_exec_per_sec") or 0)
@@ -688,10 +719,15 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         (int(item.get("coverage_features") or 0) for item in worker_stats if isinstance(item, dict)),
         default=0,
     )
+    exec_per_second = live.get("exec_per_second", exec_per_second)
+    coverage_edges = max(coverage_edges, live.get("coverage_edges", 0))
+    coverage_features = max(coverage_features, live.get("coverage_features", 0))
+    corpus_files = live.get("corpus_files", int(fuzz_run.get("corpus_files") or 0))
+    crash_files = live.get("crash_files", len(fuzz_run.get("crash_files") or []))
     remaining = max(0.0, budget - completed)
     total_crashes = (
         probe_findings
-        + len(fuzz_run.get("crash_files") or [])
+        + crash_files
         + len(afl_run.get("crash_files") or [])
     )
     return {
@@ -700,11 +736,7 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "commit": (job.get("source") or {}).get("commit"),
         "status": state.get("status"),
         "stage": state.get("stage"),
-        "fuzz_target": (
-            fuzz_run.get("fuzz_target")
-            or probe_run.get("fuzz_target")
-            or (coverage_plan.get("review") or {}).get("selected_fuzz_target")
-        ),
+        "fuzz_target": fuzz_target,
         "fuzz_budget_seconds": budget,
         "fuzz_completed_seconds": completed,
         "fuzz_percent": round(min(100.0, completed * 100 / budget), 2) if budget else 0,
@@ -715,8 +747,10 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "coverage_stalled": bool(progress.get("coverage_stalled")),
         "adaptive_strategy": adaptive_current.get("strategy"),
         "adaptive_strategy_status": adaptive_current.get("status"),
-        "corpus_files": int(fuzz_run.get("corpus_files") or 0),
-        "crash_files": len(fuzz_run.get("crash_files") or []),
+        "corpus_files": corpus_files,
+        "crash_files": crash_files,
+        "live_metrics_updated_at": live.get("updated_at"),
+        "live_metrics_truncated": live.get("truncated", False),
         "preflight_target": probe_run.get("fuzz_target"),
         "preflight_status": probe_status,
         "preflight_findings": probe_findings,
@@ -740,6 +774,127 @@ def job_status(runs_root: str | Path, job_id: str) -> dict[str, Any]:
         "last_error": state.get("last_error"),
         "updated_at": state.get("updated_at"),
     }
+
+
+def _live_fuzz_metrics(
+    job_dir: Path, state: dict[str, Any], target: str
+) -> dict[str, Any]:
+    """Read only the active libFuzzer session's bounded host-side output."""
+    if state.get("stage") != "fuzzing" or state.get("status") != "running":
+        return {}
+    if not state.get("active_fuzz_session_id"):
+        return {}
+    started = _pipeline_timestamp(
+        str(state.get("active_fuzz_session_started_at") or "")
+    )
+    if started is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "pread"):
+        return {}
+
+    result: dict[str, Any] = {}
+    workers: list[tuple[int, int, int, float]] = []
+    try:
+        runtime_fd = _open_live_directory(job_dir, "runtime-out", "fuzz")
+    except OSError:
+        runtime_fd = None
+    if runtime_fd is not None:
+        try:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            for index in range(_LIVE_WORKER_LIMIT):
+                try:
+                    worker_fd = os.open(f"fuzz-{index}.log", flags, dir_fd=runtime_fd)
+                except OSError:
+                    continue
+                try:
+                    file_stat = os.fstat(worker_fd)
+                    # A small allowance covers filesystems with coarse mtime precision.
+                    if (
+                        not stat.S_ISREG(file_stat.st_mode)
+                        or file_stat.st_mtime < started.timestamp() - 2
+                    ):
+                        continue
+                    length = min(file_stat.st_size, _LIVE_LOG_TAIL_BYTES)
+                    tail = os.pread(worker_fd, length, file_stat.st_size - length)
+                    if file_stat.st_size > length:
+                        first_newline = tail.find(b"\n")
+                        if first_newline < 0:
+                            continue
+                        tail = tail[first_newline + 1 :]
+                    for line in reversed(tail.splitlines()):
+                        match = _LIVE_LOG_LINE.match(line)
+                        if match:
+                            workers.append(
+                                (
+                                    int(match[1]),
+                                    int(match[2]),
+                                    int(match[3]),
+                                    file_stat.st_mtime,
+                                )
+                            )
+                            break
+                except OSError:
+                    continue
+                finally:
+                    os.close(worker_fd)
+        finally:
+            os.close(runtime_fd)
+    if workers:
+        result["coverage_edges"] = max(item[0] for item in workers)
+        result["coverage_features"] = max(item[1] for item in workers)
+        result["exec_per_second"] = sum(item[2] for item in workers)
+        try:
+            result["updated_at"] = datetime.fromtimestamp(
+                max(item[3] for item in workers), timezone.utc
+            ).isoformat()
+        except (OSError, OverflowError, ValueError):
+            pass
+
+    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}", target):
+        for field, category in (
+            ("corpus_files", "corpus"),
+            ("crash_files", "crashes"),
+        ):
+            counted = _count_live_files(job_dir, category, target)
+            if counted is not None:
+                result[field] = counted[0]
+                if counted[1]:
+                    result["truncated"] = True
+    return result
+
+
+def _open_live_directory(job_dir: Path, *parts: str) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(job_dir, flags)
+    try:
+        for part in parts:
+            child_fd = os.open(part, flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+    except OSError:
+        os.close(directory_fd)
+        raise
+    return directory_fd
+
+
+def _count_live_files(
+    job_dir: Path, category: str, target: str
+) -> tuple[int, bool] | None:
+    try:
+        directory_fd = _open_live_directory(job_dir, category, target)
+    except OSError:
+        return None
+    try:
+        count = 0
+        with os.scandir(directory_fd) as entries:
+            for index, entry in enumerate(entries):
+                if index >= _LIVE_FILE_LIMIT:
+                    return count, True
+                if entry.is_file(follow_symlinks=False):
+                    count += 1
+        return count, False
+    except OSError:
+        return None
+    finally:
+        os.close(directory_fd)
 
 
 def _read_optional_object(path: Path) -> dict[str, Any]:
