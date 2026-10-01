@@ -95,6 +95,13 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("meson ninja-build pkg-config python3 python3-yaml ragel", dockerfile)
         self.assertIn("git flex bison", dockerfile)
 
+    def test_meson_build_compiles_only_static_libraries(self):
+        build = _build_script("meson", "", [], "c++", [], [])
+        self.assertIn("meson-info/intro-targets.json", build)
+        self.assertIn("target.get('type') != 'static library'", build)
+        self.assertIn('ninja -C "$WORK/build" "${archive_targets[@]}"', build)
+        self.assertNotIn('meson compile -C "$WORK/build"', build)
+
     def test_cmake_dependencies_are_inferred_from_a_reviewed_allow_list(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

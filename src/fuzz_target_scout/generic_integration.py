@@ -932,9 +932,38 @@ cmake -S . -B "$WORK/build" -G Ninja \
   -DCMAKE_C_FLAGS="$CFLAGS" -DCMAKE_CXX_FLAGS="$CXXFLAGS"
 cmake --build "$WORK/build" --parallel "$(nproc)"
 """,
-        "meson": """CC="$CC" CXX="$CXX" meson setup "$WORK/build" . \\
+        "meson": """CC="$CC" CXX="$CXX" meson setup "$WORK/build" . \
   --default-library=static --buildtype=debugoptimized
-meson compile -C "$WORK/build"
+mapfile -d '' archive_targets < <(python3 - "$WORK/build" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+build = Path(sys.argv[1]).resolve()
+targets = json.loads((build / 'meson-info/intro-targets.json').read_text())
+for target in targets:
+    if target.get('type') != 'static library':
+        continue
+    filenames = target.get('filename') or []
+    if isinstance(filenames, str):
+        filenames = [filenames]
+    for filename in filenames:
+        path = Path(filename)
+        path = (path if path.is_absolute() else build / path).resolve()
+        try:
+            relative = path.relative_to(build)
+        except ValueError:
+            continue
+        if path.suffix == '.a':
+            sys.stdout.buffer.write(os.fsencode(str(relative)) + bytes([0]))
+PY
+)
+if (( ${#archive_targets[@]} == 0 )); then
+  echo 'generic integration found no Meson static library targets' >&2
+  exit 1
+fi
+ninja -C "$WORK/build" "${archive_targets[@]}"
 """,
         "autotools": """autoreconf -fi
 CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\

@@ -50,6 +50,20 @@ corpus의 증거는 삭제하지 않는다. 작업 전체가 `job_disk_limit_mb`
 `repository_failure_cooldown_hours` 동안 새 커밋을 큐에 넣지 않는다. 이미 큐에 있는
 미시작 작업도 `skipped_repository_cooldown`으로 완료하여 다음 저장소를 탐색한다. 성공적으로 예산을 소진했거나 저수익으로 종료한 저장소도 `repository_success_cooldown_hours` 동안 GitHub 상세 조회 전부터 제외하여 동일 코드 반복과 API 소비를 막는다.
 
+
+ARM 호스트의 중앙 에이전트는 현재 정책이 유상 바운티 `verified`이고 C/C++이며
+점수 기준을 넘지만 명시적인 ARM 근거가 없는 후보 가운데 루트 CMake 빌드가 있는
+저장소를 스캔마다 최대 1개 사전 검증한다. Git 고정 SHA를 별도 디렉터리에 가져온 뒤
+네트워크가 끊긴 비root ARM 컨테이너에서 실제 빌드와 CTest 1개를 실행한다. 소스는
+읽기 전용으로 마운트하고 CPU 2개, 메모리 2GB, 프로세스 256개, 실행 시간 15분으로
+제한한다. 빌드와 테스트가 모두 통과해야만 ARM 호환 근거가 기록되고 작업 계획에
+들어간다. CTest가 없거나 빌드·테스트가 실패하면 ARM 미승인 상태를 유지한다.
+결과는 저장소와 고정 SHA, 검증기 버전별로 캐시하며 실패는 기본 24시간 뒤 재시도한다.
+`arm_preflight_enabled`, `arm_preflight_max_per_scan`, `arm_preflight_timeout_seconds`,
+`arm_preflight_max_repository_kb`, `arm_preflight_failure_retry_hours`로 비용을 조절한다.
+기존 `allow_portable_native_probe`는 소스 파일만으로 호환을 확정하지 않고 실제
+사전 검증이 필요한 후보를 표시한다.
+
 `low_yield_rotation_enabled`가 켜져 있으면 최소 2시간 관찰 뒤 `low_yield_min_coverage_edges`보다 얕으며 edge와 feature 증가가 모두 기준보다 작은 작업을 종료한다. 도달 범위가 충분해도 edge와 feature가 6시간 동안 함께 늘지 않으면 조기 전환한다. 판정 근거는 `artifacts/campaign-yield.json`에 남고 중앙 에이전트가 Telegram으로 알린다. GitHub 연결이 일시적으로 끊기면 요청을 세 번 재시도하며, 후보 갱신 전체가 실패해도 기본 5분 뒤 다시 시도한다.
 
 `dashboard --json`은 자동화가 읽을 수 있는 상태를 출력한다. 일반 화면에는 작업 단계,

@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from .ai import AIError, CodexReviewer, compact_evidence, evidence_hash
-from .architecture import assess_architecture
+from .architecture import assess_architecture, resolve_host_architecture
+from .arm_preflight import ArmPreflight, PREFLIGHT_VERSION
 from .github import GitHubClient, GitHubError
-from .models import Candidate, RepoSnapshot
+from .models import ArchitectureAssessment, Candidate, RepoSnapshot
 from .policy import PolicyVerifier
 from .scoring import assess_static, final_score
 from .storage import Store, make_ai_cache_key
@@ -32,6 +33,8 @@ class ScanSummary:
     errors: int
     architecture_compatible: int = 0
     architecture_rejected: int = 0
+    arm_preflight_attempted: int = 0
+    arm_preflight_passed: int = 0
 
 
 class ScoutEngine:
@@ -61,6 +64,7 @@ class ScoutEngine:
         use_ai: bool = True,
         exclude_repositories: set[str] | None = None,
         search_pages_per_query: int = 1,
+        run_arm_preflight: bool = False,
     ) -> ScanSummary:
         source = "catalog" if catalog_only else "github-search"
         scan_id = self.store.start_scan(source)
@@ -113,6 +117,10 @@ class ScoutEngine:
                     errors += 1
                     self.progress(f"warning: {repo.full_name}: {exc}")
 
+            arm_attempted, arm_passed = (
+                self._preflight_arm_candidates(candidates)
+                if run_arm_preflight else (0, 0)
+            )
             ai_calls, ai_cache_hits, ai_errors = self._apply_ai(candidates, use_ai)
             errors += ai_errors
             for candidate in candidates:
@@ -147,6 +155,8 @@ class ScoutEngine:
                     bool(c.architecture and not c.architecture.compatible)
                     for c in candidates
                 ),
+                arm_preflight_attempted=arm_attempted,
+                arm_preflight_passed=arm_passed,
             )
         except Exception as exc:
             self.store.finish_scan(
@@ -263,6 +273,107 @@ class ScoutEngine:
                     break
         values = list(unique.values())
         return values[:limit] if limit else values
+
+    @staticmethod
+    def _accept_arm_preflight(candidate: Candidate, evidence: str) -> None:
+        candidate.architecture = ArchitectureAssessment(
+            host_arch="aarch64",
+            compatible=True,
+            confidence=95,
+            evidence=[evidence],
+        )
+        candidate.static.blockers = [
+            blocker for blocker in candidate.static.blockers
+            if blocker not in {
+                "no_explicit_native_support_evidence:aarch64",
+                "native_build_probe_required:aarch64",
+            }
+        ]
+        signal = "host_arch_compatible:aarch64"
+        if signal not in candidate.static.signals:
+            candidate.static.signals.append(signal)
+
+    def _preflight_arm_candidates(self, candidates: list[Candidate]) -> tuple[int, int]:
+        architecture = self.config["architecture"]
+        if (
+            not bool(architecture.get("arm_preflight_enabled", True))
+            or resolve_host_architecture(architecture) != "aarch64"
+        ):
+            return 0, 0
+        minimum_score = int(self.config["scoring"]["minimum_handoff_score"])
+        maximum_kb = min(
+            100000, max(1, int(architecture.get("arm_preflight_max_repository_kb", 50000)))
+        )
+        retry_hours = max(0, int(architecture.get("arm_preflight_failure_retry_hours", 24)))
+        pending: list[Candidate] = []
+        passed = 0
+        for candidate in candidates:
+            assessment = candidate.architecture
+            if (
+                candidate.policy.status != "verified"
+                or not candidate.policy.program_url
+                or not candidate.repo.security_url
+                or candidate.repo.language.casefold() not in {"c", "c++"}
+                or candidate.final_score < minimum_score
+                or not assessment
+                or assessment.compatible
+                or assessment.blockers not in (
+                    ["no_explicit_native_support_evidence:aarch64"],
+                    ["native_build_probe_required:aarch64"],
+                )
+                or not 0 < candidate.repo.size_kb <= maximum_kb
+                or not any(
+                    "cmakelists.txt" in str(signal).casefold().split("standard_build:", 1)[-1].split(",")
+                    for signal in candidate.static.signals
+                    if str(signal).casefold().startswith("standard_build:")
+                )
+            ):
+                continue
+            cached = self.store.get_arm_preflight(
+                candidate.repo.full_name, candidate.repo.head_sha,
+                "aarch64", PREFLIGHT_VERSION,
+            )
+            if cached and cached["passed"] and str(cached["evidence"]).startswith(
+                f"native_arm_preflight:{PREFLIGHT_VERSION}:"
+            ):
+                self._accept_arm_preflight(candidate, str(cached["evidence"]))
+                passed += 1
+                continue
+            if cached and not cached["passed"]:
+                try:
+                    checked = datetime.fromisoformat(str(cached["checked_at"]))
+                    if checked.tzinfo is None:
+                        checked = checked.replace(tzinfo=timezone.utc)
+                    age = datetime.now(timezone.utc) - checked
+                    if age.total_seconds() < retry_hours * 3600:
+                        continue
+                except ValueError:
+                    pass
+            pending.append(candidate)
+
+        pending.sort(key=lambda item: (-item.final_score, item.repo.full_name.casefold()))
+        maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 1))))
+        runner = ArmPreflight(architecture, progress=self.progress)
+        attempted = 0
+        for candidate in pending[:maximum]:
+            self.progress(f"ARM preflight: {candidate.repo.full_name}")
+            result = runner.check(candidate.repo)
+            attempted += 1
+            self.store.put_arm_preflight(
+                candidate.repo.full_name, candidate.repo.head_sha,
+                "aarch64", PREFLIGHT_VERSION,
+                passed=result.passed, reason=result.reason, evidence=result.evidence,
+            )
+            if result.passed:
+                self._accept_arm_preflight(candidate, result.evidence)
+                passed += 1
+                self.progress(f"ARM preflight passed: {candidate.repo.full_name}")
+            else:
+                self.progress(
+                    f"ARM preflight did not pass: {candidate.repo.full_name} "
+                    f"({result.reason})"
+                )
+        return attempted, passed
 
     def _apply_ai(
         self, candidates: list[Candidate], use_ai: bool

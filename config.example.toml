@@ -41,9 +41,15 @@ google_oss_vrp_program_url = "https://bughunters.google.com/about/rules/open-sou
 mode = "native_only"
 host_arch = "auto"
 require_explicit_support = true
-# 명시적 ARM 문서가 없어도 루트 빌드와 퍼즈 하네스가 있으면 ARM 네이티브 빌드로 검증합니다.
+# 루트 빌드와 퍼즈 하네스가 있으면 실제 ARM 검증 대기열에 올립니다. 파일 존재만으로 승인하지 않습니다.
 allow_portable_native_probe = true
 max_evidence_files = 8
+# 중앙 에이전트만 미확인 C/C++ 후보를 격리 컨테이너에서 고정 SHA로 빌드·스모크합니다.
+arm_preflight_enabled = true
+arm_preflight_max_per_scan = 1
+arm_preflight_timeout_seconds = 900
+arm_preflight_max_repository_kb = 50000
+arm_preflight_failure_retry_hours = 24
 # Ubuntu 공식 이미지는 amd64와 arm64를 모두 제공하며 현재 호스트 변형을 받습니다.
 native_builder_image = "ubuntu:24.04"
 

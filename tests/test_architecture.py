@@ -32,7 +32,7 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(result.host_arch, "aarch64")
         self.assertTrue(result.evidence)
 
-    def test_portable_root_build_with_fuzz_harness_allows_native_probe(self):
+    def test_portable_root_build_with_fuzz_harness_requires_real_native_probe(self):
         repo = RepoSnapshot(
             full_name="org/parser",
             html_url="https://github.com/org/parser",
@@ -49,9 +49,12 @@ class ArchitectureTests(unittest.TestCase):
                 "allow_portable_native_probe": True,
             },
         )
-        self.assertTrue(result.compatible)
-        self.assertEqual(result.confidence, 60)
-        self.assertIn("native_build_probe", result.evidence[0])
+        self.assertFalse(result.compatible)
+        self.assertEqual(result.confidence, 50)
+        self.assertEqual(
+            result.blockers, ["native_build_probe_required:aarch64"]
+        )
+        self.assertEqual(result.evidence, [])
 
     def test_portable_probe_rejects_vendored_fuzz_harness(self):
         repo = RepoSnapshot(

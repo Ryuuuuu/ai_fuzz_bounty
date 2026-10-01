@@ -121,19 +121,19 @@ def assess_architecture(
         and _portable_native_probe_candidate(repo)
     )
     if portable_probe:
-        evidence.append(
-            "native_build_probe:root_portable_build_and_existing_fuzz_harness"
-        )
+        # A plausible build shape requests a real preflight; it is not
+        # itself proof that the source runs on this host architecture.
+        blockers.append(f"native_build_probe_required:{host_arch}")
     compatible = not blockers and (
         bool(evidence) or not require_explicit
     )
-    if not evidence and require_explicit:
+    if not evidence and require_explicit and not portable_probe:
         blockers.append(f"no_explicit_native_support_evidence:{host_arch}")
     return ArchitectureAssessment(
         host_arch=host_arch,
         compatible=compatible,
         confidence=(
-            100 if blockers else (60 if portable_probe else (90 if evidence else 50))
+            50 if portable_probe else (100 if blockers else (90 if evidence else 50))
         ),
         evidence=evidence,
         blockers=blockers,

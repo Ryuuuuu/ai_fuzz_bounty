@@ -1865,6 +1865,7 @@ class CentralAgent:
                     limit=limit if limit > 0 else None,
                     use_ai=True,
                     exclude_repositories=exclusions,
+                    run_arm_preflight=True,
                     search_pages_per_query=(
                         int(self.agent.get("idle_search_pages_per_query", 2))
                         if idle
@@ -1883,6 +1884,8 @@ class CentralAgent:
                 "discovered": summary.discovered,
                 "verified": summary.verified,
                 "errors": summary.errors,
+                "arm_preflight_attempted": summary.arm_preflight_attempted,
+                "arm_preflight_passed": summary.arm_preflight_passed,
             }
             self._save_state()
         except PipelineInterrupted:

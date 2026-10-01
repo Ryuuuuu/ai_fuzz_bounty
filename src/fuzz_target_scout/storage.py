@@ -81,6 +81,17 @@ class Store:
                 next_page INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS arm_preflight_cache (
+                full_name TEXT NOT NULL,
+                head_sha TEXT NOT NULL,
+                host_arch TEXT NOT NULL,
+                version TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                passed INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                PRIMARY KEY(full_name, head_sha, host_arch, version)
+            );
             """
         )
         self.connection.commit()
@@ -206,6 +217,38 @@ class Store:
                 updated_at=excluded.updated_at
             """,
             (query, next_page, utc_now()),
+        )
+        self.connection.commit()
+
+    def get_arm_preflight(
+        self, full_name: str, head_sha: str, host_arch: str, version: str
+    ) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT checked_at, passed, reason, evidence
+              FROM arm_preflight_cache
+             WHERE full_name=? AND head_sha=? AND host_arch=? AND version=?
+            """,
+            (full_name.casefold(), head_sha.casefold(), host_arch, version),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def put_arm_preflight(
+        self, full_name: str, head_sha: str, host_arch: str, version: str,
+        *, passed: bool, reason: str, evidence: str = "",
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO arm_preflight_cache(
+                full_name, head_sha, host_arch, version, checked_at,
+                passed, reason, evidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(full_name, head_sha, host_arch, version) DO UPDATE SET
+                checked_at=excluded.checked_at, passed=excluded.passed,
+                reason=excluded.reason, evidence=excluded.evidence
+            """,
+            (full_name.casefold(), head_sha.casefold(), host_arch, version,
+             utc_now(), int(passed), reason, evidence),
         )
         self.connection.commit()
 
