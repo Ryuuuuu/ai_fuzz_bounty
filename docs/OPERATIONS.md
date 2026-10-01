@@ -46,9 +46,13 @@ corpus의 증거는 삭제하지 않는다. 작업 전체가 `job_disk_limit_mb`
 `resource_limit_required`로 멈춘다.
 프로세스가 사라진 `fts-*` Docker 컨테이너도 라벨을 확인한 뒤 정리한다.
 
-같은 저장소에서 `repository_failure_threshold`번 연속으로 빌드·통합 실패가 끝나면
-`repository_failure_cooldown_hours` 동안 새 커밋을 큐에 넣지 않는다. 이미 큐에 있는
-미시작 작업도 `skipped_repository_cooldown`으로 완료하여 다음 저장소를 탐색한다. 성공적으로 예산을 소진했거나 저수익으로 종료한 저장소도 `repository_success_cooldown_hours` 동안 GitHub 상세 조회 전부터 제외하여 동일 코드 반복과 API 소비를 막는다.
+한 번이라도 `data/runs/*/job.json`에 기록된 저장소는 완료 상태, 커밋, 경과 시간에
+관계없이 이후 자동 탐색과 신규 작업 생성에서 제외한다. 같은 작업 ID의 미완료 작업은
+기존 상태와 누적 퍼징 시간을 유지하며 재개한다. 이전 작업과 같은 저장소의 미시작
+대기 작업은 `skipped_previously_attempted`로 완료한다.
+`repository_failure_threshold`, `repository_failure_cooldown_hours`,
+`repository_success_cooldown_hours`는 기존 대기열의 쿨다운 정리와 진단을 위해
+유지한다. 이 기간이 지나도 해당 저장소는 자동으로 다시 선택되지 않는다.
 
 
 ARM 호스트의 중앙 에이전트는 현재 정책이 유상 바운티 `verified`이고 C/C++이며

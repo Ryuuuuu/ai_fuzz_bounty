@@ -1,8 +1,15 @@
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
-from fuzz_target_scout.models import RepoSnapshot
+from fuzz_target_scout.github import GitHubError
+from fuzz_target_scout.models import (
+    ArchitectureAssessment, PolicyAssessment, RepoSnapshot, StaticAssessment,
+)
 
 
 class _SearchStore:
@@ -34,6 +41,92 @@ class _SearchGitHub:
 
 
 class EngineIdleDiscoveryTests(unittest.TestCase):
+    def test_seeded_repository_rechecks_current_policy_code_and_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["github"]["seed_policy_catalog"] = False
+            config["github"]["queries"] = []
+            config["pipeline"]["languages"] = ["C++"]
+            engine = ScoutEngine(config)
+            calls = []
+
+            class GitHub:
+                def get_repository(self, name):
+                    calls.append(("repository", name))
+                    if name == "org/error":
+                        raise GitHubError("temporary API failure")
+                    return RepoSnapshot(
+                        full_name=name,
+                        html_url=f"https://github.com/{name}",
+                        default_branch="main",
+                        head_sha="b" * 40,
+                        language="C++",
+                        security_url=f"https://github.com/{name}/security/policy",
+                    )
+
+                def load_security_policy(self, repo):
+                    calls.append(("policy", repo.full_name))
+                    return repo
+
+                def hydrate_code_evidence(self, repo):
+                    calls.append(("code", repo.full_name))
+                    return repo
+
+            engine.github = GitHub()
+            engine._refresh_policy_sources = lambda: None
+            try:
+                def verify(repo):
+                    status = "rejected" if repo.full_name == "org/stale" else "verified"
+                    return PolicyAssessment(
+                        status=status, confidence=85, source="security.md",
+                        program_url="https://hackerone.com/example" if status == "verified" else "",
+                        note="current policy",
+                    )
+
+                with patch.object(engine.policy, "verify", side_effect=verify), patch(
+                    "fuzz_target_scout.engine.assess_architecture",
+                    return_value=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=True, confidence=90
+                    ),
+                ), patch(
+                    "fuzz_target_scout.engine.assess_static",
+                    return_value=StaticAssessment(
+                        fuzz_score=80, reproduce_difficulty=1, signals=[],
+                        blockers=[], suggested_entry_kind="library_api",
+                    ),
+                ), patch("fuzz_target_scout.engine.final_score", return_value=80), patch.object(
+                    engine, "_preflight_arm_candidates", return_value=(0, 0)
+                ) as preflight, patch.object(
+                    engine, "_apply_ai", return_value=(0, 0, 0)
+                ):
+                    summary = engine.scan(
+                        queries=[], use_ai=False, run_arm_preflight=True,
+                        seed_repositories=[
+                            "org/excluded", "org/fresh", "org/stale", "org/error"
+                        ],
+                        exclude_repositories={"org/excluded"},
+                    )
+
+                self.assertEqual(summary.errors, 1)
+                self.assertEqual(summary.discovered, 2)
+                self.assertEqual(preflight.call_count, 1)
+                self.assertNotIn(("repository", "org/excluded"), calls)
+                self.assertIn(("policy", "org/fresh"), calls)
+                self.assertIn(("policy", "org/stale"), calls)
+                self.assertIn(("code", "org/fresh"), calls)
+                self.assertNotIn(("code", "org/stale"), calls)
+                rows = list(engine.store.export_rows(55, False, scan_id=summary.scan_id))
+                self.assertEqual([row["repository"] for row in rows], ["org/fresh"])
+                self.assertEqual(rows[0]["commit"], "b" * 40)
+                stale = engine.store.connection.execute(
+                    "SELECT policy_status, last_scan_id FROM candidates WHERE full_name=?",
+                    ("org/stale",),
+                ).fetchone()
+                self.assertEqual((stale["policy_status"], stale["last_scan_id"]),
+                                 ("rejected", summary.scan_id))
+            finally:
+                engine.close()
+
     def test_idle_search_advances_multiple_pages_without_replaying_old_page(self):
         engine = object.__new__(ScoutEngine)
         engine.config = {

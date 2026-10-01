@@ -171,6 +171,7 @@ DEFAULTS: dict[str, Any] = {
         "discovery_interval_seconds": 21600,
         "idle_discovery_interval_seconds": 3600,
         "idle_search_pages_per_query": 2,
+        "revalidation_backlog_per_scan": 6,
         "discovery_error_retry_seconds": 300,
         "discovery_limit": 0,
         "auto_improve": True,

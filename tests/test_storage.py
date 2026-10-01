@@ -32,6 +32,60 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(store.get_search_page(query, 3), 1)
             store.close()
 
+    def test_revalidation_backlog_filters_history_policy_language_score_and_arm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "scout.sqlite3")
+            scan_id = store.start_scan("test")
+
+            def add(name, *, score=80, status="verified", language="C++", arm=True):
+                store.upsert_candidate(
+                    Candidate(
+                        repo=RepoSnapshot(
+                            full_name=name,
+                            html_url=f"https://github.com/{name}",
+                            default_branch="main",
+                            head_sha="a" * 40,
+                            language=language,
+                            security_url=f"https://github.com/{name}/security/policy",
+                        ),
+                        static=StaticAssessment(
+                            fuzz_score=score,
+                            reproduce_difficulty=1,
+                            signals=[],
+                            blockers=[],
+                            suggested_entry_kind="library_api",
+                        ),
+                        policy=PolicyAssessment(
+                            status=status,
+                            confidence=85,
+                            source="security.md",
+                            program_url="https://hackerone.com/example",
+                            note="test",
+                        ),
+                        final_score=score,
+                        architecture=ArchitectureAssessment(
+                            host_arch="aarch64", compatible=arm, confidence=90
+                        ),
+                    ),
+                    scan_id,
+                )
+
+            add("org/aa-selected")
+            add("org/bb-fresh")
+            add("org/cc-fresh")
+            add("org/dd-low", score=54)
+            add("org/ee-conditional", status="conditional")
+            add("org/ff-rust", language="Rust")
+            add("org/gg-no-arm", arm=False)
+            names = store.revalidation_backlog_names(
+                55, ["C", "C++"], {"ORG/AA-SELECTED"}, 2
+            )
+            self.assertEqual(names, ["org/bb-fresh", "org/cc-fresh"])
+            self.assertEqual(
+                store.revalidation_backlog_names(55, ["Rust"], set(), 2), []
+            )
+            store.close()
+
     def test_export_gate_excludes_conditional_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "scout.sqlite3")

@@ -37,6 +37,7 @@ from .pipeline import (
     load_oss_fuzz_support_index,
     load_toolchain_lock,
     prepare_jobs,
+    quarantine_previously_selected_jobs,
     quarantine_repository_cooldown_jobs,
     repository_discovery_exclusions,
     utc_now,
@@ -82,6 +83,8 @@ RESTARTABLE_FAILURE_STAGES = {
 HISTORICAL_JOB_STATUSES = {
     "exhausted",
     "skipped_after_recovery",
+    "skipped_operator_rotation",
+    "skipped_previously_attempted",
     "skipped_repository_cooldown",
     "unsupported_integration",
 }
@@ -1860,11 +1863,22 @@ class CentralAgent:
                 exclusions = repository_discovery_exclusions(
                     self.runs_root, self.pipeline
                 )
+                backlog_store = Store(self.config["storage"]["database_path"])
+                try:
+                    backlog = backlog_store.revalidation_backlog_names(
+                        int(self.config["scoring"]["minimum_handoff_score"]),
+                        self.pipeline.get("languages") or [],
+                        exclusions,
+                        min(8, max(0, int(self.agent.get("revalidation_backlog_per_scan", 6)))),
+                    )
+                finally:
+                    backlog_store.close()
                 summary = engine.scan(
                     catalog_only=False,
                     limit=limit if limit > 0 else None,
                     use_ai=True,
                     exclude_repositories=exclusions,
+                    seed_repositories=backlog,
                     run_arm_preflight=True,
                     search_pages_per_query=(
                         int(self.agent.get("idle_search_pages_per_query", 2))
@@ -1999,8 +2013,9 @@ class CentralAgent:
         self._save_state()
 
     def _runnable_jobs(self) -> list[dict[str, Any]]:
-        quarantined = quarantine_repository_cooldown_jobs(
-            self.runs_root, self.pipeline
+        quarantined = quarantine_previously_selected_jobs(self.runs_root)
+        quarantined.extend(
+            quarantine_repository_cooldown_jobs(self.runs_root, self.pipeline)
         )
         if quarantined:
             self.state["last_repository_quarantine"] = {
@@ -2009,7 +2024,7 @@ class CentralAgent:
             }
             self._save_state()
             self.progress(
-                "repository failure cooldown quarantined queued jobs: "
+                "repository history quarantined queued jobs: "
                 + ", ".join(quarantined)
             )
         overview = pipeline_overview(self.runs_root)

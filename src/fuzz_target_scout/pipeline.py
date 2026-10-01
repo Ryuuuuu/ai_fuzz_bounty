@@ -93,9 +93,7 @@ def prepare_jobs(
     existing = 0
     reasons: Counter[str] = Counter()
     job_ids: list[str] = []
-    planned_repositories = _planned_repositories(root)
-    failure_cooldowns = repository_failure_cooldowns(root, pipeline_config)
-    success_cooldowns = repository_success_cooldowns(root, pipeline_config)
+    selected_repositories = _selected_repositories(root)
 
     queued = list(candidates)
     architecture_config = pipeline_config.get("architecture")
@@ -136,14 +134,8 @@ def prepare_jobs(
             job_ids.append(job_id)
             continue
         repository = str((work_order.get("source") or {}).get("repository") or "")
-        if repository.casefold() in failure_cooldowns:
-            reasons["repository_failure_cooldown"] += 1
-            continue
-        if repository.casefold() in success_cooldowns:
-            reasons["repository_success_cooldown"] += 1
-            continue
-        if repository.casefold() in planned_repositories:
-            reasons["repository_already_planned"] += 1
+        if repository.strip().casefold() in selected_repositories:
+            reasons["repository_previously_selected"] += 1
             continue
         job_dir.mkdir(parents=False, exist_ok=False)
         for name in (
@@ -169,7 +161,7 @@ def prepare_jobs(
                 "last_error": None,
             },
         )
-        planned_repositories.add(repository.casefold())
+        selected_repositories.add(repository.strip().casefold())
         created += 1
         job_ids.append(job_id)
     return PlanSummary(
@@ -181,38 +173,34 @@ def prepare_jobs(
     )
 
 
-def _planned_repositories(runs_root: Path) -> set[str]:
+def _selected_repositories(runs_root: Path) -> set[str]:
+    """Return every repository with a saved job, regardless of commit or outcome."""
     repositories: set[str] = set()
     if not runs_root.is_dir() or runs_root.is_symlink():
         return repositories
     for job_path in runs_root.glob("*/job.json"):
-        state_path = job_path.with_name("state.json")
         try:
             job = json.loads(job_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            state = {}
-        # Completed work only blocks its exact commit (checked by job_id above).
-        # A newer pinned commit may be planned without allowing two live jobs for
-        # the same repository.
-        if state.get("stage") == "complete":
+        if not isinstance(job, dict):
             continue
-        repository = str((job.get("source") or {}).get("repository") or "")
+        source = job.get("source")
+        if not isinstance(source, dict):
+            continue
+        repository = str(source.get("repository") or "").strip().casefold()
         if repository:
-            repositories.add(repository.casefold())
+            repositories.add(repository)
     return repositories
 
 
 def repository_discovery_exclusions(
     runs_root: str | Path, pipeline_config: dict[str, Any]
 ) -> set[str]:
-    """Return repositories that should be skipped before GitHub detail lookups."""
+    """Skip any previously selected repository before GitHub detail lookups."""
     root = Path(runs_root)
     return (
-        _planned_repositories(root)
+        _selected_repositories(root)
         | set(repository_failure_cooldowns(root, pipeline_config))
         | set(repository_success_cooldowns(root, pipeline_config))
     )
@@ -365,6 +353,68 @@ def repository_success_cooldowns(
             "job_ids": [job_id],
         }
     return blocked
+
+
+def quarantine_previously_selected_jobs(runs_root: str | Path) -> list[str]:
+    """Finish untouched duplicate jobs while preserving the first selected job."""
+    root = Path(runs_root)
+    if not root.is_dir() or root.is_symlink():
+        return []
+    by_repository: dict[str, list[tuple[Path, dict[str, Any], str]]] = {}
+    for job_path in root.glob("*/job.json"):
+        state_path = job_path.with_name("state.json")
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        if not isinstance(job, dict):
+            continue
+        if not isinstance(state, dict):
+            state = {}
+        source = job.get("source")
+        if not isinstance(source, dict):
+            continue
+        repository = str(source.get("repository") or "").strip().casefold()
+        if not repository:
+            continue
+        created_at = str(state.get("created_at") or job.get("created_at") or "")
+        by_repository.setdefault(repository, []).append(
+            (state_path, state, created_at)
+        )
+
+    quarantined: list[str] = []
+    for entries in by_repository.values():
+        if len(entries) < 2:
+            continue
+        ordered = sorted(entries, key=lambda item: (item[2], item[0].parent.name))
+        started = [
+            item for item in ordered
+            if item[1].get("status") != "skipped_previously_attempted"
+            and (
+                item[1].get("stage") != "policy_recheck"
+                or item[1].get("status") != "queued"
+            )
+        ]
+        previous = (started or ordered)[0][0].parent.name
+        for state_path, state, _ in ordered:
+            if state_path.parent.name == previous:
+                continue
+            if state.get("stage") != "policy_recheck" or state.get("status") != "queued":
+                continue
+            state["stage"] = "complete"
+            state["status"] = "skipped_previously_attempted"
+            state["last_error"] = (
+                f"repository was already selected in saved job {previous}"
+            )
+            state["previous_repository_job"] = previous
+            state["updated_at"] = utc_now()
+            _write_json(state_path, state)
+            quarantined.append(state_path.parent.name)
+    return sorted(quarantined)
 
 
 def quarantine_repository_cooldown_jobs(

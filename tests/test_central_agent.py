@@ -24,6 +24,43 @@ from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 
 
 class CentralAgentTests(unittest.TestCase):
+    def test_runnable_jobs_quarantines_duplicate_queued_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            runs = Path(config["pipeline"]["runs_path"])
+            runs.mkdir(parents=True)
+            for name, status, stage in (
+                ("prior-job", "skipped_after_recovery", "complete"),
+                ("queued-job", "queued", "policy_recheck"),
+            ):
+                job_dir = runs / name
+                job_dir.mkdir()
+                (job_dir / "job.json").write_text(
+                    json.dumps({
+                        "job_id": name,
+                        "source": {"repository": "PowerDNS/pdns"},
+                        "created_at": "2026-09-27T00:00:00+00:00",
+                    }),
+                    encoding="utf-8",
+                )
+                (job_dir / "state.json").write_text(
+                    json.dumps({
+                        "job_id": name,
+                        "status": status,
+                        "stage": stage,
+                        "created_at": "2026-09-27T00:00:00+00:00",
+                        "updated_at": "2026-09-27T00:00:00+00:00",
+                    }),
+                    encoding="utf-8",
+                )
+
+            agent = CentralAgent(config)
+            self.assertEqual(agent._runnable_jobs(), [])
+            state = json.loads((runs / "queued-job" / "state.json").read_text())
+            self.assertEqual(state["status"], "skipped_previously_attempted")
+            self.assertEqual(state["previous_repository_job"], "prior-job")
+
     def test_health_monitor_reuses_and_rotates_a_persistent_codex_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1341,6 +1378,18 @@ class CentralAgentTests(unittest.TestCase):
             agent = CentralAgent(config)
             calls = []
             exports = []
+            backlog_requests = []
+
+            class BacklogStore:
+                def __init__(self, _path):
+                    pass
+
+                def revalidation_backlog_names(self, score, languages, excluded, limit):
+                    backlog_requests.append((score, languages, excluded, limit))
+                    return ["org/fresh"]
+
+                def close(self):
+                    pass
 
             class FakeEngine:
                 def __init__(self, _config, progress):
@@ -1362,7 +1411,12 @@ class CentralAgentTests(unittest.TestCase):
             )
             agent._plan_exported_candidates = lambda: None
             agent._runnable_jobs = lambda: []
-            with patch("fuzz_target_scout.central_agent.ScoutEngine", FakeEngine):
+            with patch("fuzz_target_scout.central_agent.ScoutEngine", FakeEngine), patch(
+                "fuzz_target_scout.central_agent.Store", BacklogStore
+), patch(
+                "fuzz_target_scout.central_agent.repository_discovery_exclusions",
+                return_value={"org/old"},
+            ):
                 agent._refresh_candidates_if_due()
                 agent.state["last_discovery_at"] = "2020-01-01T00:00:00Z"
                 agent._runnable_jobs = lambda: [{"job_id": "ready-job"}]
@@ -1372,6 +1426,9 @@ class CentralAgentTests(unittest.TestCase):
             [call["search_pages_per_query"] for call in calls], [3, 1]
         )
         self.assertEqual(exports, [(1, 2), (2, 0)])
+        self.assertEqual([call["seed_repositories"] for call in calls],
+                         [["org/fresh"], ["org/fresh"]])
+        self.assertEqual(backlog_requests[0], (55, ["C", "C++"], {"org/old"}, 6))
 
     def test_partial_empty_scan_retains_only_a_usable_verified_export(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -31,6 +31,8 @@ MANUAL_STATUSES = {
     "exhausted",
     "unsupported_integration",
     "ready_for_human",
+    "skipped_operator_rotation",
+    "skipped_previously_attempted",
     "triage_review_required",
     "resource_limit_required",
     "validation_review_required",

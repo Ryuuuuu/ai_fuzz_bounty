@@ -314,6 +314,47 @@ class Store:
             )
         )
 
+    def revalidation_backlog_names(
+        self,
+        minimum_score: int,
+        enabled_languages: Iterable[str],
+        excluded_repositories: set[str],
+        limit: int,
+    ) -> list[str]:
+        """Return old eligible names for a new scan, never old handoff data."""
+        languages = tuple(
+            sorted({str(value).casefold() for value in enabled_languages} & {"c", "c++"})
+        )
+        if limit <= 0 or not languages:
+            return []
+        placeholders = ",".join("?" for _ in languages)
+        excluded = {str(value).casefold() for value in excluded_repositories}
+        rows = self.connection.execute(
+            f"""
+            SELECT full_name, details_json
+              FROM candidates
+             WHERE policy_status='verified' AND final_score >= ?
+               AND lower(language) IN ({placeholders})
+             ORDER BY last_seen_at ASC, final_score DESC, full_name
+            """,
+            (minimum_score, *languages),
+        )
+        names: list[str] = []
+        for row in rows:
+            name = str(row["full_name"]).strip()
+            if name.count("/") != 1 or name.casefold() in excluded:
+                continue
+            try:
+                architecture = json.loads(row["details_json"]).get("architecture") or {}
+            except (TypeError, ValueError):
+                continue
+            if not architecture.get("compatible"):
+                continue
+            names.append(name)
+            if len(names) >= limit:
+                break
+        return names
+
     def export_rows(
         self,
         minimum_score: int,

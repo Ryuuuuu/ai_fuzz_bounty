@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from .ai import AIError, CodexReviewer, compact_evidence, evidence_hash
 from .architecture import assess_architecture, resolve_host_architecture
@@ -65,6 +65,7 @@ class ScoutEngine:
         exclude_repositories: set[str] | None = None,
         search_pages_per_query: int = 1,
         run_arm_preflight: bool = False,
+        seed_repositories: Iterable[str] | None = None,
     ) -> ScanSummary:
         source = "catalog" if catalog_only else "github-search"
         scan_id = self.store.start_scan(source)
@@ -77,11 +78,14 @@ class ScoutEngine:
             }
             if excluded:
                 self.progress(
-                    f"excluded {len(excluded)} active or cooldown repositories"
+                    f"excluded {len(excluded)} previously selected repositories"
                 )
+            lookup_errors: list[str] = []
             repos = self._discover(
-                catalog_only, limit, queries, excluded, search_pages_per_query
+                catalog_only, limit, queries, excluded, search_pages_per_query,
+                seed_repositories=seed_repositories, lookup_errors=lookup_errors,
             )
+            errors += len(lookup_errors)
             self.progress(f"discovered {len(repos)} unique repositories")
             for index, repo in enumerate(repos, 1):
                 self.progress(f"[{index}/{len(repos)}] policy {repo.full_name}")
@@ -196,6 +200,8 @@ class ScoutEngine:
         queries: list[str] | None,
         excluded: set[str] | None = None,
         search_pages_per_query: int = 1,
+        seed_repositories: Iterable[str] | None = None,
+        lookup_errors: list[str] | None = None,
     ) -> list[RepoSnapshot]:
         excluded = excluded or set()
         unique: dict[str, RepoSnapshot] = {}
@@ -220,9 +226,26 @@ class ScoutEngine:
                         break
             return list(unique.values())
 
+        for name in seed_repositories or ():
+            if name.casefold() in excluded or name.casefold() in unique:
+                continue
+            try:
+                repo = self.github.get_repository(name)
+            except GitHubError as exc:
+                self.progress(f"warning: backlog lookup {name}: {exc}")
+                if lookup_errors is not None:
+                    lookup_errors.append(name)
+                continue
+            if repo and repo.full_name.casefold() not in excluded and _language_is_enabled(
+                repo.language, enabled_languages
+            ):
+                unique.setdefault(repo.full_name.casefold(), repo)
+                if limit and len(unique) >= limit:
+                    return list(unique.values())
+
         if bool(self.config["github"].get("seed_policy_catalog", True)):
             for name in self.policy.catalog_names:
-                if name.casefold() in excluded:
+                if name.casefold() in excluded or name.casefold() in unique:
                     continue
                 try:
                     repo = self.github.get_repository(name)

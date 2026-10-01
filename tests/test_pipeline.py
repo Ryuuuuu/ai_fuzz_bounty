@@ -11,9 +11,11 @@ from fuzz_target_scout.pipeline import (
     job_status,
     load_oss_fuzz_support_index,
     prepare_jobs,
+    quarantine_previously_selected_jobs,
     quarantine_repository_cooldown_jobs,
     repository_discovery_exclusions,
     repository_failure_cooldowns,
+    repository_success_cooldowns,
 )
 
 
@@ -365,6 +367,66 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(second.existing, 1)
             self.assertEqual(second.created, 0)
 
+    def test_incomplete_job_resumes_without_restarting_its_fuzz_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = prepare_jobs([candidate()], root, CONFIG, LOCK)
+            job_dir = root / first.job_ids[0]
+            state_path = job_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            state.update({"stage": "fuzzing", "status": "interrupted"})
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            progress = job_dir / "artifacts" / "fuzz-progress.json"
+            progress.write_text('{"completed_seconds":3600}', encoding="utf-8")
+
+            resumed = prepare_jobs([candidate()], root, CONFIG, LOCK)
+            new_commit = prepare_jobs(
+                [candidate(commit="c" * 40)], root, CONFIG, LOCK
+            )
+
+            self.assertEqual(resumed.existing, 1)
+            self.assertEqual(resumed.job_ids, first.job_ids)
+            self.assertEqual(json.loads(progress.read_text())["completed_seconds"], 3600)
+            self.assertEqual(new_commit.created, 0)
+            self.assertEqual(
+                new_commit.skip_reasons, {"repository_previously_selected": 1}
+            )
+
+    def test_repository_history_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = candidate(commit="b" * 40)
+            original["repository"] = "PowerDNS/pdns"
+            first = prepare_jobs([original], root, CONFIG, LOCK)
+            self._complete_job(root / first.job_ids[0], "unsupported_integration")
+            changed_case = candidate(commit="c" * 40)
+            changed_case["repository"] = "powerdns/PDNS"
+
+            self.assertIn("powerdns/pdns", repository_discovery_exclusions(root, CONFIG))
+            second = prepare_jobs([changed_case], root, CONFIG, LOCK)
+            self.assertEqual(second.created, 0)
+            self.assertEqual(
+                second.skip_reasons, {"repository_previously_selected": 1}
+            )
+
+    def test_untouched_duplicate_queue_is_quarantined_but_original_remains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = prepare_jobs([candidate()], root, CONFIG, LOCK)
+            original = root / first.job_ids[0]
+            self.assertEqual(quarantine_previously_selected_jobs(root), [])
+            duplicate = self._saved_job(
+                root, "ORG/PARSER", "c" * 40, "queued", stage="policy_recheck"
+            )
+
+            self.assertEqual(quarantine_previously_selected_jobs(root), [duplicate.name])
+            self.assertEqual(quarantine_previously_selected_jobs(root), [])
+            duplicate_state = json.loads((duplicate / "state.json").read_text())
+            original_state = json.loads((original / "state.json").read_text())
+            self.assertEqual(duplicate_state["status"], "skipped_previously_attempted")
+            self.assertEqual(duplicate_state["previous_repository_job"], original.name)
+            self.assertEqual(original_state["status"], "queued")
+
     def test_planning_does_not_queue_a_new_commit_for_the_same_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             first = prepare_jobs([candidate(commit="b" * 40)], directory, CONFIG, LOCK)
@@ -373,17 +435,14 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(first.created, 1)
             self.assertEqual(second.created, 0)
             self.assertEqual(
-                second.skip_reasons, {"repository_already_planned": 1}
+                second.skip_reasons, {"repository_previously_selected": 1}
             )
 
-    def test_completed_job_allows_a_new_pinned_commit_for_same_repository(self):
+    def test_completed_failure_excludes_new_commit_for_same_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             first = prepare_jobs([candidate(commit="b" * 40)], directory, CONFIG, LOCK)
             first_job = Path(directory) / first.job_ids[0]
-            state_path = first_job / "state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            state.update({"stage": "complete", "status": "skipped_after_recovery"})
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            self._complete_job(first_job, "skipped_after_recovery")
 
             second = prepare_jobs(
                 [candidate(commit="c" * 40)], directory, CONFIG, LOCK
@@ -392,14 +451,16 @@ class PipelineTests(unittest.TestCase):
                 [candidate(commit="b" * 40)], directory, CONFIG, LOCK
             )
 
-            self.assertEqual(second.created, 1)
+            self.assertEqual(second.created, 0)
+            self.assertEqual(
+                second.skip_reasons, {"repository_previously_selected": 1}
+            )
             self.assertEqual(same_commit.created, 0)
             self.assertEqual(same_commit.existing, 0)
-            self.assertEqual(same_commit.job_ids, [])
             self.assertEqual(
                 same_commit.skip_reasons, {"historical_exact_commit": 1}
             )
-            self.assertEqual(len(list(Path(directory).glob("*/job.json"))), 2)
+            self.assertEqual(len(list(Path(directory).glob("*/job.json"))), 1)
 
     def test_terminal_exact_commits_do_not_consume_new_job_limit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -436,22 +497,23 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(followup.existing, 1)
             self.assertEqual(followup.job_ids, summary.job_ids)
 
-    def test_repeated_repository_failures_open_a_planning_cooldown(self):
+    def test_repeated_repository_failures_still_report_a_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
             config = {
                 **CONFIG,
                 "repository_failure_threshold": 2,
                 "repository_failure_cooldown_hours": 168,
             }
-            first = prepare_jobs([candidate(commit="b" * 40)], directory, config, LOCK)
-            self._complete_job(Path(directory) / first.job_ids[0], "skipped_after_recovery")
-            second = prepare_jobs([candidate(commit="c" * 40)], directory, config, LOCK)
-            self._complete_job(Path(directory) / second.job_ids[0], "skipped_after_recovery")
-            third = prepare_jobs([candidate(commit="d" * 40)], directory, config, LOCK)
+            root = Path(directory)
+            first = prepare_jobs([candidate(commit="b" * 40)], root, config, LOCK)
+            self._complete_job(root / first.job_ids[0], "skipped_after_recovery")
+            self._saved_job(root, "org/parser", "c" * 40, "skipped_after_recovery")
+            third = prepare_jobs([candidate(commit="d" * 40)], root, config, LOCK)
 
+            self.assertIn("org/parser", repository_failure_cooldowns(root, config))
             self.assertEqual(third.created, 0)
             self.assertEqual(
-                third.skip_reasons, {"repository_failure_cooldown": 1}
+                third.skip_reasons, {"repository_previously_selected": 1}
             )
 
     def test_offline_dependency_opens_finite_cooldown_after_one_failure(self):
@@ -475,7 +537,7 @@ class PipelineTests(unittest.TestCase):
 
             self.assertEqual(next_commit.created, 0)
             self.assertEqual(
-                next_commit.skip_reasons, {"repository_failure_cooldown": 1}
+                next_commit.skip_reasons, {"repository_previously_selected": 1}
             )
             self.assertIn(
                 "org/parser", repository_discovery_exclusions(root, config)
@@ -488,9 +550,9 @@ class PipelineTests(unittest.TestCase):
                 repository_failure_cooldowns(root, config, now=expired),
             )
 
-    def test_discovery_exclusions_combine_live_and_success_cooldown(self):
+    def test_discovery_exclusions_include_live_and_completed_repositories(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = {**CONFIG, "repository_success_cooldown_hours": 168}
+            config = {**CONFIG, "repository_success_cooldown_hours": 0}
             root_path = Path(directory)
             first = prepare_jobs([candidate(commit="b" * 40)], root_path, config, LOCK)
             self._complete_job(root_path / first.job_ids[0], "exhausted")
@@ -503,14 +565,27 @@ class PipelineTests(unittest.TestCase):
                 {"org/parser", "org/live"},
             )
 
-    def test_recent_success_opens_a_repository_diversity_cooldown(self):
+    def test_success_history_blocks_new_commit_after_cooldown_expires(self):
         with tempfile.TemporaryDirectory() as directory:
             config = {**CONFIG, "repository_success_cooldown_hours": 168}
-            first = prepare_jobs([candidate(commit="b" * 40)], directory, config, LOCK)
-            self._complete_job(Path(directory) / first.job_ids[0], "exhausted")
-            second = prepare_jobs([candidate(commit="c" * 40)], directory, config, LOCK)
+            root = Path(directory)
+            first = prepare_jobs([candidate(commit="b" * 40)], root, config, LOCK)
+            first_job = root / first.job_ids[0]
+            self._complete_job(first_job, "exhausted")
+            state_path = first_job / "state.json"
+            state = json.loads(state_path.read_text())
+            state["updated_at"] = (
+                datetime.now(timezone.utc) - timedelta(hours=169)
+            ).isoformat()
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            self.assertNotIn("org/parser", repository_success_cooldowns(root, config))
+            self.assertIn("org/parser", repository_discovery_exclusions(root, config))
+            second = prepare_jobs([candidate(commit="c" * 40)], root, config, LOCK)
             self.assertEqual(second.created, 0)
-            self.assertEqual(second.skip_reasons, {"repository_success_cooldown": 1})
+            self.assertEqual(
+                second.skip_reasons, {"repository_previously_selected": 1}
+            )
 
     def test_successful_repository_run_resets_failure_sequence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -519,13 +594,17 @@ class PipelineTests(unittest.TestCase):
                 "repository_failure_threshold": 2,
                 "repository_failure_cooldown_hours": 168,
             }
-            first = prepare_jobs([candidate(commit="b" * 40)], directory, config, LOCK)
-            self._complete_job(Path(directory) / first.job_ids[0], "skipped_after_recovery")
-            second = prepare_jobs([candidate(commit="c" * 40)], directory, config, LOCK)
-            self._complete_job(Path(directory) / second.job_ids[0], "exhausted")
-            third = prepare_jobs([candidate(commit="d" * 40)], directory, config, LOCK)
+            root = Path(directory)
+            first = prepare_jobs([candidate(commit="b" * 40)], root, config, LOCK)
+            self._complete_job(root / first.job_ids[0], "skipped_after_recovery")
+            self._saved_job(root, "org/parser", "c" * 40, "exhausted")
+            third = prepare_jobs([candidate(commit="d" * 40)], root, config, LOCK)
 
-            self.assertEqual(third.created, 1)
+            self.assertNotIn("org/parser", repository_failure_cooldowns(root, config))
+            self.assertEqual(third.created, 0)
+            self.assertEqual(
+                third.skip_reasons, {"repository_previously_selected": 1}
+            )
 
     def test_queued_job_is_quarantined_when_repository_circuit_opens(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -537,20 +616,10 @@ class PipelineTests(unittest.TestCase):
             root = Path(directory)
             first = prepare_jobs([candidate(commit="b" * 40)], root, config, LOCK)
             self._complete_job(root / first.job_ids[0], "skipped_after_recovery")
-            second = prepare_jobs([candidate(commit="c" * 40)], root, config, LOCK)
-            queued = root / second.job_ids[0]
-            third = root / ("org-parser-" + "d" * 12)
-            third.mkdir()
-            (third / "job.json").write_text(json.dumps({
-                "source": {"repository": "org/parser", "commit": "d" * 40}
-            }))
-            (third / "state.json").write_text(json.dumps({
-                "job_id": third.name,
-                "stage": "policy_recheck",
-                "status": "queued",
-                "updated_at": "2026-09-27T00:00:00+00:00",
-            }))
-            self._complete_job(queued, "skipped_after_recovery")
+            self._saved_job(root, "org/parser", "c" * 40, "skipped_after_recovery")
+            third = self._saved_job(
+                root, "org/parser", "d" * 40, "queued", stage="policy_recheck"
+            )
 
             quarantined = quarantine_repository_cooldown_jobs(root, config)
             state = json.loads((third / "state.json").read_text())
@@ -564,6 +633,38 @@ class PipelineTests(unittest.TestCase):
         state = json.loads(state_path.read_text())
         state.update({"stage": "complete", "status": status})
         state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    @staticmethod
+    def _saved_job(
+        root: Path,
+        repository: str,
+        commit: str,
+        status: str,
+        *,
+        stage: str = "complete",
+    ) -> Path:
+        job_dir = root / f"saved-{commit[:12]}"
+        job_dir.mkdir()
+        timestamp = datetime.now(timezone.utc).isoformat()
+        (job_dir / "job.json").write_text(
+            json.dumps({
+                "job_id": job_dir.name,
+                "source": {"repository": repository, "commit": commit},
+                "created_at": timestamp,
+            }),
+            encoding="utf-8",
+        )
+        (job_dir / "state.json").write_text(
+            json.dumps({
+                "job_id": job_dir.name,
+                "stage": stage,
+                "status": status,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }),
+            encoding="utf-8",
+        )
+        return job_dir
 
     def test_support_index_filters_before_work_order_creation(self):
         with tempfile.TemporaryDirectory() as directory:
