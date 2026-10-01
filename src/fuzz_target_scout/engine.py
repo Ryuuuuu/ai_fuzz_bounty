@@ -329,7 +329,7 @@ class ScoutEngine:
         )
         retry_hours = max(0, int(architecture.get("arm_preflight_failure_retry_hours", 24)))
         transient_retry_seconds = min(retry_hours * 3600, 15 * 60)
-        pending: list[Candidate] = []
+        pending: list[tuple[bool, Candidate]] = []
         passed = 0
         for candidate in candidates:
             assessment = candidate.architecture
@@ -378,19 +378,26 @@ class ScoutEngine:
                         continue
                 except ValueError:
                     pass
-            pending.append(candidate)
+            pending.append((
+                self.store.has_prior_successful_arm_preflight(
+                    candidate.repo.full_name, candidate.repo.head_sha,
+                    "aarch64", PREFLIGHT_VERSION,
+                ),
+                candidate,
+            ))
 
         pending.sort(
             key=lambda item: (
-                -item.final_score,
-                item.repo.size_kb,
-                item.repo.full_name.casefold(),
+                not item[0],
+                -item[1].final_score,
+                item[1].repo.size_kb,
+                item[1].repo.full_name.casefold(),
             )
         )
         maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 2))))
         runner = ArmPreflight(architecture, progress=self.progress)
         attempted = 0
-        for candidate in pending[:maximum]:
+        for _prior_success, candidate in pending[:maximum]:
             self.progress(f"ARM preflight: {candidate.repo.full_name}")
             result = runner.check(candidate.repo)
             attempted += 1

@@ -233,6 +233,25 @@ class Store:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def has_prior_successful_arm_preflight(
+        self, full_name: str, head_sha: str, host_arch: str, version: str
+    ) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+              FROM arm_preflight_cache
+             WHERE full_name=? AND head_sha<>? AND host_arch=? AND version=?
+               AND passed=1
+               AND evidence=? || head_sha
+             LIMIT 1
+            """,
+            (
+                full_name.casefold(), head_sha.casefold(), host_arch, version,
+                f"native_arm_preflight:{version}:cmake_build_ctest:",
+            ),
+        ).fetchone()
+        return row is not None
+
     def put_arm_preflight(
         self, full_name: str, head_sha: str, host_arch: str, version: str,
         *, passed: bool, reason: str, evidence: str = "",

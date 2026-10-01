@@ -482,6 +482,76 @@ class ArmPreflightTests(unittest.TestCase):
             finally:
                 engine.close()
 
+    def test_previous_sha_success_only_prioritizes_current_sha_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["architecture"]["arm_preflight_max_per_scan"] = 2
+            proven = candidate("org/proven")
+            proven.final_score = 60
+            fresh = candidate("org/fresh")
+            fresh.final_score = 90
+            wrong_version = candidate("org/wrong-version")
+            wrong_version.final_score = 89
+            wrong_arch = candidate("org/wrong-arch")
+            wrong_arch.final_score = 88
+            invalid_evidence = candidate("org/invalid-evidence")
+            invalid_evidence.final_score = 87
+            previous_sha = "b" * 40
+            evidence = (
+                f"native_arm_preflight:{PREFLIGHT_VERSION}:"
+                f"cmake_build_ctest:{previous_sha}"
+            )
+            engine = ScoutEngine(config)
+            try:
+                for item, arch, version, proof in (
+                    (proven, "aarch64", PREFLIGHT_VERSION, evidence),
+                    (wrong_version, "aarch64", "old-version", evidence),
+                    (wrong_arch, "x86_64", PREFLIGHT_VERSION, evidence),
+                    (invalid_evidence, "aarch64", PREFLIGHT_VERSION, "unverified"),
+                ):
+                    engine.store.put_arm_preflight(
+                        item.repo.full_name, previous_sha, arch, version,
+                        passed=True, reason="native_arm_build_and_ctest_passed",
+                        evidence=proof,
+                    )
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "native_build_or_smoke_failed"
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([
+                            fresh, wrong_version, wrong_arch,
+                            invalid_evidence, proven,
+                        ]),
+                        (2, 0),
+                    )
+                    checked = [
+                        call.args[0]
+                        for call in runner.return_value.check.call_args_list
+                    ]
+                self.assertEqual(
+                    [repo.full_name for repo in checked],
+                    ["org/proven", "org/fresh"],
+                )
+                self.assertTrue(all(repo.head_sha == SHA for repo in checked))
+                self.assertFalse(proven.architecture.compatible)
+                self.assertEqual(
+                    engine.store.get_arm_preflight(
+                        proven.repo.full_name, SHA, "aarch64", PREFLIGHT_VERSION,
+                    )["passed"],
+                    0,
+                )
+                self.assertEqual(
+                    engine.store.get_arm_preflight(
+                        proven.repo.full_name, previous_sha,
+                        "aarch64", PREFLIGHT_VERSION,
+                    )["passed"],
+                    1,
+                )
+            finally:
+                engine.close()
+
     def test_failed_probe_is_cached_for_same_commit(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")
