@@ -46,7 +46,7 @@ allow_portable_native_probe = true
 max_evidence_files = 8
 # 중앙 에이전트만 미확인 C/C++ 후보를 격리 컨테이너에서 고정 SHA로 빌드·스모크합니다.
 arm_preflight_enabled = true
-arm_preflight_max_per_scan = 1
+arm_preflight_max_per_scan = 2
 arm_preflight_timeout_seconds = 900
 arm_preflight_max_repository_kb = 50000
 arm_preflight_failure_retry_hours = 24

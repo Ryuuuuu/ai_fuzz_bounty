@@ -171,6 +171,9 @@ if __name__ == "__main__":
 BUILD_AND_SMOKE = (
     """mkdir -p /work/build/.cmake/api/v1/query
 : > /work/build/.cmake/api/v1/query/codemodel-v2
+stage=configure
+trap 'code=$?; if [ "$code" -ne 0 ]; then printf "FTS_ARM_PREFLIGHT_FAILED_STAGE:%s:%s\\n" "$stage" "$code" >&2; fi' EXIT
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
 # Use the GoogleTest sources supplied by the base image when available.
 # Other CMake projects can ignore this cache entry.
 if [ -f /usr/src/googletest/CMakeLists.txt ] &&
@@ -181,6 +184,8 @@ else
   set --
 fi
 cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"
+stage=select_native_test
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
 ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
 cat > /work/select_native_test.py <<'PY'
 """
@@ -188,7 +193,11 @@ cat > /work/select_native_test.py <<'PY'
     + """PY
 python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json
 target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
+stage=build
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
 cmake --build /work/build --target "$target" --parallel 2
+stage=smoke
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
 cat > /work/verify_native_test.py <<'PY'
 """
     + VERIFY_NATIVE_TEST
@@ -215,6 +224,86 @@ TRANSIENT_FAILURE_REASONS = frozenset({
     "preflight_unavailable_or_timed_out",
 })
 
+_FAILURE_STAGE = re.compile(
+    r"(?m)^FTS_ARM_PREFLIGHT_FAILED_STAGE:"
+    r"(configure|select_native_test|build|smoke):([0-9]{1,3})\r?$"
+)
+_LAST_STAGE = re.compile(
+    r"(?m)^FTS_ARM_PREFLIGHT_STAGE:"
+    r"(configure|select_native_test|build|smoke)\r?$"
+)
+_CTEST_FAILURE_COUNTS = re.compile(
+    r"\b([0-9]{1,5}) tests? failed out of ([0-9]{1,5})\b",
+    re.IGNORECASE,
+)
+
+
+def _failure_evidence(output: str, returncode: int) -> str:
+    """Keep only fixed diagnostic categories; build output is untrusted data.
+
+    Repository CMake files, compilers and test executables can print credentials
+    or arbitrary text. Never copy their lines, paths or target names to the cache.
+    """
+    failed = list(_FAILURE_STAGE.finditer(output))
+    started = list(_LAST_STAGE.finditer(output))
+    stage = (
+        failed[-1].group(1) if failed else
+        started[-1].group(1) if started else "unknown"
+    )
+    normalized = output.casefold()
+    if returncode == 137 or "killed" in normalized:
+        kind = "process_killed"
+    elif "no space left on device" in normalized:
+        kind = "disk_full"
+    elif "cannot allocate memory" in normalized or "out of memory" in normalized:
+        kind = "memory_exhausted"
+    elif stage == "configure":
+        if "fetchcontent" in normalized or "network is unreachable" in normalized:
+            kind = "offline_dependency"
+        elif "could not find" in normalized or "could not find a package" in normalized:
+            kind = "missing_dependency"
+        elif "compiler" in normalized and "not found" in normalized:
+            kind = "compiler_unavailable"
+        else:
+            kind = "configure_failed"
+    elif stage == "select_native_test":
+        if "no c/c++ compile commands" in normalized:
+            kind = "no_native_compile_commands"
+        elif "cmake file api reply is missing" in normalized or "cmake codemodel is missing" in normalized:
+            kind = "missing_cmake_build_metadata"
+        elif "no ctest executable backed by a c/c++ cmake target" in normalized:
+            kind = "no_native_ctest_target"
+        else:
+            kind = "native_test_selection_failed"
+    elif stage == "build":
+        if "no such file or directory" in normalized and "fatal error:" in normalized:
+            kind = "missing_header"
+        elif "undefined reference" in normalized or "unresolved external" in normalized:
+            kind = "link_error"
+        elif "error:" in normalized:
+            kind = "compile_error"
+        else:
+            kind = "build_failed"
+    elif stage == "smoke":
+        if "not aarch64" in normalized:
+            kind = "wrong_test_architecture"
+        elif "test executable is missing" in normalized:
+            kind = "test_executable_missing"
+        elif "timeout" in normalized or "timed out" in normalized:
+            kind = "ctest_timeout"
+        elif _CTEST_FAILURE_COUNTS.search(output) or "selected native ctest did not pass" in normalized:
+            kind = "ctest_failed"
+        else:
+            kind = "smoke_failed"
+    else:
+        kind = "container_command_failed"
+    evidence = f"native_arm_failure:stage={stage};kind={kind};exit={int(returncode)}"
+    if stage == "smoke" and kind == "ctest_failed":
+        counts = _CTEST_FAILURE_COUNTS.search(output)
+        if counts:
+            evidence += f";failed_tests={int(counts[1])}/{int(counts[2])}"
+    return evidence
+
 
 @dataclass(frozen=True, slots=True)
 class ArmPreflightResult:
@@ -224,9 +313,10 @@ class ArmPreflightResult:
 
 
 class _StepFailure(Exception):
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, evidence: str = ""):
         super().__init__(reason)
         self.reason = reason
+        self.evidence = evidence
 
 
 class ArmPreflight:
@@ -331,9 +421,12 @@ class ArmPreflight:
                         timeout=20, check=False,
                     )
                 if "FTS_ARM_PREFLIGHT_OK" not in result.stdout:
-                    raise _StepFailure("smoke_marker_missing")
+                    raise _StepFailure(
+                        "smoke_marker_missing",
+                        "native_arm_failure:stage=smoke;kind=success_marker_missing;exit=0",
+                    )
             except _StepFailure as exc:
-                return ArmPreflightResult(False, exc.reason)
+                return ArmPreflightResult(False, exc.reason, exc.evidence)
             except (OSError, subprocess.TimeoutExpired, ValueError):
                 return ArmPreflightResult(False, "preflight_unavailable_or_timed_out")
         return ArmPreflightResult(
@@ -430,5 +523,12 @@ class ArmPreflight:
                 if command[:2] == ["docker", "run"] and result.returncode == 125
                 else failure
             )
-            raise _StepFailure(reason)
+            evidence = ""
+            if command[:2] == ["docker", "run"]:
+                evidence = (
+                    "native_arm_failure:stage=container_start;kind=docker_start_failed;exit=125"
+                    if reason == "builder_unavailable"
+                    else _failure_evidence(result.stdout, result.returncode)
+                )
+            raise _StepFailure(reason, evidence)
         return result

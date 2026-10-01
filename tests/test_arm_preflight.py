@@ -20,6 +20,7 @@ from fuzz_target_scout.arm_preflight import (
     SELECT_NATIVE_TEST,
     VERIFY_NATIVE_TEST,
     _StepFailure,
+    _failure_evidence,
 )
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
@@ -139,6 +140,23 @@ class ArmPreflightTests(unittest.TestCase):
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_shell_reports_failed_stage_on_command_error(self):
+        probe_script = (
+            "stage=configure\n"
+            + BUILD_AND_SMOKE.split("stage=configure\n", 1)[1].split("cmake -S ", 1)[0]
+            + "false\n"
+        )
+        result = subprocess.run(
+            ["/bin/sh", "-ec", probe_script], capture_output=True, text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FTS_ARM_PREFLIGHT_FAILED_STAGE:configure:1", result.stderr)
+        self.assertIn(
+            "stage=configure",
+            _failure_evidence(result.stdout + result.stderr, result.returncode),
+        )
 
     def test_build_without_smoke_marker_does_not_claim_arm_support(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
@@ -263,10 +281,85 @@ class ArmPreflightTests(unittest.TestCase):
             checker, "_try_run",
             return_value=subprocess.CompletedProcess(command, 125, "", ""),
         ):
-            with self.assertRaisesRegex(_StepFailure, "builder_unavailable"):
+            with self.assertRaisesRegex(_StepFailure, "builder_unavailable") as raised:
                 checker._run(
                     command, time.monotonic() + 10, {}, "native_build_or_smoke_failed"
                 )
+        self.assertIn("stage=container_start", raised.exception.evidence)
+
+    def test_failed_build_keeps_actionable_evidence_without_raw_output(self):
+        checker = ArmPreflight({"host_arch": "aarch64"})
+        secret = "ghp_" + "S" * 36
+
+        def fake_try_run(command, _deadline, _environment, *, preserve_failure=False):
+            if command[0] == "git" and "checkout" in command:
+                (Path(command[2]) / "CMakeLists.txt").write_text("project(parser)")
+            if command[0] == "git" and "rev-parse" in command:
+                return subprocess.CompletedProcess(command, 0, SHA + "\n", "")
+            if command[:2] == ["docker", "run"]:
+                output = (
+                    "FTS_ARM_PREFLIGHT_STAGE:build\n"
+                    + "clang: fatal error: missing.hpp: No such file or directory\n"
+                    + f"password={secret}\n" * 100
+                    + "FTS_ARM_PREFLIGHT_FAILED_STAGE:build:1\n"
+                )
+                return subprocess.CompletedProcess(command, 1, output, "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch("fuzz_target_scout.arm_preflight.platform.machine", return_value="aarch64"), patch.object(
+            checker, "_try_run", side_effect=fake_try_run
+        ), patch.object(checker, "_ensure_builder"), patch(
+            "fuzz_target_scout.arm_preflight.subprocess.run"
+        ):
+            result = checker.check(repository())
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "native_build_or_smoke_failed")
+        self.assertIn("stage=build", result.evidence)
+        self.assertIn("kind=missing_header", result.evidence)
+        self.assertNotIn(secret, result.evidence)
+        self.assertNotIn("missing.hpp", result.evidence)
+        self.assertLess(len(result.evidence), 160)
+
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = result
+                    self.assertEqual(engine._preflight_arm_candidates([candidate()]), (1, 0))
+                cached = engine.store.get_arm_preflight(
+                    "org/parser", SHA, "aarch64", PREFLIGHT_VERSION
+                )
+                self.assertEqual(cached["evidence"], result.evidence)
+                self.assertNotIn(secret, cached["evidence"])
+            finally:
+                engine.close()
+
+    def test_ctest_failure_evidence_keeps_counts_without_test_output(self):
+        secret = "test output contains a password"
+        output = (
+            "FTS_ARM_PREFLIGHT_STAGE:smoke\n"
+            + secret + "\n"
+            + "0% tests passed, 1 tests failed out of 1\n"
+            + "FTS_ARM_PREFLIGHT_FAILED_STAGE:smoke:1\n"
+        )
+        evidence = _failure_evidence(output, 1)
+        self.assertIn("stage=smoke", evidence)
+        self.assertIn("kind=ctest_failed", evidence)
+        self.assertIn("failed_tests=1/1", evidence)
+        self.assertNotIn(secret, evidence)
+        self.assertLess(len(evidence), 160)
+
+    def test_native_selection_failure_has_specific_safe_category(self):
+        output = (
+            "FTS_ARM_PREFLIGHT_STAGE:select_native_test\n"
+            "native test selection failed: no CTest executable backed by a C/C++ CMake target\n"
+            "FTS_ARM_PREFLIGHT_FAILED_STAGE:select_native_test:1\n"
+        )
+        evidence = _failure_evidence(output, 1)
+        self.assertIn("kind=no_native_ctest_target", evidence)
+        self.assertNotIn("native test selection failed", evidence)
 
     def test_non_native_host_never_starts_preflight(self):
         checker = ArmPreflight({"host_arch": "aarch64"})

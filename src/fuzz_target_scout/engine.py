@@ -387,7 +387,7 @@ class ScoutEngine:
                 item.repo.full_name.casefold(),
             )
         )
-        maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 1))))
+        maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 2))))
         runner = ArmPreflight(architecture, progress=self.progress)
         attempted = 0
         for candidate in pending[:maximum]:
@@ -404,9 +404,13 @@ class ScoutEngine:
                 passed += 1
                 self.progress(f"ARM preflight passed: {candidate.repo.full_name}")
             else:
+                detail = (
+                    f"; {result.evidence}"
+                    if result.evidence.startswith("native_arm_failure:") else ""
+                )
                 self.progress(
                     f"ARM preflight did not pass: {candidate.repo.full_name} "
-                    f"({result.reason})"
+                    f"({result.reason}{detail})"
                 )
         return attempted, passed
 

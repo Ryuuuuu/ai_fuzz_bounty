@@ -53,7 +53,7 @@ DEFAULTS: dict[str, Any] = {
         "max_evidence_files": 8,
         "native_builder_image": "ubuntu:24.04",
         "arm_preflight_enabled": True,
-        "arm_preflight_max_per_scan": 1,
+        "arm_preflight_max_per_scan": 2,
         "arm_preflight_timeout_seconds": 900,
         "arm_preflight_max_repository_kb": 50000,
         "arm_preflight_failure_retry_hours": 24,
