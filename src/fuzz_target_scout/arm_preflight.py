@@ -171,7 +171,16 @@ if __name__ == "__main__":
 BUILD_AND_SMOKE = (
     """mkdir -p /work/build/.cmake/api/v1/query
 : > /work/build/.cmake/api/v1/query/codemodel-v2
-cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+# Use the GoogleTest sources supplied by the base image when available.
+# Other CMake projects can ignore this cache entry.
+if [ -f /usr/src/googletest/CMakeLists.txt ] &&
+   [ -f /usr/src/googletest/googletest/CMakeLists.txt ] &&
+   [ -f /usr/src/googletest/googlemock/CMakeLists.txt ]; then
+  set -- -DGOOGLETEST_PATH=/usr/src/googletest
+else
+  set --
+fi
+cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"
 ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
 cat > /work/select_native_test.py <<'PY'
 """

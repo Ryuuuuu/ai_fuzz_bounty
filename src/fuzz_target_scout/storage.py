@@ -331,7 +331,7 @@ class Store:
         excluded = {str(value).casefold() for value in excluded_repositories}
         rows = self.connection.execute(
             f"""
-            SELECT full_name, details_json
+            SELECT full_name, final_score, program_url, security_url, details_json, last_seen_at
               FROM candidates
              WHERE policy_status='verified' AND final_score >= ?
                AND lower(language) IN ({placeholders})
@@ -339,21 +339,47 @@ class Store:
             """,
             (minimum_score, *languages),
         )
-        names: list[str] = []
+        shortlist: list[tuple[str, int, int, str]] = []
         for row in rows:
             name = str(row["full_name"]).strip()
             if name.count("/") != 1 or name.casefold() in excluded:
                 continue
             try:
-                architecture = json.loads(row["details_json"]).get("architecture") or {}
+                details = json.loads(row["details_json"])
             except (TypeError, ValueError):
                 continue
-            if not architecture.get("compatible"):
+            if not isinstance(details, dict):
                 continue
-            names.append(name)
-            if len(names) >= limit:
-                break
-        return names
+            architecture = details.get("architecture")
+            if not isinstance(architecture, dict):
+                continue
+            if not architecture.get("compatible"):
+                if architecture.get("blockers") not in (
+                    ["no_explicit_native_support_evidence:aarch64"],
+                    ["native_build_probe_required:aarch64"],
+                ):
+                    continue
+                if not row["program_url"] or not row["security_url"]:
+                    continue
+                size_kb = details.get("size_kb")
+                if type(size_kb) is not int or not 0 < size_kb <= 100_000:
+                    continue
+                signals = details.get("signals")
+                if not isinstance(signals, list) or not any(
+                    isinstance(signal, str)
+                    and signal.casefold().startswith("standard_build:")
+                    and "cmakelists.txt" in {
+                        part.strip().casefold()
+                        for part in signal.split(":", 1)[1].split(",")
+                    }
+                    for signal in signals
+                ):
+                    continue
+            size_kb = details.get("size_kb")
+            size_hint = size_kb if type(size_kb) is int and size_kb > 0 else 2**63 - 1
+            shortlist.append((str(row["last_seen_at"]), -int(row["final_score"]), size_hint, name))
+        shortlist.sort(key=lambda item: (item[0], item[1], item[2], item[3].casefold()))
+        return [name for _, _, _, name in shortlist[:limit]]
 
     def export_rows(
         self,

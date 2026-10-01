@@ -367,6 +367,28 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("ENABLE_KLEIDIAI", script)
         self.assertIn("ALL_MICROKERNELS", script)
 
+    def test_cmake_fuzz_build_disables_discovered_test_options(self):
+        script = _build_script("cmake")
+        start = script.index("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)")
+        end = script.index("cmake_build_type=RelWithDebInfo", start)
+        option_discovery = script[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "CMakeLists.txt").write_text(
+                "option(BUILD_TESTING \"Run tests\" ON)\n"
+                "option(BENCHMARK_ENABLE_TESTING \"Run benchmark tests\" ON)\n"
+                "option(BENCHMARK_ENABLE_INSTALL \"Install\" ON)\n"
+            )
+            result = subprocess.run(
+                ["bash", "-c", option_discovery + "printf '%s\\n' \"${cmake_shared_args[@]}\"\n"],
+                cwd=source, capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = set(result.stdout.splitlines())
+        self.assertIn("-DBUILD_TESTING=OFF", args)
+        self.assertIn("-DBENCHMARK_ENABLE_TESTING=OFF", args)
+        self.assertNotIn("-DBENCHMARK_ENABLE_INSTALL=OFF", args)
+
     def test_detects_all_supported_build_families(self):
         markers = {
             "cmake": "CMakeLists.txt",

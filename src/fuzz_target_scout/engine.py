@@ -380,7 +380,13 @@ class ScoutEngine:
                     pass
             pending.append(candidate)
 
-        pending.sort(key=lambda item: (-item.final_score, item.repo.full_name.casefold()))
+        pending.sort(
+            key=lambda item: (
+                -item.final_score,
+                item.repo.size_kb,
+                item.repo.full_name.casefold(),
+            )
+        )
         maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 1))))
         runner = ArmPreflight(architecture, progress=self.progress)
         attempted = 0

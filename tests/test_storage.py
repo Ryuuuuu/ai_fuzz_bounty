@@ -86,6 +86,98 @@ class StorageTests(unittest.TestCase):
             )
             store.close()
 
+    def test_revalidation_backlog_seeds_exact_arm_probe_shapes_by_score_and_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "scout.sqlite3")
+            scan_id = store.start_scan("test")
+
+            def add(
+                name, *, score=90, size_kb=1000, compatible=False,
+                blockers=None, signals=None, status="verified", language="C++",
+                program_url="https://hackerone.com/example", security_url=None,
+            ):
+                store.upsert_candidate(
+                    Candidate(
+                        repo=RepoSnapshot(
+                            full_name=name,
+                            html_url=f"https://github.com/{name}",
+                            default_branch="main",
+                            head_sha="a" * 40,
+                            language=language,
+                            size_kb=size_kb,
+                            security_url=(
+                                f"https://github.com/{name}/security/policy"
+                                if security_url is None else security_url
+                            ),
+                        ),
+                        static=StaticAssessment(
+                            fuzz_score=score,
+                            reproduce_difficulty=1,
+                            signals=(
+                                ["standard_build:cmakelists.txt"]
+                                if signals is None else signals
+                            ),
+                            blockers=[],
+                            suggested_entry_kind="library_api",
+                        ),
+                        policy=PolicyAssessment(
+                            status=status,
+                            confidence=85,
+                            source="security.md",
+                            program_url=program_url,
+                            note="test",
+                        ),
+                        final_score=score,
+                        architecture=ArchitectureAssessment(
+                            host_arch="aarch64", compatible=compatible,
+                            confidence=90, blockers=blockers or [],
+                        ),
+                    ),
+                    scan_id,
+                )
+
+            add("org/compatible", score=95, compatible=True, signals=[])
+            add("org/probe-small", size_kb=500, blockers=["native_build_probe_required:aarch64"])
+            add("org/no-evidence", size_kb=1500, blockers=["no_explicit_native_support_evidence:aarch64"])
+            add("org/probe-large", size_kb=3000, blockers=["native_build_probe_required:aarch64"])
+            add("org/extra-blocker", score=99, blockers=["native_build_probe_required:aarch64", "unsupported:aarch64"])
+            add("org/other-arm", score=99, blockers=["no_explicit_native_support_evidence:x86_64"])
+            add("org/nested-cmake", score=99, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:src/cmakelists.txt"])
+            add("org/other-build", score=99, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:meson.build"])
+            add("org/no-program", score=99, blockers=["native_build_probe_required:aarch64"], program_url="")
+            add("org/no-security", score=99, blockers=["native_build_probe_required:aarch64"], security_url="")
+            add("org/conditional", score=99, status="conditional", blockers=["native_build_probe_required:aarch64"])
+            add("org/rust", score=99, language="Rust", blockers=["native_build_probe_required:aarch64"])
+            add("org/low", score=54, blockers=["native_build_probe_required:aarch64"])
+            add("org/no-size", score=99, size_kb=0, blockers=["native_build_probe_required:aarch64"])
+            add("org/oversize", score=99, size_kb=100_001, blockers=["native_build_probe_required:aarch64"])
+            store.connection.execute(
+                "UPDATE candidates SET last_seen_at=?",
+                ("2025-01-01T00:00:00+00:00",),
+            )
+            store.connection.commit()
+
+            self.assertEqual(
+                store.revalidation_backlog_names(55, ["C", "C++"], set(), 3),
+                ["org/compatible", "org/probe-small", "org/no-evidence"],
+            )
+            self.assertEqual(
+                store.revalidation_backlog_names(
+                    55, ["C++"], {"ORG/COMPATIBLE", "ORG/PROBE-SMALL"}, 2
+                ),
+                ["org/no-evidence", "org/probe-large"],
+            )
+            store.connection.execute(
+                "UPDATE candidates SET last_seen_at=? WHERE full_name IN (?, ?)",
+                ("2025-01-02T00:00:00+00:00", "org/compatible", "org/probe-small"),
+            )
+            store.connection.commit()
+            self.assertEqual(
+                store.revalidation_backlog_names(55, ["C++"], set(), 2),
+                ["org/no-evidence", "org/probe-large"],
+            )
+            store.close()
+
     def test_export_gate_excludes_conditional_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "scout.sqlite3")

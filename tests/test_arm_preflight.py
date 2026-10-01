@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from unittest.mock import patch
 from fuzz_target_scout.arm_preflight import (
     ArmPreflight,
     ArmPreflightResult,
+    BUILD_AND_SMOKE,
     PREFLIGHT_VERSION,
     SELECT_NATIVE_TEST,
     VERIFY_NATIVE_TEST,
@@ -122,6 +124,21 @@ class ArmPreflightTests(unittest.TestCase):
         )
         self.assertIn("ctest --test-dir /work/build", container[-1])
         self.assertTrue(all("GITHUB_TOKEN" not in env for env in environments))
+
+    def test_google_test_source_path_is_conditional_and_shell_valid(self):
+        self.assertIn(
+            "[ -f /usr/src/googletest/googlemock/CMakeLists.txt ]",
+            BUILD_AND_SMOKE,
+        )
+        self.assertIn("set -- -DGOOGLETEST_PATH=/usr/src/googletest", BUILD_AND_SMOKE)
+        self.assertIn("set --\nfi\ncmake -S /src", BUILD_AND_SMOKE)
+        self.assertIn('-DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"', BUILD_AND_SMOKE)
+        self.assertIn("verify_native_test.py", BUILD_AND_SMOKE)
+        result = subprocess.run(
+            ["/bin/sh", "-n"], input=BUILD_AND_SMOKE,
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_build_without_smoke_marker_does_not_claim_arm_support(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
@@ -308,6 +325,36 @@ class ArmPreflightTests(unittest.TestCase):
                     runner.return_value.check.assert_not_called()
                 self.assertEqual((attempted, passed), (0, 1))
                 self.assertTrue(repeated.architecture.compatible)
+            finally:
+                engine.close()
+
+    def test_preflight_prefers_score_then_smaller_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["architecture"]["arm_preflight_max_per_scan"] = 2
+            small = candidate("org/z-small")
+            small.repo = replace(small.repo, size_kb=50)
+            large = candidate("org/a-large")
+            large.repo = replace(large.repo, size_kb=5000)
+            high_score = candidate("org/b-high")
+            high_score.repo = replace(high_score.repo, size_kb=10000)
+            high_score.final_score = 81
+            engine = ScoutEngine(config)
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "native_build_or_smoke_failed"
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([large, small, high_score]),
+                        (2, 0),
+                    )
+                    names = [
+                        call.args[0].full_name
+                        for call in runner.return_value.check.call_args_list
+                    ]
+                self.assertEqual(names, ["org/b-high", "org/z-small"])
             finally:
                 engine.close()
 
