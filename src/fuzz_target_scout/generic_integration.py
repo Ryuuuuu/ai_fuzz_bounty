@@ -451,6 +451,7 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
         "bench", "benchmark", "benchmarks", "examples", "test", "tests",
         "third_party", "third-party", "tools", "vendor",
     }
+    candidates: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for path in sorted(headers, key=lambda item: _public_header_rank(source, item)):
         relative_parts = {
             part.casefold() for part in path.relative_to(source).parts[:-1]
@@ -467,14 +468,44 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
             match = prototype.match(line)
             if not match or match.group("name").split("::")[-1] in rejected:
                 continue
-            return {
+            candidate = {
                 "id": hashlib.sha256(f"{path}:{number}".encode()).hexdigest()[:16],
                 "file": path.relative_to(source).as_posix(),
                 "local_symbol_line": number,
                 "signature": line.strip()[:1000],
             }
+            candidates.append((
+                (
+                    _candidate_input_rank(candidate["signature"], match.group("name")),
+                    _public_header_rank(source, path),
+                    number,
+                ),
+                candidate,
+            ))
+    if candidates:
+        return min(candidates, key=lambda item: item[0])[1]
     raise PipelineError("no existing harness or public function prototype was found")
 
+
+def _candidate_input_rank(signature: str, name: str) -> int:
+    """Prefer APIs that can consume fuzz bytes as data over no-input methods."""
+    arguments = signature.partition("(")[2].rpartition(")")[0].strip()
+    if not arguments or arguments == "void":
+        return 3
+    has_byte_input = bool(re.search(
+        r"\b(?:basic_string|string(?:_view)?|span|vector)\b"
+        r"|\b(?:(?:const|unsigned)\s+)*(?:std::)?(?:char|byte|u?int8_t)\s*[*&]",
+        arguments,
+        re.IGNORECASE,
+    ))
+    if not has_byte_input:
+        return 2
+    parser_name = bool(re.search(
+        r"parse|decode|deseriali[sz]e|tokeni[sz]e|lex|from_?(?:json|string|bytes)",
+        name,
+        re.IGNORECASE,
+    ))
+    return 0 if parser_name else 1
 
 
 def _accessible_header_lines(lines: list[str]):

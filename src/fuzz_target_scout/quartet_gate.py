@@ -36,8 +36,18 @@ class CodexQuartetReviewer:
             "logic, undefined behavior, state reset, ownership and input flow. P2 checks API call "
             "order, parameter constraints, lifecycle and cleanup. P3 checks whether it respects the "
             "project's public security boundary; internal headers are a warning unless a public "
-            "alternative is demonstrated. P4 checks whether the chosen production-relevant entry "
-            "point is actually driven by fuzz bytes. A warning means evidence is incomplete; fail "
+            "alternative is demonstrated. P4 checks whether fuzz bytes can drive meaningful "
+            "behavior at the chosen production-relevant entry point, beyond its call or an outer "
+            "dispatch switch. Trace bytes through setup, arguments, state, and any file contents "
+            "consumed by the target. A bounded fuzz-derived buffer or string passed directly to a "
+            "parser or decoder whose signature or call context supports consuming that input can "
+            "pass without the target body when no contrary evidence exists. A zero-argument or "
+            "constant-argument call can pass if supplied source shows the target consumes "
+            "fuzz-controlled state or file contents. Mark P4 fail when exact source lines prove an "
+            "always-taken early return before byte-dependent target logic, or prove bytes only "
+            "select a call whose arguments and consumed state or file "
+            "contents are fixed. Mark P4 warn when the supplied evidence cannot establish target "
+            "reach or byte dependence. A successful smoke run alone does not establish P4. Fail "
             "only for a concrete defect supported by exact source lines. Do not discuss security "
             "impact, exploitability, attacks, or fixes. Return only the required JSON object.\n\n"
             + json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
@@ -386,7 +396,11 @@ def validate_quartet_review(
         and int(dynamic.get("probe_crash_count") or 0) == 0
         and int(dynamic.get("probe_corpus_files") or 0) > 0
     )
-    execution_ready = deterministic_ok and overall != "fail"
+    p4_ready = (
+        not bool(facts.get("generated_harness"))
+        or normalized["p4"]["verdict"] == "pass"
+    )
+    execution_ready = deterministic_ok and overall != "fail" and p4_ready
     return {
         "principles": normalized,
         "overall_verdict": overall,

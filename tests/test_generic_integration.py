@@ -22,6 +22,42 @@ from fuzz_target_scout.generic_integration import (
 
 
 class GenericIntegrationTests(unittest.TestCase):
+    def test_public_candidate_prefers_data_parser_over_zero_input_method(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "include").mkdir()
+            parser_dir = source / "src" / "config"
+            parser_dir.mkdir(parents=True)
+            (source / "include" / "context.h").write_text(
+                "class Context {\n"
+                "public:\n"
+                "  bool refresh();\n"
+                "};\n"
+            )
+            (parser_dir / "json_parser.h").write_text(
+                "class JsonParser {\n"
+                "public:\n"
+                "  Result parse(const std::string& input);\n"
+                "};\n"
+            )
+
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["file"], "src/config/json_parser.h")
+        self.assertEqual(candidate["signature"], "Result parse(const std::string& input);")
+
+    def test_public_candidate_prefers_byte_argument_over_zero_input_method(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "bool refresh();\n"
+                "int consume(const uint8_t* data, size_t size);\n"
+            )
+
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"], "int consume(const uint8_t* data, size_t size);")
+
     def test_public_candidate_prefers_exported_header_over_benchmark_expression(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

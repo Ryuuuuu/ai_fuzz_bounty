@@ -1877,6 +1877,60 @@ class PipelineRunnerTests(unittest.TestCase):
         self.assertTrue(review["execution_ready"])
         self.assertEqual(review["reach_confidence"], "medium")
 
+    def test_generated_quartet_requires_p4_pass_for_execution(self):
+        facts = {
+            "line_count": 10,
+            "entrypoint_count": 1,
+            "data_reference_count": 2,
+            "size_reference_count": 2,
+            "unaligned_read_lines": [],
+            "called_symbols": ["parse"],
+            "dynamic_evidence": {
+                "asan_build": True,
+                "smoke_status": "passed",
+                "probe_status": "passed",
+                "probe_crash_count": 0,
+                "probe_corpus_files": 3,
+            },
+        }
+        cases = (
+            # Generated harnesses need demonstrated input reach even when the
+            # build and live probe pass.
+            ("generated_p4_pass", True, "pass", "pass", "pass", True),
+            ("generated_p4_warn", True, "pass", "warn", "warn", False),
+            ("generated_p4_warn_overall_pass", True, "pass", "warn", "pass", False),
+            ("generated_p4_fail", True, "pass", "fail", "fail", False),
+            # Uncertainty on a different principle does not change the P4 gate.
+            ("generated_p1_warn", True, "warn", "pass", "warn", True),
+            # Preserve the existing readiness rule for sourced harnesses.
+            ("sourced_p4_warn", False, "pass", "warn", "warn", True),
+        )
+        for name, generated, p1, p4, overall, expected_ready in cases:
+            with self.subTest(name=name):
+                review = validate_quartet_review(
+                    {
+                        "principles": {
+                            principle: {
+                                "verdict": {
+                                    "p1": p1,
+                                    "p2": "pass",
+                                    "p3": "pass",
+                                    "p4": p4,
+                                }[principle],
+                                "rationale": "source-backed review",
+                                "evidence_lines": [1],
+                            }
+                            for principle in ("p1", "p2", "p3", "p4")
+                        },
+                        "overall_verdict": overall,
+                        "target_symbols": ["parse"],
+                        "summary": "reviewed",
+                    },
+                    {**facts, "generated_harness": generated},
+                )
+                self.assertTrue(review["deterministic_checks_passed"])
+                self.assertEqual(review["execution_ready"], expected_ready)
+
     def test_quartet_accepts_qualified_name_for_known_called_symbol(self):
         principle = {"verdict": "pass", "rationale": "seen", "evidence_lines": [1]}
         facts = {
