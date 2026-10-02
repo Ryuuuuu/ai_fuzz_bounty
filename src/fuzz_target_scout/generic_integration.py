@@ -454,7 +454,7 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for number, line in enumerate(lines, 1):
+        for number, line in _accessible_header_lines(lines):
             match = prototype.match(line)
             if not match or match.group("name").split("::")[-1] in rejected:
                 continue
@@ -465,6 +465,92 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
                 "signature": line.strip()[:1000],
             }
     raise PipelineError("no existing harness or public function prototype was found")
+
+
+
+def _accessible_header_lines(lines: list[str]):
+    """Yield declarations outside non-public C++ class and struct sections."""
+    scopes: list[dict[str, str]] = []
+    declaration = ""
+    in_comment = False
+    tokens = re.compile(r"\{|\}|;|\b(?:public|protected|private)\s*:")
+    class_kind = re.compile(r"\b(class|struct|union)\s+[A-Za-z_]\w*")
+    for number, raw_line in enumerate(lines, 1):
+        visible, structural, in_comment = _scan_header_line(raw_line, in_comment)
+        if all(scope["kind"] == "other" or scope["access"] == "public" for scope in scopes):
+            yield number, visible
+        cursor = 0
+        for token in tokens.finditer(structural):
+            declaration += structural[cursor:token.start()]
+            value = token.group()
+            if value == "{":
+                matches = list(class_kind.finditer(declaration))
+                kind = matches[-1].group(1) if matches else "other"
+                scopes.append({
+                    "kind": kind,
+                    "access": "private" if kind == "class" else "public",
+                })
+                declaration = ""
+            elif value == "}":
+                if scopes:
+                    scopes.pop()
+                declaration = ""
+            elif value == ";":
+                declaration = ""
+            else:
+                if scopes and scopes[-1]["kind"] != "other":
+                    scopes[-1]["access"] = value.split(":", 1)[0].strip()
+                declaration = ""
+            cursor = token.end()
+        declaration = (declaration + structural[cursor:])[-2000:]
+
+
+def _scan_header_line(line: str, in_block_comment: bool) -> tuple[str, str, bool]:
+    visible: list[str] = []
+    structural: list[str] = []
+    index = 0
+    while index < len(line):
+        if in_block_comment:
+            end = line.find("*/", index)
+            if end < 0:
+                spaces = " " * (len(line) - index)
+                visible.append(spaces)
+                structural.append(spaces)
+                break
+            spaces = " " * (end + 2 - index)
+            visible.append(spaces)
+            structural.append(spaces)
+            in_block_comment = False
+            index = end + 2
+        elif line.startswith("//", index):
+            spaces = " " * (len(line) - index)
+            visible.append(spaces)
+            structural.append(spaces)
+            break
+        elif line.startswith("/*", index):
+            visible.append("  ")
+            structural.append("  ")
+            in_block_comment = True
+            index += 2
+        elif line[index] in {'"', "'"}:
+            start = index
+            quote = line[index]
+            index += 1
+            while index < len(line):
+                character = line[index]
+                index += 1
+                if character == chr(92) and index < len(line):
+                    index += 1
+                elif character == quote:
+                    break
+            visible.append(line[start:index])
+            structural.append(" " * (index - start))
+        else:
+            visible.append(line[index])
+            structural.append(line[index])
+            index += 1
+    return "".join(visible), "".join(structural), in_block_comment
+
 
 
 def _public_header_rank(source: Path, path: Path) -> tuple[int, int, int, str]:

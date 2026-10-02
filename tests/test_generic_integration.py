@@ -39,6 +39,57 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertEqual(candidate["file"], "include/api.h")
         self.assertIn("parse_bytes", candidate["signature"])
 
+    def test_private_and_protected_class_methods_are_not_selected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            header = source / "api.h"
+            header.write_text(
+                "class Cache {\n"
+                "  void hidden_by_default();\n"
+                "public:\n"
+                "protected:\n"
+                "  void hidden_protected();\n"
+                "private:\n"
+                "  void recomputeReadCache();\n"
+                "public:\n"
+                "  int parse_public(const unsigned char* data);\n"
+                "};\n"
+            )
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"], "int parse_public(const unsigned char* data);")
+        self.assertEqual(candidate["local_symbol_line"], 9)
+
+    def test_struct_default_public_methods_remain_eligible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "struct Parser {\n"
+                "  int parse_bytes(const unsigned char* data);\n"
+                "};\n"
+            )
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"], "int parse_bytes(const unsigned char* data);")
+
+    def test_nested_private_method_does_not_hide_later_free_function(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "class Outer {\n"
+                "private:\n"
+                "  struct Hidden {\n"
+                "    int parse_hidden(const unsigned char* data);\n"
+                "  };\n"
+                "  /* } */ void recomputeReadCache();\n"
+                "};\n"
+                "int parse_free(const unsigned char* data);\n"
+            )
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"], "int parse_free(const unsigned char* data);")
+        self.assertEqual(candidate["local_symbol_line"], 8)
+
     def test_benchmark_only_header_is_not_used_as_a_public_api(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
