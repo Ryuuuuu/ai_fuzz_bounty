@@ -338,7 +338,11 @@ def _obtain_harness(
         }
         validate_generated_harness(code, candidate)
         return code, f"existing:{relative}", {}, candidate
-    candidate = _select_public_candidate(source)
+    excluded_candidate_ids = {
+        str(value) for value in exclusions.get("candidate_ids") or []
+        if isinstance(value, str)
+    }
+    candidate = _select_public_candidate(source, excluded_candidate_ids)
     context = source_context(source, candidate, radius=140)
     prompt = generation_prompt(
         project=project,
@@ -423,7 +427,10 @@ def _find_existing_harness(
     return min(candidates, key=lambda item: item[0])[1]
 
 
-def _select_public_candidate(source: Path) -> dict[str, Any]:
+def _select_public_candidate(
+    source: Path, excluded_candidate_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    excluded_candidate_ids = excluded_candidate_ids or set()
     prototype = re.compile(
         r"^\s*(?:extern\s+\"C\"\s+)?(?:[A-Za-z_][\w:<>,*&\s]+)\s+"
         r"(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;{}]*\)\s*;"
@@ -474,6 +481,8 @@ def _select_public_candidate(source: Path) -> dict[str, Any]:
                 "local_symbol_line": number,
                 "signature": line.strip()[:1000],
             }
+            if candidate["id"] in excluded_candidate_ids:
+                continue
             candidates.append((
                 (
                     _candidate_input_rank(candidate["signature"], match.group("name")),

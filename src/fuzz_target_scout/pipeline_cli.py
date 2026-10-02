@@ -24,6 +24,7 @@ from .pipeline import (
 )
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .pipeline_worker import PipelineWorker
+from .retarget import retarget_native_job
 from .operations import Housekeeper, pipeline_overview
 from .resources import plan_resources
 from .triage import TriageRunner
@@ -53,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare.add_argument("--job-id", required=True)
     prepare.add_argument("--until", choices=STAGE_ORDER, default="integration")
+    retarget = commands.add_parser(
+        "retarget", help="Archive a native generated harness attempt and regenerate within the job"
+    )
+    retarget.add_argument("--job-id", required=True)
+    retarget.add_argument("--rationale", required=True)
+    retarget.add_argument("--dry-run", action="store_true")
     integrate = commands.add_parser(
         "integrate", help="Reuse a matching pinned OSS-Fuzz project definition"
     )
@@ -140,6 +147,8 @@ def main(argv: list[str] | None = None) -> None:
             _status(config, args)
         elif args.command == "prepare":
             _prepare(config, args)
+        elif args.command == "retarget":
+            _retarget(config, args)
         elif args.command == "integrate":
             _integrate(config, args)
         elif args.command == "build":
@@ -281,6 +290,13 @@ def _prepare(config: dict, args: argparse.Namespace) -> None:
         f"prepare complete: job_id={args.job_id} status={state['status']} "
         f"stage={state['stage']}"
     )
+
+
+def _retarget(config: dict, args: argparse.Namespace) -> None:
+    result = retarget_native_job(
+        config, args.job_id, args.rationale, dry_run=args.dry_run
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def _integrate(config: dict, args: argparse.Namespace) -> None:

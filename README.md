@@ -143,6 +143,21 @@ sanitizer 근거를 포함해 현재 증거상 취약점인지 별도로 알리�
     fuzz-pipeline dashboard --watch
     fuzz-pipeline housekeep
 
+`native_generated` 작업의 생성 하네스가 얕은 API만 실행하면 같은 작업에서 수동으로
+대상을 다시 고를 수 있다. 중앙 에이전트와 worker를 중지하고, 해당 작업의 Docker
+컨테이너가 종료된 뒤 먼저 계획을 확인한다:
+
+    fuzz-pipeline retarget --job-id <job-id> --rationale "현재 하네스는 입력을 소비하지 않음" --dry-run
+    fuzz-pipeline retarget --job-id <job-id> --rationale "현재 하네스는 입력을 소비하지 않음"
+
+명령은 두 실행 잠금과 실행 중인 작업 컨테이너를 확인한다. 기존 상태, 생성 통합과
+빌드/프로브/Quartet/coverage 기록, corpus, crash, 로그를
+`artifacts/history/operator-retarget-*/`로 옮기고 작업을 `prepared/integration`으로
+되돌린다. 고정된 소스와 `build-source` worktree, 소스/도구/정책 확인 기록 및 중앙 복구
+기록은 유지한다. 이전 API 후보를 제외한 뒤 `integrate`부터 다시 실행하거나 중앙
+에이전트를 재시작한다. 직접 실행한 다른 단계 명령은 잠금을 공유하지 않으므로 함께
+실행하지 않는다. 새 하네스의 API와 입력 전달은 생성 후 검증해야 한다.
+
 `--max-jobs 0`은 실행 가능한 큐가 빌 때까지 처리하며 기본값이다. 감지된 자원 범위에서
 여러 작업의 장기 퍼징을 동시에 실행한다. 준비·빌드·Codex 검토는 공유 산출물과 토큰을
 보호하기 위해 한 번에 하나씩 수행하고, 품질 게이트를 통과한 기존 및 AI 생성 하네스는
