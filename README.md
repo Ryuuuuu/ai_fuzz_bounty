@@ -158,6 +158,21 @@ sanitizer 근거를 포함해 현재 증거상 취약점인지 별도로 알리�
 에이전트를 재시작한다. 직접 실행한 다른 단계 명령은 잠금을 공유하지 않으므로 함께
 실행하지 않는다. 새 하네스의 API와 입력 전달은 생성 후 검증해야 한다.
 
+`native_generated` 작업이 `quartet_review_required` 또는
+`skipped_after_recovery` 상태이고 검토된 대체 하네스가 있으면, 중앙 에이전트와
+worker를 중지하고 Docker 컨테이너를 정리한 뒤 수리 계획을 확인한다:
+
+    fuzz-pipeline repair-harness --job-id <job-id> --file /path/to/reviewed.cc --rationale "검토 근거" --dry-run
+    fuzz-pipeline repair-harness --job-id <job-id> --file /path/to/reviewed.cc --rationale "검토 근거"
+
+명령은 고정된 소스와 기록된 API 후보를 검증하고, 프로브 원본 로그에서 크래시를
+재분류한다. 크래시가 있으면 처리되지 않은 C++ 예외로 확인된 경우에만 수리한다.
+기존 상태, 하네스, 빌드와 검토 기록, corpus, crash, 로그, 런타임 출력을
+`artifacts/history/operator-harness-repair-*/`에 보존한 뒤 `integrated/build`에서
+다시 시작한다. 기존 corpus는 파일당 1 MiB, 총 1 GiB, 최대 20,000개까지 새 작업에
+복사한다. 한도를 넘은 파일과 crash는 기록 보관소에만 남긴다. 별도로 검토한 입력은
+`--seed-file /path/to/input`을 반복 지정해 추가할 수 있다.
+
 `--max-jobs 0`은 실행 가능한 큐가 빌 때까지 처리하며 기본값이다. 감지된 자원 범위에서
 여러 작업의 장기 퍼징을 동시에 실행한다. 준비·빌드·Codex 검토는 공유 산출물과 토큰을
 보호하기 위해 한 번에 하나씩 수행하고, 품질 게이트를 통과한 기존 및 AI 생성 하네스는

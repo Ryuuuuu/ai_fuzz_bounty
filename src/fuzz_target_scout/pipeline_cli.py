@@ -25,6 +25,7 @@ from .pipeline import (
 from .pipeline_runner import PipelineRunner, STAGE_ORDER
 from .pipeline_worker import PipelineWorker
 from .retarget import retarget_native_job
+from .harness_repair import repair_native_harness
 from .operations import Housekeeper, pipeline_overview
 from .resources import plan_resources
 from .triage import TriageRunner
@@ -60,6 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
     retarget.add_argument("--job-id", required=True)
     retarget.add_argument("--rationale", required=True)
     retarget.add_argument("--dry-run", action="store_true")
+    repair_harness = commands.add_parser(
+        "repair-harness",
+        help="Archive and replace a generated native harness after operator review",
+    )
+    repair_harness.add_argument("--job-id", required=True)
+    repair_harness.add_argument("--file", required=True)
+    repair_harness.add_argument("--rationale", required=True)
+    repair_harness.add_argument("--seed-file", action="append", default=[])
+    repair_harness.add_argument("--dry-run", action="store_true")
     integrate = commands.add_parser(
         "integrate", help="Reuse a matching pinned OSS-Fuzz project definition"
     )
@@ -149,6 +159,8 @@ def main(argv: list[str] | None = None) -> None:
             _prepare(config, args)
         elif args.command == "retarget":
             _retarget(config, args)
+        elif args.command == "repair-harness":
+            _repair_harness(config, args)
         elif args.command == "integrate":
             _integrate(config, args)
         elif args.command == "build":
@@ -295,6 +307,14 @@ def _prepare(config: dict, args: argparse.Namespace) -> None:
 def _retarget(config: dict, args: argparse.Namespace) -> None:
     result = retarget_native_job(
         config, args.job_id, args.rationale, dry_run=args.dry_run
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+
+
+def _repair_harness(config: dict, args: argparse.Namespace) -> None:
+    result = repair_native_harness(
+        config, args.job_id, args.file, args.rationale,
+        dry_run=args.dry_run, seed_files=tuple(args.seed_file),
     )
     print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
 

@@ -37,6 +37,9 @@ from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 from fuzz_target_scout.quartet_gate import (
     _entrypoint_reference_counts,
     _numbered_source_excerpt,
+    build_quartet_evidence,
+    build_quartet_repair_prompt,
+    probe_crash_diagnostics,
     find_harness_source,
     resolve_generic_integration_harness,
     validate_quartet_review,
@@ -963,6 +966,200 @@ class PipelineRunnerTests(unittest.TestCase):
                     "SUMMARY: AddressSanitizer: 72 byte(s) leaked at 0xADDR",
                 ],
             )
+
+    def test_quartet_probe_exception_evidence_reaches_review_and_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_dir = root / "job"
+            artifacts = job_dir / "artifacts"
+            integration = job_dir / "integration" / "native"
+            logs = job_dir / "logs"
+            quartet_root = root / "quartet"
+            manual = quartet_root / "harness" / "checker" / "HARNESS_CHECKING_MANUAL.md"
+            artifacts.mkdir(parents=True)
+            integration.mkdir(parents=True)
+            logs.mkdir(parents=True)
+            manual.parent.mkdir(parents=True)
+            manual.write_text("manual", encoding="utf-8")
+            harness = integration / "generic_harness.cc"
+            harness_text = (
+                "#include <cstddef>\n"
+                "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char* data, "
+                "size_t size) { return parse(data, size); }\n"
+            )
+            harness.write_text(harness_text, encoding="utf-8")
+            (artifacts / "integration-manifest.json").write_text(
+                json.dumps({"route": "native_generated"}), encoding="utf-8"
+            )
+            (artifacts / "generic-integration.json").write_text(
+                json.dumps({"harness_origin": "codex_generated", "harness_sha256":
+                            hashlib.sha256(harness.read_bytes()).hexdigest()}),
+                encoding="utf-8",
+            )
+            log = logs / "probe-generic_fuzzer-1.log"
+            log.write_text(
+                "terminate called after throwing an instance of 'std::runtime_error'\n"
+                "  what(): SECRET_VALUE and /private/credentials.txt\n"
+                "==42==ERROR: libFuzzer: deadly signal\n"
+                "#0 0x1234 in Parser::parse(std::string const&) "
+                "/private/source/parser.cc:12:2\n"
+                "SUMMARY: libFuzzer: deadly signal\n",
+                encoding="utf-8",
+            )
+            probe = {
+                "status": "sanitizer_finding",
+                "crash_files": ["generic_fuzzer-deadbeef"],
+                "log_path": str(log),
+            }
+            job = {"route": {"required_tools": [{"name": "quartetfuzz", "commit": "abc"}]}}
+            with patch("fuzz_target_scout.quartet_gate._capture_git_commit", return_value="abc"):
+                facts, ai_evidence = build_quartet_evidence(
+                    job_dir, job, {"sanitizer": "address"},
+                    {"fuzz_target": "generic_fuzzer", "status": "passed"},
+                    probe, quartet_root,
+                )
+            diagnostics = facts["dynamic_evidence"]["crash_diagnostics"]
+            self.assertEqual(diagnostics["kind"], "uncaught_cpp_exception")
+            self.assertEqual(
+                diagnostics, ai_evidence["dynamic_evidence"]["crash_diagnostics"]
+            )
+            rendered = json.dumps(diagnostics)
+            self.assertIn("std::runtime_error", rendered)
+            self.assertIn("Parser::parse", rendered)
+            self.assertNotIn("SECRET_VALUE", rendered)
+            self.assertNotIn("/private/", rendered)
+            prompt = build_quartet_repair_prompt(
+                {"facts": facts, "review": {"summary": "uncaught exception"}},
+                harness_text,
+            )
+            self.assertIn("std::runtime_error", prompt)
+            self.assertIn("catch the expected exception", prompt)
+            self.assertNotIn("SECRET_VALUE", prompt)
+
+    def test_quartet_crash_diagnostics_reject_escape_and_prioritize_sanitizer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "job"
+            logs = job_dir / "logs"
+            logs.mkdir(parents=True)
+            outside = Path(directory) / "probe-outside.log"
+            outside.write_text(
+                "terminate called after throwing an instance of 'std::runtime_error'\n",
+                encoding="utf-8",
+            )
+            probe = {"status": "sanitizer_finding", "crash_files": ["crash"],
+                     "log_path": str(outside)}
+            self.assertEqual(probe_crash_diagnostics(job_dir, probe)["kind"], "untriaged")
+            log = logs / "probe-target-1.log"
+            log.write_text(
+                "terminate called after throwing an instance of 'std::runtime_error'\n"
+                "==42==ERROR: AddressSanitizer: heap-use-after-free on address 0x1234\n"
+                "#0 0x1234 in Target::parse /private/path.cc:10\n",
+                encoding="utf-8",
+            )
+            probe["log_path"] = str(log)
+            diagnostics = probe_crash_diagnostics(job_dir, probe)
+            self.assertEqual(diagnostics["kind"], "sanitizer_error")
+            self.assertIn("AddressSanitizer: heap-use-after-free", diagnostics["lines"])
+            self.assertNotIn("/private/", json.dumps(diagnostics))
+
+    def test_quartet_truncated_probe_log_cannot_authorize_exception_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "job"
+            logs = job_dir / "logs"
+            logs.mkdir(parents=True)
+            log = logs / "probe-target-1.log"
+            probe = {
+                "status": "sanitizer_finding", "crash_files": ["crash"],
+                "log_path": str(log),
+            }
+            log.write_bytes(
+                b"x" * (529 * 1024)
+                + b"\nterminate called after throwing an instance of "
+                  b"'std::runtime_error'\n"
+                + b"SUMMARY: libFuzzer: deadly signal\n"
+            )
+            diagnostics = probe_crash_diagnostics(job_dir, probe)
+            self.assertFalse(diagnostics["truncated"])
+            self.assertEqual(diagnostics["kind"], "uncaught_cpp_exception")
+            log.write_bytes(
+                b"==42==ERROR: AddressSanitizer: heap-use-after-free\n"
+                + b"x" * (4 * 1024 * 1024)
+                + b"\nterminate called after throwing an instance of "
+                  b"'std::runtime_error'\n"
+                + b"SUMMARY: libFuzzer: deadly signal\n"
+            )
+            diagnostics = probe_crash_diagnostics(job_dir, probe)
+            self.assertTrue(diagnostics["truncated"])
+            self.assertEqual(diagnostics["kind"], "untriaged")
+            self.assertIn("terminate called after throwing std::runtime_error",
+                          diagnostics["lines"])
+
+    def test_quartet_repair_syncs_integration_and_build_harness_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "repair-quartet-job"
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            project = job_dir / "integration" / "native"
+            artifacts.mkdir(parents=True)
+            project.mkdir(parents=True)
+            harness = project / "generic_harness.cc"
+            old_code = (
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const unsigned char* data, size_t size) { return 0; }\n'
+            )
+            generated_code = old_code.replace("return 0", "return 1")
+            built_code = old_code.replace("return 0", "return 2")
+            built_hash = hashlib.sha256(built_code.encode("utf-8")).hexdigest()
+            harness.write_text(old_code, encoding="utf-8")
+            (job_dir / "job.json").write_text("{}")
+            (job_dir / "state.json").write_text(json.dumps({
+                "stage": "quartet_gate", "status": "quartet_repair_pending",
+                "attempts": {},
+            }))
+            (artifacts / "integration-manifest.json").write_text(json.dumps({
+                "route": "native_generated", "native_project_directory": str(project),
+                "integration_file_sha256": {
+                    "generic_harness.cc": hashlib.sha256(old_code.encode()).hexdigest()
+                },
+            }))
+            (artifacts / "generic-integration.json").write_text(json.dumps({
+                "harness_sha256": hashlib.sha256(old_code.encode()).hexdigest(),
+            }))
+            (artifacts / "quartet-review.json").write_text(json.dumps({
+                "facts": {"fuzz_target": "generic_fuzzer"},
+                "review": {"execution_ready": False},
+            }))
+            (artifacts / "build-manifest.json").write_text("{}")
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {}
+            runner._recheck_policy = lambda *_args: None
+            runner._archive_pre_generation_results = lambda *_args: None
+
+            def fake_build(*_args):
+                # The build may perform a further bounded repair.
+                harness.write_text(built_code, encoding="utf-8")
+                manifest_path = artifacts / "integration-manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                manifest["runner_image"] = "fresh-image"
+                manifest_path.write_text(json.dumps(manifest))
+
+            runner._build_fuzzers = fake_build
+            with patch(
+                "fuzz_target_scout.pipeline_runner.invoke_oss_fuzz_gen_adapter",
+                return_value=(generated_code, {}),
+            ):
+                runner.repair_quartet_harness(job_id)
+            generic = json.loads((artifacts / "generic-integration.json").read_text())
+            integration = json.loads((artifacts / "integration-manifest.json").read_text())
+            build = json.loads((artifacts / "build-manifest.json").read_text())
+            self.assertEqual(generic["harness_sha256"], built_hash)
+            self.assertEqual(integration["integration_file_sha256"]["generic_harness.cc"], built_hash)
+            self.assertEqual(integration["generated_harness_sha256"], built_hash)
+            self.assertEqual(integration["runner_image"], "fresh-image")
+            self.assertEqual(build["generated_harness_sha256"], built_hash)
+            self.assertEqual(hashlib.sha256(harness.read_bytes()).hexdigest(), built_hash)
 
     def test_long_quartet_source_excerpt_is_bounded_and_keeps_original_lines(self):
         lines = [f"line {index}" for index in range(1000)]
@@ -2003,6 +2200,53 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(result["state"]["status"], "triage_pending")
             self.assertEqual(result["state"]["triage_artifact"], "probe-run.json")
             self.assertEqual(result["state"]["finding_source"], "probe")
+
+    def test_quartet_probe_finding_routes_by_verified_crash_kind(self):
+        for kind, expected_stage, expected_status in (
+            ("uncaught_cpp_exception", "quartet_gate", "quartet_repair_pending"),
+            ("sanitizer_error", "triage", "triage_pending"),
+            ("untriaged", "quartet_gate", "quartet_review_required"),
+        ):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                job_dir = Path(directory)
+                artifacts = job_dir / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "generic-integration.json").write_text("{}")
+                logs = job_dir / "logs"
+                logs.mkdir()
+                log = logs / "probe-generic_fuzzer-1.log"
+                if kind == "uncaught_cpp_exception":
+                    log.write_text(
+                        "terminate called after throwing an instance of "
+                        "'std::runtime_error'\nSUMMARY: libFuzzer: deadly signal\n"
+                    )
+                elif kind == "sanitizer_error":
+                    log.write_text(
+                        "==42==ERROR: AddressSanitizer: heap-use-after-free\n"
+                    )
+                (artifacts / "probe-run.json").write_text(json.dumps({
+                    "status": "sanitizer_finding", "crash_files": ["crash"],
+                    "log_path": str(log),
+                }))
+                state_path = job_dir / "state.json"
+                state = {"stage": "quartet_gate", "status": "quartet_pending", "attempts": {}}
+                runner = object.__new__(PipelineRunner)
+                runner.pipeline = {"max_generation_cycles": 2}
+                record = {
+                    "facts": {"fuzz_target": "generic_fuzzer", "dynamic_evidence": {
+                        "crash_diagnostics": {"kind": kind, "lines": []}
+                    }},
+                    "review": {"execution_ready": False},
+                }
+                result = runner._apply_quartet_state(
+                    job_dir, state_path, state, record, count_attempt=True
+                )
+                self.assertEqual(result["state"]["stage"], expected_stage)
+                self.assertEqual(result["state"]["status"], expected_status)
+                if kind == "sanitizer_error":
+                    self.assertEqual(result["state"]["triage_artifact"], "probe-run.json")
+                if kind == "untriaged":
+                    self.assertIn("untriaged", result["state"]["last_error"])
 
     def test_failed_generic_quartet_review_schedules_bounded_repair(self):
         with tempfile.TemporaryDirectory() as directory:
