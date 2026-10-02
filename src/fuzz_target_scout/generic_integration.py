@@ -119,6 +119,7 @@ def create_generic_project(
     progress: Callable[[str], None] | None = None,
     native: bool = False,
     base_image: str = "ubuntu:24.04",
+    cancel_event=None,
 ) -> dict[str, Any]:
     progress = progress or (lambda _: None)
     build_system = detect_build_system(source)
@@ -126,7 +127,8 @@ def create_generic_project(
     source_dependencies = _detect_source_dependencies(source, build_system)
     project_dir.mkdir(parents=True, exist_ok=False)
     harness, origin, usage, candidate = _obtain_harness(
-        job_dir, source, project_name, pipeline, progress
+        job_dir, source, project_name, pipeline, progress,
+        cancel_event=cancel_event,
     )
     harness_path = project_dir / "generic_harness.cc"
     harness_path.write_text(harness, encoding="utf-8")
@@ -191,6 +193,7 @@ def repair_generic_harness(
     pipeline: dict[str, Any],
     build_error: str,
     attempt: int,
+    cancel_event=None,
 ) -> dict[str, Any]:
     record_path = job_dir / "artifacts" / "generic-integration.json"
     record = _read_json(record_path)
@@ -281,7 +284,9 @@ def repair_generic_harness(
     output = job_dir / "artifacts" / f"generic-integration-repair-{attempt}"
     if output.exists():
         shutil.rmtree(output)
-    response, usage = invoke_oss_fuzz_gen_adapter(pipeline, prompt, output)
+    response, usage = invoke_oss_fuzz_gen_adapter(
+        pipeline, prompt, output, cancel_event=cancel_event
+    )
     code = extract_harness_code(response)
     validation = validate_generated_harness(code, candidate)
     harness_path.write_text(code, encoding="utf-8")
@@ -311,6 +316,8 @@ def _obtain_harness(
     project: str,
     pipeline: dict[str, Any],
     progress: Callable[[str], None],
+    *,
+    cancel_event=None,
 ) -> tuple[str, str, dict[str, int], dict[str, Any]]:
     exclusions = _read_optional_json(
         job_dir / "artifacts" / "harness-exclusions.json"
@@ -348,7 +355,9 @@ def _obtain_harness(
     if output.exists():
         shutil.rmtree(output)
     progress(f"{job_dir.name}: generating initial harness for {candidate['signature']}")
-    response, usage = invoke_oss_fuzz_gen_adapter(pipeline, prompt, output)
+    response, usage = invoke_oss_fuzz_gen_adapter(
+        pipeline, prompt, output, cancel_event=cancel_event
+    )
     code = extract_harness_code(response)
     validate_generated_harness(code, candidate)
     return code, "codex_oss_fuzz_gen_adapter", usage, candidate

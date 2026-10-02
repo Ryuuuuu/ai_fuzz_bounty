@@ -1,5 +1,8 @@
 import json
+import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,11 +10,12 @@ from unittest.mock import patch
 from fuzz_target_scout.harness_generation import (
     extract_harness_code,
     generation_prompt,
+    invoke_oss_fuzz_gen_adapter,
     select_generation_candidate,
     source_context,
     validate_generated_harness,
 )
-from fuzz_target_scout.pipeline import PipelineError
+from fuzz_target_scout.pipeline import PipelineError, PipelineInterrupted
 from fuzz_target_scout.pipeline_runner import PipelineRunner
 
 
@@ -131,6 +135,93 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             self.assertFalse((artifacts / "fuzz-run.json").exists())
             self.assertFalse((job / "runtime-out" / "fuzz").exists())
 
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_adapter_cancellation_and_timeout_stop_child_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = root / "fake-adapter"
+            adapter.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, signal, sys, time\n"
+                "from pathlib import Path\n"
+                "output = Path(next(arg.split('=', 1)[1] for arg in sys.argv "
+                "if arg.startswith('-response=')))\n"
+                "if os.fork() == 0:\n"
+                "    def stopped(_signal, _frame):\n"
+                "        (output / 'child-stopped').write_text('stopped')\n"
+                "        os._exit(0)\n"
+                "    signal.signal(signal.SIGTERM, stopped)\n"
+                "    (output / 'child-ready').write_text('ready')\n"
+                "while True:\n"
+                "    time.sleep(1)\n"
+            )
+            adapter.chmod(0o755)
+            output = root / "output"
+            cancel = threading.Event()
+            errors = []
+            config = {
+                "ai_model": "test-model",
+                "ai_reasoning_effort": "low",
+                "generation_max_tokens": 100,
+                "generation_ai_timeout_seconds": 60,
+            }
+
+            def invoke():
+                try:
+                    invoke_oss_fuzz_gen_adapter(
+                        config, "prompt", output, cancel_event=cancel
+                    )
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with patch(
+                "fuzz_target_scout.harness_generation.shutil.which",
+                return_value=str(adapter),
+            ):
+                thread = threading.Thread(target=invoke, daemon=True)
+                thread.start()
+                try:
+                    deadline = time.monotonic() + 5
+                    while (
+                        not (output / "child-ready").is_file()
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.05)
+                    self.assertTrue((output / "child-ready").is_file())
+                    cancel.set()
+                    thread.join(timeout=7)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual(len(errors), 1)
+                    self.assertIsInstance(errors[0], PipelineInterrupted)
+                    self.assertTrue((output / "child-stopped").is_file())
+                finally:
+                    cancel.set()
+                    thread.join(timeout=7)
+
+            output = root / "timeout-output"
+            cancel = threading.Event()
+            errors.clear()
+            # The fake adapter ignores its inner timeout; this gives the
+            # outer adapter process a one-second deadline.
+            config["generation_ai_timeout_seconds"] = -29
+            with patch(
+                "fuzz_target_scout.harness_generation.shutil.which",
+                return_value=str(adapter),
+            ):
+                thread = threading.Thread(target=invoke, daemon=True)
+                thread.start()
+                try:
+                    thread.join(timeout=5)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual(len(errors), 1)
+                    self.assertIsInstance(errors[0], PipelineError)
+                    self.assertNotIsInstance(errors[0], PipelineInterrupted)
+                    self.assertIn("timeout", str(errors[0]))
+                    self.assertTrue((output / "child-stopped").is_file())
+                finally:
+                    cancel.set()
+                    thread.join(timeout=7)
+
     def test_generation_returns_successful_build_to_smoke_stage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -205,6 +296,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             runner.tools_root = root / "tools"
             (runner.tools_root / "oss-fuzz-gen").mkdir(parents=True)
             runner.pipeline = {}
+            runner.cancel_event = threading.Event()
             generated = """```cpp
 #include <cstdint>
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
@@ -216,8 +308,21 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             ), patch(
                 "fuzz_target_scout.pipeline_runner.invoke_oss_fuzz_gen_adapter",
                 return_value=(generated, {"input_tokens": 10}),
-            ):
+            ) as adapter:
+                adapter.side_effect = PipelineInterrupted("command stopped by operator")
+                with self.assertRaises(PipelineInterrupted):
+                    runner.generate(job_id)
+                interrupted = json.loads((job / "state.json").read_text())
+                self.assertEqual(interrupted["status"], "harness_work_pending")
+                self.assertNotIn("harness_generation", interrupted["attempts"])
+                self.assertEqual(
+                    (build_source / "lib" / "fuzz_parser.cc").read_text(), harness
+                )
+                adapter.side_effect = None
                 result = runner.generate(job_id)
+                self.assertIs(
+                    adapter.call_args.kwargs["cancel_event"], runner.cancel_event
+                )
             state = json.loads((job / "state.json").read_text())
             self.assertEqual(state["stage"], "smoke")
             self.assertEqual(result["attempts"][0]["success"], True)

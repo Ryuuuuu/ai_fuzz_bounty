@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
-from .pipeline import PipelineError, utc_now
+from .pipeline import PipelineError, PipelineInterrupted, utc_now
 
 
 def select_generation_candidate(plan: dict[str, Any]) -> dict[str, Any]:
@@ -102,8 +104,10 @@ Candidate local line: {candidate.get('local_symbol_line')}
 
 
 def invoke_oss_fuzz_gen_adapter(
-    config: dict[str, Any], prompt: str, output_dir: Path
+    config: dict[str, Any], prompt: str, output_dir: Path, *, cancel_event=None
 ) -> tuple[str, dict[str, int]]:
+    if cancel_event is not None and cancel_event.is_set():
+        raise PipelineInterrupted("command stopped by operator")
     executable = shutil.which("oss-fuzz-gen-codex")
     if not executable:
         raise PipelineError("oss-fuzz-gen-codex executable was not found")
@@ -126,23 +130,42 @@ def invoke_oss_fuzz_gen_adapter(
         int(config["generation_ai_timeout_seconds"])
     )
     environment["CODEX_ADAPTER_SAMPLE_CAP"] = "1"
+    timeout = int(config["generation_ai_timeout_seconds"]) + 30
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             env=environment,
-            timeout=int(config["generation_ai_timeout_seconds"]) + 30,
-            check=False,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise PipelineError(f"OSS-Fuzz-Gen adapter failed: {exc}") from exc
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PipelineInterrupted("command stopped by operator")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PipelineError(f"OSS-Fuzz-Gen adapter exceeded {timeout}s timeout")
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.5, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except BaseException:
+        _terminate_adapter_group(process)
+        raise
+    if cancel_event is not None and cancel_event.is_set():
+        raise PipelineInterrupted("command stopped by operator")
     (output_dir / "adapter.log").write_text(
-        (completed.stdout or "") + "\n" + (completed.stderr or ""), encoding="utf-8"
+        (stdout or "") + "\n" + (stderr or ""), encoding="utf-8"
     )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()[-2000:]
+    if process.returncode != 0:
+        detail = (stderr or stdout).strip()[-2000:]
         raise PipelineError(f"OSS-Fuzz-Gen adapter exited unsuccessfully: {detail}")
     raw_path = output_dir / "01.rawoutput"
     if not raw_path.is_file():
@@ -156,6 +179,27 @@ def invoke_oss_fuzz_gen_adapter(
         "cached_tokens": int(usage.get("cached_tokens") or 0),
         "output_tokens": int(usage.get("output_tokens") or 0),
     }
+
+
+def _terminate_adapter_group(process: subprocess.Popen[str]) -> None:
+    for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
 
 
 def extract_harness_code(response: str) -> str:

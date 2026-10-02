@@ -73,6 +73,7 @@ class PipelineWorker:
         lock_path = self.runs_root / ".pipeline-worker.lock"
         results: list[WorkerResult] = []
         attempted: set[str] = set()
+        stop_event = getattr(self, "stop_event", None)
         with lock_path.open("w", encoding="utf-8") as lock:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -82,6 +83,8 @@ class PipelineWorker:
             if housekeeper is not None:
                 housekeeper.run()
             while max_jobs == 0 or len(results) < max_jobs:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 requested_jobs = (
                     None if max_jobs == 0 else max_jobs - len(results)
                 )
@@ -105,6 +108,8 @@ class PipelineWorker:
                 )
                 ready_jobs: list[str] = []
                 for job_id in job_ids:
+                    if stop_event is not None and stop_event.is_set():
+                        break
                     prepared = self._advance(
                         job_id,
                         setup_only=True,
@@ -114,7 +119,7 @@ class PipelineWorker:
                         ready_jobs.append(job_id)
                     else:
                         results.append(prepared)
-                if ready_jobs:
+                if ready_jobs and (stop_event is None or not stop_event.is_set()):
                     run_allocation = plan_resources(
                         self.pipeline,
                         requested_jobs=len(ready_jobs),
@@ -133,7 +138,9 @@ class PipelineWorker:
                             for job_id in ready_jobs
                         ]
                         results.extend(future.result() for future in futures)
-                if housekeeper is not None:
+                if housekeeper is not None and (
+                    stop_event is None or not stop_event.is_set()
+                ):
                     for job_id in job_ids:
                         housekeeper.run(job_id)
         return results
@@ -172,6 +179,9 @@ class PipelineWorker:
         action = "none"
         try:
             for _ in range(100):
+                stop_event = getattr(self, "stop_event", None)
+                if stop_event is not None and stop_event.is_set():
+                    raise PipelineInterrupted("command stopped by operator")
                 state = self._state(job_id)
                 stage = str(state.get("stage") or "")
                 status = str(state.get("status") or "")

@@ -324,6 +324,34 @@ class PipelineRunnerTests(unittest.TestCase):
             state = json.loads((job_dir / "state.json").read_text())
             self.assertEqual(state["status"], "unsupported_integration")
 
+    def test_interrupted_integration_keeps_stage_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            job_dir.mkdir()
+            (job_dir / "job.json").write_text("{}")
+            state_path = job_dir / "state.json"
+            state_path.write_text(json.dumps({
+                "stage": "integration", "status": "prepared", "attempts": {}
+            }))
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            with self.assertRaises(PipelineInterrupted):
+                runner._single_stage(
+                    job_id,
+                    expected="integration",
+                    next_stage="build",
+                    next_status="integrated",
+                    action=lambda *_: (_ for _ in ()).throw(
+                        PipelineInterrupted("command stopped by operator")
+                    ),
+                )
+            state = json.loads(state_path.read_text())
+            self.assertEqual(state["stage"], "integration")
+            self.assertEqual(state["status"], "prepared")
+            self.assertNotIn("integration", state["attempts"])
+
     @unittest.skipUnless(shutil.which("git"), "git is required")
     def test_integration_uses_job_specific_oss_fuzz_worktree(self):
         with tempfile.TemporaryDirectory() as directory:

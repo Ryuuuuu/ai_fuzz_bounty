@@ -354,7 +354,10 @@ class PipelineRunner:
         output = job_dir / "artifacts" / f"quartet-harness-repair-{attempt}"
         if output.exists():
             shutil.rmtree(output)
-        response, usage = invoke_oss_fuzz_gen_adapter(self.pipeline, prompt, output)
+        response, usage = invoke_oss_fuzz_gen_adapter(
+            self.pipeline, prompt, output,
+            cancel_event=getattr(self, "cancel_event", None),
+        )
         code = extract_harness_code(response)
         validation = validate_generated_harness(code, {})
         previous_generic = json.loads(json.dumps(generic))
@@ -380,11 +383,13 @@ class PipelineRunner:
         self._write_json(generic_path, generic)
         try:
             self._build_fuzzers(job_dir, job)
-        except Exception:
+        except Exception as exc:
             for path in mirrors:
                 path.write_text(prior, encoding="utf-8")
                 path.chmod(0o644)
             self._write_json(generic_path, previous_generic)
+            if isinstance(exc, PipelineInterrupted):
+                raise
             state["status"] = "quartet_review_required"
             state["last_error"] = "automatic Quartet harness repair did not build"
             state["updated_at"] = utc_now()
@@ -710,14 +715,15 @@ class PipelineRunner:
                 attempt_dir = generation_root / f"attempt-{attempt}"
                 try:
                     response, usage = invoke_oss_fuzz_gen_adapter(
-                        self.pipeline, prompt, attempt_dir
+                        self.pipeline, prompt, attempt_dir,
+                        cancel_event=getattr(self, "cancel_event", None),
                     )
                     code = extract_harness_code(response)
                     validation = validate_generated_harness(code, candidate)
                     build_harness.write_text(code, encoding="utf-8")
                     self._build_fuzzers(job_dir, job)
                 except PipelineError as exc:
-                    if isinstance(exc, OfflineDependencyError):
+                    if isinstance(exc, (OfflineDependencyError, PipelineInterrupted)):
                         raise
                     build_error = str(exc)
                     build_log = job_dir / "logs" / (
@@ -755,6 +761,8 @@ class PipelineRunner:
                 break
         except Exception as exc:
             build_harness.write_text(original_code, encoding="utf-8")
+            if isinstance(exc, PipelineInterrupted):
+                raise
             state["status"] = "generation_failed"
             state["last_error"] = str(exc)[:2000]
             state["updated_at"] = utc_now()
@@ -1785,6 +1793,8 @@ class PipelineRunner:
             )
         try:
             action(job_dir, job)
+        except PipelineInterrupted:
+            raise
         except Exception as exc:
             unsupported = isinstance(exc, UnsupportedIntegrationError)
             state["status"] = "unsupported_integration" if unsupported else "failed"
@@ -2174,6 +2184,7 @@ class PipelineRunner:
             progress=self.progress,
             native=True,
             base_image=base_image,
+            cancel_event=getattr(self, "cancel_event", None),
         )
         hashes = {
             path.relative_to(project_dir).as_posix(): hashlib.sha256(
@@ -2268,6 +2279,7 @@ class PipelineRunner:
             project_name=project_name,
             pipeline=self.pipeline,
             progress=self.progress,
+            cancel_event=getattr(self, "cancel_event", None),
         )
         integration_dir = job_dir / "integration" / "oss-fuzz"
         if integration_dir.exists():
@@ -2404,8 +2416,12 @@ class PipelineRunner:
             try:
                 self._run_streaming(build_command, log_path, timeout=timeout)
                 break
-            except PipelineError:
-                if not generated or attempt >= maximum:
+            except PipelineError as exc:
+                if (
+                    isinstance(exc, PipelineInterrupted)
+                    or not generated
+                    or attempt >= maximum
+                ):
                     raise
                 error = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
                 repair_generic_harness(
@@ -2415,6 +2431,7 @@ class PipelineRunner:
                     pipeline=self.pipeline,
                     build_error=error,
                     attempt=attempt,
+                    cancel_event=getattr(self, "cancel_event", None),
                 )
                 self._run_streaming(
                     [
@@ -2546,6 +2563,8 @@ class PipelineRunner:
                 self._run_streaming(build_command, log_path, timeout=timeout)
                 break
             except PipelineError as exc:
+                if isinstance(exc, PipelineInterrupted):
+                    raise
                 with log_path.open("rb") as handle:
                     log_end = handle.seek(0, os.SEEK_END)
                     handle.seek(max(log_start, log_end - 65536))
@@ -2563,6 +2582,7 @@ class PipelineRunner:
                     pipeline=self.pipeline,
                     build_error=error,
                     attempt=attempt,
+                    cancel_event=getattr(self, "cancel_event", None),
                 )
                 self._run_streaming(
                     image_build_command,
