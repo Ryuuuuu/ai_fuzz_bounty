@@ -30,7 +30,7 @@ from .coverage_analysis import (
     deterministic_review,
     refresh_evidence_hash,
 )
-from .github import GitHubClient
+from .github import GitHubClient, GitHubError
 from .generic_integration import create_generic_project, repair_generic_harness
 from .harness_generation import (
     extract_harness_code,
@@ -1816,12 +1816,44 @@ class PipelineRunner:
         if repo is None:
             raise PipelineError(f"repository is no longer available: {repository}")
         repo = self.github.load_security_policy(repo)
-        current = self.policy.verify(repo)
+        policy = self.policy
+        expected_program = str(expected.get("program_url") or "").rstrip("/")
+        policy_config = self.config["policy"]
+        google_program = str(
+            policy_config.get("google_oss_vrp_program_url") or ""
+        ).rstrip("/")
+        if google_program and expected_program == google_program:
+            try:
+                feed = self.github.get_repository_file(
+                    str(
+                        policy_config.get("google_oss_vrp_feed_repository")
+                        or "google/bughunters"
+                    ),
+                    str(
+                        policy_config.get("google_oss_vrp_feed_path")
+                        or "oss-repository-tier/external_repositories.txtpb"
+                    ),
+                    str(policy_config.get("google_oss_vrp_feed_branch") or "main"),
+                )
+            except GitHubError:
+                raise PipelineError(
+                    "Google OSS VRP scope feed could not be refreshed"
+                ) from None
+            policy = PolicyVerifier(
+                self.policy.catalog_path,
+                self.policy.max_age_days,
+                load_catalog=False,
+            )
+            policy.merge_google_oss_vrp_feed(feed, google_program)
+            if repository.casefold() not in policy.entries:
+                raise PipelineError(
+                    f"repository is no longer listed in the Google OSS VRP scope feed: {repository}"
+                )
+        current = policy.verify(repo)
         if current.status != "verified":
             raise PipelineError(
                 f"bounty policy is no longer verified: {repository} ({current.status})"
             )
-        expected_program = str(expected.get("program_url") or "").rstrip("/")
         current_program = str(current.program_url or "").rstrip("/")
         if not expected_program or current_program != expected_program:
             raise PipelineError(

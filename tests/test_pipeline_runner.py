@@ -8,14 +8,18 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from fuzz_target_scout.config import DEFAULTS
 from fuzz_target_scout.coverage_analysis import (
     analysis_record,
     build_coverage_evidence,
     deterministic_review,
     validate_review,
 )
+from fuzz_target_scout.github import GitHubError
+from fuzz_target_scout.models import RepoSnapshot
+from fuzz_target_scout.policy import PolicyVerifier
 from fuzz_target_scout.pipeline import (
     OfflineDependencyError,
     PipelineError,
@@ -36,6 +40,141 @@ from fuzz_target_scout.quartet_gate import (
     resolve_generic_integration_harness,
     validate_quartet_review,
 )
+
+
+class PolicyRecheckTests(unittest.TestCase):
+    @staticmethod
+    def _fixture(
+        directory,
+        *,
+        repository="google/benchmark",
+        security_text="Report security issues through g.co/vulnz.",
+        catalog_entries=None,
+        feed="",
+    ):
+        root = Path(directory)
+        job_dir = root / "job"
+        (job_dir / "artifacts").mkdir(parents=True)
+        catalog = root / "catalog.json"
+        catalog.write_text(json.dumps({"entries": catalog_entries or []}))
+        policy_config = dict(DEFAULTS["policy"])
+        policy_config["catalog_path"] = str(catalog)
+        runner = object.__new__(PipelineRunner)
+        runner.config = {"policy": policy_config}
+        runner.policy = PolicyVerifier(catalog)
+        snapshot = RepoSnapshot(
+            full_name=repository,
+            html_url=f"https://github.com/{repository}",
+            default_branch="main",
+            head_sha="a" * 40,
+            security_url=f"https://github.com/{repository}/security/policy",
+            security_text=security_text,
+        )
+        feed_fetch = Mock(return_value=feed)
+        runner.github = SimpleNamespace(
+            get_repository=lambda _: snapshot,
+            load_security_policy=lambda repo: repo,
+            get_repository_file=feed_fetch,
+        )
+        job = {
+            "source": {"repository": repository},
+            "authorization": {"program_url": policy_config["google_oss_vrp_program_url"]},
+        }
+        return runner, job_dir, job, feed_fetch
+
+    def test_google_recheck_accepts_current_feed_entry(self):
+        feed = """
+repository {
+  url: "https://github.com/google/benchmark"
+  tier: TIER_OT1
+  product_vuln_scope: SCOPE_OSS_VRP
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, feed_fetch = self._fixture(directory, feed=feed)
+            runner._recheck_policy(job_dir, job)
+            record = json.loads(
+                (job_dir / "artifacts" / "authorization-recheck.json").read_text()
+            )
+        feed_fetch.assert_called_once_with(
+            "google/bughunters",
+            "oss-repository-tier/external_repositories.txtpb",
+            "main",
+        )
+        self.assertEqual(record["status"], "verified")
+        self.assertEqual(record["source"], "catalog")
+        self.assertEqual(record["repository"], "google/benchmark")
+
+    def test_google_recheck_rejects_removed_repo_despite_static_catalog(self):
+        feed = """
+repository {
+  url: "https://github.com/google/other"
+  tier: TIER_OT1
+  product_vuln_scope: SCOPE_OSS_VRP
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, _ = self._fixture(
+                directory,
+                feed=feed,
+                catalog_entries=[{
+                    "full_name": "google/benchmark",
+                    "status": "verified",
+                    "program_url": DEFAULTS["policy"]["google_oss_vrp_program_url"],
+                    "last_verified": "2099-01-01",
+                }],
+            )
+            with self.assertRaisesRegex(PipelineError, "no longer listed"):
+                runner._recheck_policy(job_dir, job)
+            self.assertFalse(
+                (job_dir / "artifacts" / "authorization-recheck.json").exists()
+            )
+
+    def test_google_recheck_fails_closed_when_feed_fetch_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, feed_fetch = self._fixture(directory)
+            feed_fetch.side_effect = GitHubError("API unavailable")
+            with self.assertRaisesRegex(PipelineError, "could not be refreshed"):
+                runner._recheck_policy(job_dir, job)
+            self.assertFalse(
+                (job_dir / "artifacts" / "authorization-recheck.json").exists()
+            )
+
+    def test_google_recheck_still_honors_current_security_policy(self):
+        feed = """
+repository {
+  url: "https://github.com/google/benchmark"
+  tier: TIER_OT1
+  product_vuln_scope: SCOPE_OSS_VRP
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, _ = self._fixture(
+                directory,
+                feed=feed,
+                security_text="We do not offer bounties for this repository.",
+            )
+            with self.assertRaisesRegex(PipelineError, "no longer verified"):
+                runner._recheck_policy(job_dir, job)
+
+    def test_other_program_recheck_does_not_fetch_google_feed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, feed_fetch = self._fixture(
+                directory,
+                repository="example/parser",
+                security_text=(
+                    "This project has a public bug bounty program at "
+                    "https://hackerone.com/example"
+                ),
+            )
+            job["authorization"]["program_url"] = "https://hackerone.com/example"
+            runner._recheck_policy(job_dir, job)
+            record = json.loads(
+                (job_dir / "artifacts" / "authorization-recheck.json").read_text()
+            )
+        feed_fetch.assert_not_called()
+        self.assertEqual(record["status"], "verified")
+        self.assertEqual(record["source"], "security.md")
 
 
 class PipelineRunnerTests(unittest.TestCase):

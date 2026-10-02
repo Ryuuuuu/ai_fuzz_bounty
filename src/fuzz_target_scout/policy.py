@@ -53,10 +53,16 @@ URL_RE = re.compile(r"https://[^\s)>\"']+", re.IGNORECASE)
 
 
 class PolicyVerifier:
-    def __init__(self, catalog_path: str | Path, max_age_days: int = 45):
+    def __init__(
+        self,
+        catalog_path: str | Path,
+        max_age_days: int = 45,
+        *,
+        load_catalog: bool = True,
+    ):
         self.catalog_path = Path(catalog_path)
         self.max_age_days = max_age_days
-        self.entries = self._load_catalog()
+        self.entries = self._load_catalog() if load_catalog else {}
 
     def _load_catalog(self) -> dict[str, dict[str, Any]]:
         if not self.catalog_path.exists():
