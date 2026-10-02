@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1437,6 +1438,30 @@ class CentralAgentTests(unittest.TestCase):
             ["docker", "rm", "-f", "fts-alpha-123", "fts-zeta-123"],
         )
         self.assertEqual(run.call_args.kwargs["timeout"], 20)
+
+    def test_idle_wait_ends_at_next_discovery_due_time(self):
+        agent = object.__new__(CentralAgent)
+        agent.agent = {
+            "auto_discover": True,
+            "monitor_interval_seconds": 1800,
+            "discovery_interval_seconds": 21600,
+            "idle_discovery_interval_seconds": 3600,
+            "discovery_error_retry_seconds": 300,
+        }
+        now = datetime(2026, 10, 2, 3, 50, tzinfo=timezone.utc)
+        agent.state = {"last_discovery_at": "2026-10-02T03:00:00+00:00"}
+        self.assertEqual(agent._idle_wait_seconds(discovery=True, now=now), 600)
+
+        agent.state["last_discovery_at"] = "2026-10-02T03:47:00+00:00"
+        agent.state["last_discovery_error"] = "temporary API failure"
+        self.assertEqual(agent._idle_wait_seconds(discovery=True, now=now), 120)
+
+        agent.state["last_discovery_at"] = "2026-10-02T02:00:00+00:00"
+        self.assertEqual(agent._idle_wait_seconds(discovery=True, now=now), 1)
+        agent.agent["auto_discover"] = False
+        self.assertEqual(agent._idle_wait_seconds(discovery=True, now=now), 1800)
+        agent.agent["auto_discover"] = True
+        self.assertEqual(agent._idle_wait_seconds(discovery=False, now=now), 1800)
 
     def test_idle_discovery_uses_wider_search_than_active_campaign(self):
         with tempfile.TemporaryDirectory() as directory:

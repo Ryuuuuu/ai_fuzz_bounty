@@ -12,6 +12,7 @@ from .architecture import assess_architecture, resolve_host_architecture
 from .arm_preflight import ArmPreflight, PREFLIGHT_VERSION, TRANSIENT_FAILURE_REASONS
 from .github import GitHubClient, GitHubError
 from .models import ArchitectureAssessment, Candidate, RepoSnapshot
+from .pipeline import CPP_LANGUAGES, _generic_build_signal
 from .policy import PolicyVerifier
 from .scoring import assess_static, final_score
 from .storage import Store, make_ai_cache_key
@@ -465,8 +466,14 @@ class ScoutEngine:
             str(value).casefold()
             for value in (self.config.get("pipeline") or {}).get("languages", [])
         }
+        pipeline_config = self.config.get("pipeline") or {}
         planned_repositories = _planned_repositories(
-            Path((self.config.get("pipeline") or {}).get("runs_path", "data/runs"))
+            Path(pipeline_config.get("runs_path", "data/runs"))
+        )
+        architecture_config = pipeline_config.get("architecture")
+        native_build_signal_required = (
+            architecture_config is not None
+            and resolve_host_architecture(architecture_config) != "x86_64"
         )
         eligible = [
             candidate
@@ -479,6 +486,12 @@ class ScoutEngine:
                 or candidate.repo.language.casefold() in enabled_languages
             )
             and candidate.repo.full_name.casefold() not in planned_repositories
+            and (
+                not native_build_signal_required
+                or candidate.repo.language.casefold() not in CPP_LANGUAGES
+                or _generic_build_signal({"signals": candidate.static.signals})
+                is not None
+            )
         ]
         eligible.sort(key=lambda item: item.static.fuzz_score, reverse=True)
         eligible = eligible[: int(ai_config["max_candidates_per_scan"])]

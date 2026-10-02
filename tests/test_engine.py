@@ -8,7 +8,8 @@ from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
 from fuzz_target_scout.github import GitHubError
 from fuzz_target_scout.models import (
-    ArchitectureAssessment, PolicyAssessment, RepoSnapshot, StaticAssessment,
+    AIAssessment, ArchitectureAssessment, Candidate, PolicyAssessment,
+    RepoSnapshot, StaticAssessment,
 )
 
 
@@ -154,6 +155,95 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(engine.github.pages, [1, 2, 3])
         self.assertEqual(engine.store.page, 4)
+
+
+class EngineCandidateReviewTests(unittest.TestCase):
+    def test_arm_ai_review_uses_planner_native_build_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["pipeline"]["architecture"]["host_arch"] = "aarch64"
+            config["pipeline"]["runs_path"] = str(Path(directory) / "runs")
+            engine = ScoutEngine(config)
+            policy = PolicyAssessment(
+                status="verified", confidence=95, source="security.md",
+                program_url="https://example.com/bounty",
+            )
+            architecture = ArchitectureAssessment(
+                host_arch="aarch64", compatible=True, confidence=90,
+                evidence=["README:linux/arm64"],
+            )
+
+            def candidate(name, paths, signals):
+                repo = RepoSnapshot(
+                    full_name=name,
+                    html_url=f"https://github.com/{name}",
+                    default_branch="main",
+                    head_sha="a" * 40,
+                    language="C++",
+                    paths=paths,
+                    security_url=f"https://github.com/{name}/security/policy",
+                )
+                static = StaticAssessment(
+                    fuzz_score=80, reproduce_difficulty=2,
+                    signals=signals, blockers=[],
+                    suggested_entry_kind="existing_harness",
+                )
+                return Candidate(
+                    repo=repo, static=static, policy=policy,
+                    final_score=80, architecture=architecture,
+                )
+
+            bazel_only = candidate(
+                "cloudflare/workerd",
+                ["BUILD.bazel", "src/parser.cc", "fuzz/parser.cc"],
+                ["existing_fuzz_assets:1"],
+            )
+            root_cmake = candidate(
+                "org/native-parser",
+                ["CMakeLists.txt", "src/parser.cc", "fuzz/parser.cc"],
+                ["standard_build:cmakelists.txt", "existing_fuzz_assets:1"],
+            )
+            reviewed = []
+
+            def assess_batch(evidence_items):
+                reviewed.extend(item["repository"] for item in evidence_items)
+                return {
+                    "org/native-parser": AIAssessment(
+                        fuzz_score=80, reproduce_difficulty=2,
+                        suggested_entry_kind="existing_harness",
+                        rationale="local native build", blockers=[],
+                    )
+                }, {"input_tokens": 47, "cached_tokens": 0, "output_tokens": 13}
+
+            reviewer = SimpleNamespace(
+                available=True, model="test-model", prompt_version="test-v1",
+                assess_batch=assess_batch,
+            )
+            try:
+                with patch(
+                    "fuzz_target_scout.engine.CodexReviewer", return_value=reviewer
+                ):
+                    self.assertEqual(
+                        engine._apply_ai([bazel_only], True), (0, 0, 0)
+                    )
+                    self.assertEqual(reviewed, [])
+                    calls, cache_hits, errors = engine._apply_ai(
+                        [bazel_only, root_cmake], True
+                    )
+                self.assertEqual((calls, cache_hits, errors), (1, 0, 0))
+                self.assertEqual(reviewed, ["org/native-parser"])
+                self.assertIsNone(bazel_only.ai)
+                self.assertIsNotNone(root_cmake.ai)
+                cache_rows = engine.store.connection.execute(
+                    "SELECT full_name, input_tokens FROM ai_cache"
+                ).fetchall()
+                self.assertEqual(
+                    [(row["full_name"], row["input_tokens"]) for row in cache_rows],
+                    [("org/native-parser", 47)],
+                )
+            finally:
+                engine.close()
 
 
 if __name__ == "__main__":

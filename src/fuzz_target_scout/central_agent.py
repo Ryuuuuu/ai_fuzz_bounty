@@ -4,6 +4,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -487,7 +488,9 @@ class CentralAgent:
                             continue
                         if exit_when_idle:
                             break
-                        self.stop_event.wait(int(self.agent["monitor_interval_seconds"]))
+                        self.stop_event.wait(
+                            self._idle_wait_seconds(discovery=discovery)
+                        )
                         continue
                     allocation, capacity = self._choose_capacity(len(runnable))
                     worker_config = self._worker_config(allocation)
@@ -1869,12 +1872,8 @@ class CentralAgent:
             self._save_state()
         return delivered, detail
 
-    def _refresh_candidates_if_due(self) -> None:
-        if not bool(self.agent["auto_discover"]):
-            self._plan_exported_candidates()
-            return
+    def _discovery_interval_seconds(self, *, idle: bool) -> int:
         interval = int(self.agent["discovery_interval_seconds"])
-        idle = not self._runnable_jobs()
         if idle:
             interval = min(
                 interval,
@@ -1885,6 +1884,28 @@ class CentralAgent:
                 interval,
                 int(self.agent.get("discovery_error_retry_seconds", 300)),
             )
+        return max(1, interval)
+
+    def _idle_wait_seconds(
+        self, *, discovery: bool, now: datetime | None = None
+    ) -> int:
+        monitor_interval = max(1, int(self.agent["monitor_interval_seconds"]))
+        if not discovery or not bool(self.agent["auto_discover"]):
+            return monitor_interval
+        previous = _parse_time(str(self.state.get("last_discovery_at") or ""))
+        if previous is None:
+            return 1
+        remaining = self._discovery_interval_seconds(idle=True) - (
+            (now or datetime.now(timezone.utc)) - previous
+        ).total_seconds()
+        return max(1, min(monitor_interval, math.ceil(remaining)))
+
+    def _refresh_candidates_if_due(self) -> None:
+        if not bool(self.agent["auto_discover"]):
+            self._plan_exported_candidates()
+            return
+        idle = not self._runnable_jobs()
+        interval = self._discovery_interval_seconds(idle=idle)
         previous = _parse_time(str(self.state.get("last_discovery_at") or ""))
         due = previous is None or (
             datetime.now(timezone.utc) - previous
