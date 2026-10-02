@@ -19,6 +19,10 @@ from .storage import Store, make_ai_cache_key
 
 Progress = Callable[[str], None]
 
+REPO_COOLDOWN_FAILURE_REASONS = frozenset({
+    "native_build_or_smoke_failed", "smoke_marker_missing", "no_root_cmake_build",
+})
+
 
 @dataclass(slots=True)
 class ScanSummary:
@@ -378,6 +382,29 @@ class ScoutEngine:
                         continue
                 except ValueError:
                     pass
+            if cached is None and retry_hours:
+                latest = self.store.get_latest_arm_preflight(
+                    candidate.repo.full_name, "aarch64", PREFLIGHT_VERSION,
+                )
+                if (
+                    latest
+                    and latest["head_sha"].casefold() != candidate.repo.head_sha.casefold()
+                    and not latest["passed"]
+                    and latest["reason"] in REPO_COOLDOWN_FAILURE_REASONS
+                ):
+                    try:
+                        checked = datetime.fromisoformat(str(latest["checked_at"]))
+                        if checked.tzinfo is None:
+                            checked = checked.replace(tzinfo=timezone.utc)
+                        age = datetime.now(timezone.utc) - checked
+                        if 0 <= age.total_seconds() < retry_hours * 3600:
+                            self.progress(
+                                "ARM preflight deferred after recent repository "
+                                f"build failure: {candidate.repo.full_name}"
+                            )
+                            continue
+                    except ValueError:
+                        pass
             pending.append((
                 self.store.has_prior_successful_arm_preflight(
                     candidate.repo.full_name, candidate.repo.head_sha,

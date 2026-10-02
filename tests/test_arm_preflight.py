@@ -589,6 +589,81 @@ class ArmPreflightTests(unittest.TestCase):
             finally:
                 engine.close()
 
+    def test_recent_build_failure_on_previous_commit_does_not_use_probe_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["architecture"]["arm_preflight_max_per_scan"] = 1
+            repeated = candidate("org/repeated")
+            repeated.final_score = 99
+            fresh = candidate("org/fresh")
+            fresh.final_score = 60
+            engine = ScoutEngine(config)
+            try:
+                engine.store.put_arm_preflight(
+                    repeated.repo.full_name, "b" * 40,
+                    "aarch64", PREFLIGHT_VERSION,
+                    passed=False, reason="native_build_or_smoke_failed",
+                    evidence="native_arm_failure:stage=configure;kind=configure_failed;exit=1",
+                )
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "native_build_or_smoke_failed"
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([repeated, fresh]), (1, 0)
+                    )
+                    self.assertEqual(
+                        [call.args[0].full_name for call in runner.return_value.check.call_args_list],
+                        ["org/fresh"],
+                    )
+                self.assertIsNone(engine.store.get_arm_preflight(
+                    repeated.repo.full_name, SHA, "aarch64", PREFLIGHT_VERSION,
+                ))
+                self.assertFalse(repeated.architecture.compatible)
+
+                engine.store.connection.execute(
+                    "UPDATE arm_preflight_cache SET checked_at=? WHERE full_name=?",
+                    (
+                        (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+                        repeated.repo.full_name,
+                    ),
+                )
+                engine.store.connection.commit()
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "native_build_or_smoke_failed"
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([repeated]), (1, 0)
+                    )
+                    runner.return_value.check.assert_called_once()
+            finally:
+                engine.close()
+
+    def test_transient_failure_on_previous_commit_does_not_block_new_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            fresh_commit = candidate("org/parser")
+            engine = ScoutEngine(config)
+            try:
+                engine.store.put_arm_preflight(
+                    fresh_commit.repo.full_name, "b" * 40,
+                    "aarch64", PREFLIGHT_VERSION,
+                    passed=False, reason="builder_unavailable",
+                )
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "builder_unavailable"
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([fresh_commit]), (1, 0)
+                    )
+                    runner.return_value.check.assert_called_once()
+            finally:
+                engine.close()
+
     def test_transient_probe_failure_retries_after_short_cooldown(self):
         reasons = (
             "checkout_failed",

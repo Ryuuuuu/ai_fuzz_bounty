@@ -1052,12 +1052,54 @@ class CentralAgent:
         plan = _optional_json(job_dir / "artifacts" / "coverage-plan.json")
         progress = _optional_json(job_dir / "artifacts" / "fuzz-progress.json")
         triage = _optional_json(job_dir / "artifacts" / "triage-summary.json")
+        campaign_yield = _optional_json(job_dir / "artifacts" / "campaign-yield.json")
+        yield_reason = state.get("campaign_yield_reason")
+        yield_metrics = campaign_yield.get("metrics")
+        if not isinstance(yield_metrics, dict):
+            yield_metrics = {}
+        bounded_metrics = {
+            name: yield_metrics[name]
+            for name in (
+                "completed_seconds",
+                "baseline_edges",
+                "best_edges",
+                "edge_growth",
+                "baseline_features",
+                "best_features",
+                "feature_growth",
+                "trailing_stagnation_seconds",
+            )
+            if isinstance(yield_metrics.get(name), (int, float))
+            and not isinstance(yield_metrics[name], bool)
+            and 0 <= yield_metrics[name] <= 1_000_000_000
+        }
         maximum = int(self.agent["max_improvement_cycles_per_job"])
         available, reason = _followup_available(
             state, plan, maximum, int(self.pipeline["max_generation_cycles"])
         )
         return {
             **status,
+            "campaign_stop_reason": (
+                "low_yield" if state.get("campaign_stop_reason") == "low_yield" else None
+            ),
+            "campaign_yield_reason": (
+                yield_reason
+                if isinstance(yield_reason, str)
+                and yield_reason in {"shallow_reach", "coverage_stagnation"}
+                else None
+            ),
+            "campaign_yield": (
+                {
+                    "decision": (
+                        "rotate_target"
+                        if campaign_yield.get("decision") == "rotate_target"
+                        else None
+                    ),
+                    "metrics": bounded_metrics,
+                }
+                if campaign_yield
+                else {}
+            ),
             "recent_sessions": (progress.get("sessions") or [])[-3:],
             "coverage_review": {
                 "decision": (plan.get("review") or {}).get("decision"),

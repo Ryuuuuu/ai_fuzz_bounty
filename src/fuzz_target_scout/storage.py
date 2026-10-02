@@ -233,6 +233,22 @@ class Store:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def get_latest_arm_preflight(
+        self, full_name: str, host_arch: str, version: str
+    ) -> dict[str, Any] | None:
+        """Find the latest result for a repository, including another commit."""
+        row = self.connection.execute(
+            """
+            SELECT head_sha, checked_at, passed, reason
+              FROM arm_preflight_cache
+             WHERE full_name=? AND host_arch=? AND version=?
+             ORDER BY checked_at DESC, rowid DESC
+             LIMIT 1
+            """,
+            (full_name.casefold(), host_arch, version),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def has_prior_successful_arm_preflight(
         self, full_name: str, head_sha: str, host_arch: str, version: str
     ) -> bool:

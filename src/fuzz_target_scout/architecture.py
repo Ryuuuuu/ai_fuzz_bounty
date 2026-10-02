@@ -33,24 +33,10 @@ NEGATIVE_PATTERNS = {
 
 
 def _portable_native_probe_candidate(repo: RepoSnapshot) -> bool:
-    """Allow an ARM build probe only for a small, portable, fuzz-ready shape."""
+    """Request a native probe for a root CMake build, even without a fuzz harness."""
     paths = [str(value).replace("\\", "/") for value in repo.paths]
     roots = {path.casefold() for path in paths if "/" not in path}
-    portable_build = bool(
-        roots & {"cmakelists.txt", "meson.build", "configure.ac", "configure.in"}
-    )
-    source_suffixes = (".c", ".cc", ".cpp", ".cxx", ".c++")
-    fuzz_harness = False
-    for path in paths:
-        lowered = path.casefold()
-        parts = lowered.split("/")
-        if any(part in {"third_party", "third-party", "vendor", "vendored"} for part in parts):
-            continue
-        name = parts[-1]
-        if name.endswith(source_suffixes) and any("fuzz" in part for part in parts):
-            fuzz_harness = True
-            break
-    return portable_build and fuzz_harness
+    return "cmakelists.txt" in roots
 
 
 def normalize_architecture(value: str) -> str:

@@ -56,13 +56,13 @@ class ArchitectureTests(unittest.TestCase):
         )
         self.assertEqual(result.evidence, [])
 
-    def test_portable_probe_rejects_vendored_fuzz_harness(self):
+    def test_root_cmake_without_fuzz_harness_requires_real_probe(self):
         repo = RepoSnapshot(
             full_name="org/parser",
             html_url="https://github.com/org/parser",
             default_branch="main",
             head_sha="a" * 40,
-            paths=["CMakeLists.txt", "third_party/lib/fuzz/fuzzer.cc"],
+            paths=["CMakeLists.txt", "src/parser.cc", "tests/parser_test.cc"],
         )
         result = assess_architecture(
             repo,
@@ -74,6 +74,53 @@ class ArchitectureTests(unittest.TestCase):
             },
         )
         self.assertFalse(result.compatible)
+        self.assertEqual(result.blockers, ["native_build_probe_required:aarch64"])
+
+    def test_nested_cmake_does_not_request_root_probe(self):
+        repo = RepoSnapshot(
+            full_name="org/parser",
+            html_url="https://github.com/org/parser",
+            default_branch="main",
+            head_sha="a" * 40,
+            paths=["src/CMakeLists.txt", "src/parser.cc"],
+        )
+        result = assess_architecture(
+            repo,
+            {
+                "mode": "native_only",
+                "host_arch": "arm64",
+                "require_explicit_support": True,
+                "allow_portable_native_probe": True,
+            },
+        )
+        self.assertFalse(result.compatible)
+        self.assertEqual(
+            result.blockers, ["no_explicit_native_support_evidence:aarch64"]
+        )
+
+    def test_other_root_builds_do_not_request_cmake_probe(self):
+        for marker in ("meson.build", "configure.ac"):
+            with self.subTest(marker=marker):
+                repo = RepoSnapshot(
+                    full_name="org/parser",
+                    html_url="https://github.com/org/parser",
+                    default_branch="main",
+                    head_sha="a" * 40,
+                    paths=[marker, "src/parser.cc"],
+                )
+                result = assess_architecture(
+                    repo,
+                    {
+                        "mode": "native_only",
+                        "host_arch": "arm64",
+                        "require_explicit_support": True,
+                        "allow_portable_native_probe": True,
+                    },
+                )
+                self.assertFalse(result.compatible)
+                self.assertEqual(
+                    result.blockers, ["no_explicit_native_support_evidence:aarch64"]
+                )
 
     def test_missing_explicit_evidence_is_rejected(self):
         repo = RepoSnapshot(

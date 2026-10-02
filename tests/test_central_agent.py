@@ -24,6 +24,76 @@ from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 
 
 class CentralAgentTests(unittest.TestCase):
+    def test_cycle_evidence_explains_low_yield_early_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            job_id = "google-benchmark-aaaaaaaaaaaa"
+            artifacts = root / "runs" / job_id / "artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts.parent / "job.json").write_text(
+                json.dumps({
+                    "source": {"repository": "google/benchmark"},
+                    "budgets": {"fuzz_seconds": 86400},
+                }),
+                encoding="utf-8",
+            )
+            (artifacts.parent / "state.json").write_text(
+                json.dumps({
+                    "status": "exhausted",
+                    "stage": "complete",
+                    "campaign_stop_reason": "low_yield",
+                    "campaign_yield_reason": "shallow_reach",
+                }),
+                encoding="utf-8",
+            )
+            (artifacts / "fuzz-progress.json").write_text(
+                json.dumps({
+                    "completed_seconds": 7200,
+                    "sessions": [{"accounted_seconds": 7200, "coverage_edges": 6}],
+                }),
+                encoding="utf-8",
+            )
+            (artifacts / "fuzz-run.json").write_text(
+                json.dumps({"worker_stats": [{"coverage_edges": 6}]}),
+                encoding="utf-8",
+            )
+            metrics = {
+                "completed_seconds": 7200,
+                "baseline_edges": 6,
+                "best_edges": 6,
+                "edge_growth": 0,
+                "baseline_features": 8,
+                "best_features": 8,
+                "feature_growth": 0,
+                "trailing_stagnation_seconds": 7200,
+            }
+            (artifacts / "campaign-yield.json").write_text(
+                json.dumps({
+                    "decision": "rotate_target",
+                    "reason": "shallow_reach",
+                    "metrics": {**metrics, "private_note": "do-not-send"},
+                    "private_note": "do-not-send",
+                }),
+                encoding="utf-8",
+            )
+
+            evidence = CentralAgent(config)._cycle_job_evidence(job_id)
+
+        self.assertEqual(evidence["status"], "exhausted")
+        self.assertEqual(evidence["fuzz_budget_seconds"], 86400)
+        self.assertEqual(evidence["fuzz_completed_seconds"], 7200)
+        self.assertEqual(evidence["coverage_edges"], 6)
+        self.assertEqual(evidence["campaign_stop_reason"], "low_yield")
+        self.assertEqual(evidence["campaign_yield_reason"], "shallow_reach")
+        self.assertEqual(evidence["campaign_yield"], {
+            "decision": "rotate_target",
+            "metrics": metrics,
+        })
+        self.assertNotIn("do-not-send", json.dumps(evidence))
+
     def test_runnable_jobs_quarantines_duplicate_queued_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
