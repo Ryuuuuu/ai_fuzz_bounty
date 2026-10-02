@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -121,7 +122,7 @@ repository {
                     "full_name": "google/benchmark",
                     "status": "verified",
                     "program_url": DEFAULTS["policy"]["google_oss_vrp_program_url"],
-                    "last_verified": "2099-01-01",
+                    "last_verified": date.today().isoformat(),
                 }],
             )
             with self.assertRaisesRegex(PipelineError, "no longer listed"):
