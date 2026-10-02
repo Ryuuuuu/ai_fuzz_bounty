@@ -16,7 +16,12 @@ from fuzz_target_scout.arm_preflight import (
     ArmPreflight,
     ArmPreflightResult,
     BUILD_AND_SMOKE,
+    MESON_BUILD_AND_SMOKE,
+    MESON_DOCKERFILE,
+    MESON_PREFLIGHT_VERSION,
     PREFLIGHT_VERSION,
+    SELECT_MESON_NATIVE_TEST,
+    VERIFY_MESON_NATIVE_TEST,
     SELECT_NATIVE_TEST,
     VERIFY_NATIVE_TEST,
     _StepFailure,
@@ -125,6 +130,114 @@ class ArmPreflightTests(unittest.TestCase):
         )
         self.assertIn("ctest --test-dir /work/build", container[-1])
         self.assertTrue(all("GITHUB_TOKEN" not in env for env in environments))
+
+    def test_meson_preflight_uses_separate_builder_and_cache_version(self):
+        checker = ArmPreflight({"host_arch": "aarch64"})
+        commands = []
+
+        def fake_run(command, _deadline, _environment, _failure):
+            commands.append(command)
+            if command[0] == "git" and "checkout" in command:
+                (Path(command[2]) / "meson.build").write_text("project('parser', 'cpp')")
+            if command[0] == "git" and "rev-parse" in command:
+                return subprocess.CompletedProcess(command, 0, SHA + "\n", "")
+            if command[:2] == ["docker", "run"]:
+                return subprocess.CompletedProcess(command, 0, "FTS_ARM_PREFLIGHT_OK\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch("fuzz_target_scout.arm_preflight.platform.machine", return_value="aarch64"), patch.object(
+            checker, "_run", side_effect=fake_run
+        ), patch.object(checker, "_ensure_builder") as builder, patch(
+            "fuzz_target_scout.arm_preflight.subprocess.run"
+        ):
+            result = checker.check(repository())
+
+        self.assertTrue(result.passed)
+        self.assertNotEqual(PREFLIGHT_VERSION, MESON_PREFLIGHT_VERSION)
+        self.assertIn(f"native_arm_preflight:{MESON_PREFLIGHT_VERSION}:meson_build_meson_test:{SHA}", result.evidence)
+        self.assertIn("libgmock-dev", MESON_DOCKERFILE)
+        self.assertIn("libjsoncpp-dev", MESON_DOCKERFILE)
+        self.assertEqual(builder.call_args.kwargs["dockerfile"], MESON_DOCKERFILE)
+        container = next(command for command in commands if command[:2] == ["docker", "run"])
+        self.assertIn("--network", container)
+        self.assertIn("none", container)
+        self.assertIn("--read-only", container)
+        self.assertIn("--cap-drop", container)
+        self.assertIn("--memory", container)
+        self.assertIn("--pids-limit", container)
+        self.assertEqual(container[-1], MESON_BUILD_AND_SMOKE)
+        self.assertIn("--wrap-mode=nodownload", container[-1])
+        self.assertIn("ninja -C /work/build", container[-1])
+        self.assertEqual(subprocess.run(["/bin/sh", "-n"], input=MESON_BUILD_AND_SMOKE,
+                                        capture_output=True, text=True).returncode, 0)
+
+    def test_meson_selection_requires_compiled_executable_test_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            build = root / "build"
+            info = build / "meson-info"
+            source.mkdir()
+            info.mkdir(parents=True)
+            cpp = source / "unit.cpp"
+            cpp.write_text("int main() { return 0; }\n")
+            executable = build / "unit_tests"
+            (build / "compile_commands.json").write_text(json.dumps([{
+                "directory": str(build), "file": str(cpp),
+                "command": f"clang++ -c {cpp}",
+            }]))
+            (info / "intro-targets.json").write_text(json.dumps([{
+                "type": "executable", "filename": [str(executable)],
+                "target_sources": [{"language": "cpp", "sources": [str(cpp)]}],
+            }]))
+            (info / "intro-tests.json").write_text(json.dumps([
+                {"name": "script", "cmd": ["/usr/bin/python3", "check.py"]},
+                {"name": "unit", "protocol": "exitcode", "cmd": [str(executable)],
+                 "workdir": str(source)},
+            ]))
+            scope = {"__name__": "meson_selector_fixture"}
+            exec(SELECT_MESON_NATIVE_TEST, scope)
+            selected = scope["select_meson_native_test"](build, source)
+            self.assertEqual(selected["target"], "unit_tests")
+            self.assertEqual(selected["command"], [str(executable)])
+            (info / "intro-targets.json").write_text(json.dumps([{
+                "type": "executable", "filename": [str(executable)],
+                "target_sources": [{"language": "cpp", "sources": [str(source / 'other.cpp')]}],
+            }]))
+            with self.assertRaisesRegex(ValueError, "no Meson test backed"):
+                scope["select_meson_native_test"](build, source)
+
+    def test_meson_smoke_requires_aarch64_elf_and_passing_native_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            build = root / "build"
+            source.mkdir()
+            build.mkdir()
+            artifact = build / "unit_tests"
+            header = bytearray(20)
+            header[:4] = b"\x7fELF"
+            header[5] = 1
+            header[18:20] = (183).to_bytes(2, "little")
+            artifact.write_bytes(header)
+            artifact.chmod(0o755)
+            selection = build / "selection.json"
+            selection.write_text(json.dumps({
+                "artifact": str(artifact), "command": [str(artifact)],
+                "workdir": str(source), "env": {},
+            }))
+            scope = {"__name__": "meson_smoke_fixture"}
+            exec(VERIFY_MESON_NATIVE_TEST, scope)
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "ok", "")) as run:
+                scope["verify_meson_native_test"](build, source, selection)
+            self.assertEqual(run.call_args.args[0], [str(artifact)])
+            self.assertEqual(run.call_args.kwargs["cwd"], source)
+            header[18:20] = (62).to_bytes(2, "little")
+            artifact.write_bytes(header)
+            with patch("subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "not AArch64"):
+                    scope["verify_meson_native_test"](build, source, selection)
+                run.assert_not_called()
 
     def test_google_test_source_path_is_conditional_and_shell_valid(self):
         self.assertIn(
@@ -449,6 +562,40 @@ class ArmPreflightTests(unittest.TestCase):
                     runner.return_value.check.assert_not_called()
                 self.assertEqual((attempted, passed), (0, 1))
                 self.assertTrue(repeated.architecture.compatible)
+            finally:
+                engine.close()
+
+    def test_meson_candidate_uses_its_own_cache_without_changing_cmake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            meson_candidate = candidate("org/meson")
+            meson_candidate.static.signals = ["standard_build:meson.build"]
+            evidence = (
+                f"native_arm_preflight:{MESON_PREFLIGHT_VERSION}:"
+                f"meson_build_meson_test:{SHA}"
+            )
+            engine = ScoutEngine(config)
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        True, "native_arm_build_and_meson_test_passed", evidence
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([meson_candidate]), (1, 1)
+                    )
+                self.assertTrue(meson_candidate.architecture.compatible)
+                self.assertIsNotNone(engine.store.get_arm_preflight(
+                    "org/meson", SHA, "aarch64", MESON_PREFLIGHT_VERSION
+                ))
+                self.assertIsNone(engine.store.get_arm_preflight(
+                    "org/meson", SHA, "aarch64", PREFLIGHT_VERSION
+                ))
+                repeated = candidate("org/meson")
+                repeated.static.signals = ["standard_build:meson.build"]
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    self.assertEqual(engine._preflight_arm_candidates([repeated]), (0, 1))
+                    runner.return_value.check.assert_not_called()
             finally:
                 engine.close()
 

@@ -97,6 +97,34 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("meson ninja-build pkg-config python3 python3-yaml ragel", dockerfile)
         self.assertIn("git flex bison", dockerfile)
 
+    def test_meson_default_required_jsoncpp_is_installed_and_linked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            (root / "artifacts").mkdir()
+            source.mkdir()
+            (source / "meson.build").write_text(
+                "project('parser', 'cpp')\n"
+                "dependency('jsoncpp')\n"
+                "dependency('libsystemd', required: false)\n"
+            )
+            (source / "fuzz.cc").write_text(
+                '#include <cstddef>\n#include <cstdint>\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const uint8_t*, size_t) { return 0; }\n'
+            )
+            record = create_generic_project(
+                job_dir=root, source=source, project_dir=project,
+                project_name="parser", pipeline={}, native=True,
+            )
+            dockerfile = (project / "Dockerfile").read_text()
+            build = (project / "build.sh").read_text()
+        self.assertEqual(record["system_dependencies"], ["libjsoncpp-dev"])
+        self.assertIn("libjsoncpp-dev", dockerfile)
+        self.assertIn("pkg-config --libs jsoncpp", build)
+        self.assertIn('"${meson_external_libs[@]}"', build)
+
     def test_meson_build_compiles_only_static_libraries(self):
         build = _build_script("meson", "", [], "c++", [], [])
         self.assertIn("meson-info/intro-targets.json", build)

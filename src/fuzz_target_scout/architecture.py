@@ -33,10 +33,10 @@ NEGATIVE_PATTERNS = {
 
 
 def _portable_native_probe_candidate(repo: RepoSnapshot) -> bool:
-    """Request a native probe for a root CMake build, even without a fuzz harness."""
+    """Request a native probe for a root CMake or Meson C/C++ build."""
     paths = [str(value).replace("\\", "/") for value in repo.paths]
     roots = {path.casefold() for path in paths if "/" not in path}
-    return "cmakelists.txt" in roots
+    return bool(roots & {"cmakelists.txt", "meson.build"})
 
 
 def normalize_architecture(value: str) -> str:

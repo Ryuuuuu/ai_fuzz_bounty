@@ -9,7 +9,10 @@ from typing import Any, Callable, Iterable
 
 from .ai import AIError, CodexReviewer, compact_evidence, evidence_hash
 from .architecture import assess_architecture, resolve_host_architecture
-from .arm_preflight import ArmPreflight, PREFLIGHT_VERSION, TRANSIENT_FAILURE_REASONS
+from .arm_preflight import (
+    ArmPreflight, MESON_PREFLIGHT_VERSION, PREFLIGHT_VERSION,
+    TRANSIENT_FAILURE_REASONS,
+)
 from .github import GitHubClient, GitHubError
 from .models import ArchitectureAssessment, Candidate, RepoSnapshot
 from .pipeline import CPP_LANGUAGES, _generic_build_signal
@@ -303,6 +306,21 @@ class ScoutEngine:
         return values[:limit] if limit else values
 
     @staticmethod
+    def _arm_preflight_version(candidate: Candidate) -> str | None:
+        markers: set[str] = set()
+        for signal in candidate.static.signals:
+            value = str(signal).casefold()
+            if value.startswith("standard_build:"):
+                markers.update(value.split(":", 1)[1].split(","))
+        # The preflight itself makes the same choice after checking the pinned
+        # checkout. Preserve the CMake cache key for repositories with both.
+        if "cmakelists.txt" in markers:
+            return PREFLIGHT_VERSION
+        if "meson.build" in markers:
+            return MESON_PREFLIGHT_VERSION
+        return None
+
+    @staticmethod
     def _accept_arm_preflight(candidate: Candidate, evidence: str) -> None:
         candidate.architecture = ArchitectureAssessment(
             host_arch="aarch64",
@@ -334,10 +352,11 @@ class ScoutEngine:
         )
         retry_hours = max(0, int(architecture.get("arm_preflight_failure_retry_hours", 24)))
         transient_retry_seconds = min(retry_hours * 3600, 15 * 60)
-        pending: list[tuple[bool, Candidate]] = []
+        pending: list[tuple[bool, Candidate, str]] = []
         passed = 0
         for candidate in candidates:
             assessment = candidate.architecture
+            version = self._arm_preflight_version(candidate)
             if (
                 candidate.policy.status != "verified"
                 or not candidate.policy.program_url
@@ -351,19 +370,15 @@ class ScoutEngine:
                     ["native_build_probe_required:aarch64"],
                 )
                 or not 0 < candidate.repo.size_kb <= maximum_kb
-                or not any(
-                    "cmakelists.txt" in str(signal).casefold().split("standard_build:", 1)[-1].split(",")
-                    for signal in candidate.static.signals
-                    if str(signal).casefold().startswith("standard_build:")
-                )
+                or version is None
             ):
                 continue
             cached = self.store.get_arm_preflight(
                 candidate.repo.full_name, candidate.repo.head_sha,
-                "aarch64", PREFLIGHT_VERSION,
+                "aarch64", version,
             )
             if cached and cached["passed"] and str(cached["evidence"]).startswith(
-                f"native_arm_preflight:{PREFLIGHT_VERSION}:"
+                f"native_arm_preflight:{version}:"
             ):
                 self._accept_arm_preflight(candidate, str(cached["evidence"]))
                 passed += 1
@@ -385,7 +400,7 @@ class ScoutEngine:
                     pass
             if cached is None and retry_hours:
                 latest = self.store.get_latest_arm_preflight(
-                    candidate.repo.full_name, "aarch64", PREFLIGHT_VERSION,
+                    candidate.repo.full_name, "aarch64", version,
                 )
                 if (
                     latest
@@ -409,9 +424,10 @@ class ScoutEngine:
             pending.append((
                 self.store.has_prior_successful_arm_preflight(
                     candidate.repo.full_name, candidate.repo.head_sha,
-                    "aarch64", PREFLIGHT_VERSION,
+                    "aarch64", version,
                 ),
                 candidate,
+                version,
             ))
 
         pending.sort(
@@ -425,13 +441,13 @@ class ScoutEngine:
         maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 2))))
         runner = ArmPreflight(architecture, progress=self.progress)
         attempted = 0
-        for _prior_success, candidate in pending[:maximum]:
+        for _prior_success, candidate, version in pending[:maximum]:
             self.progress(f"ARM preflight: {candidate.repo.full_name}")
             result = runner.check(candidate.repo)
             attempted += 1
             self.store.put_arm_preflight(
                 candidate.repo.full_name, candidate.repo.head_sha,
-                "aarch64", PREFLIGHT_VERSION,
+                "aarch64", version,
                 passed=result.passed, reason=result.reason, evidence=result.evidence,
             )
             if result.passed:

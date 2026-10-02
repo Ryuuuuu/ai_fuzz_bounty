@@ -49,6 +49,7 @@ MESON_SYSTEM_DEPENDENCIES = {
     "bzip2": ("libbz2-dev",),
     "libcurl": ("libcurl4-openssl-dev",),
     "libcrypto": ("libssl-dev",),
+    "jsoncpp": ("libjsoncpp-dev",),
     "libpcre2-8": ("libpcre2-dev",),
     "libsodium": ("libsodium-dev",),
     "libssl": ("libssl-dev",),
@@ -566,15 +567,19 @@ def _cmake_metadata_text(source: Path) -> str:
 
 def _declared_required_meson_packages(source: Path) -> set[str]:
     text = _meson_metadata_text(source)
-    packages = {
-        match.group(1).casefold()
-        for match in re.finditer(
-            r"\bdependency\s*\(\s*['\"]([A-Za-z0-9_+.-]+)['\"]"
-            r"(?:(?!\)).){0,500}?\brequired\s*:\s*true",
-            text,
-            re.IGNORECASE | re.DOTALL,
-        )
-    }
+    # Meson dependencies are required unless explicitly marked optional.
+    # Keep the scan bounded and use only names in the reviewed package map.
+    packages = set()
+    for match in re.finditer(
+        r"\bdependency\s*\(\s*['\"]([A-Za-z0-9_+.-]+)['\"]"
+        r"(?P<options>(?:(?!\)).){0,500})\)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        if not re.search(
+            r"\brequired\s*:\s*false\b", match.group("options"), re.IGNORECASE
+        ):
+            packages.add(match.group(1).casefold())
     lowered = text.casefold()
     if "no lua implementation was found" in lowered:
         packages.add("lua5.4")
@@ -1012,6 +1017,15 @@ find target/release -maxdepth 2 -type f -name '*.a' -exec cp -n {} "$WORK/build/
         "$CFLAGS -x c" if harness_language == "c" else "$CXXFLAGS -std=c++17"
     )
     support_compile = "\n".join(support_compile_lines)
+    external_libraries = (
+        """meson_external_libs=()
+if pkg-config --exists jsoncpp; then
+  read -r -a meson_external_libs <<< "$(pkg-config --libs jsoncpp)"
+fi
+"""
+        if build_system == "meson" else ""
+    )
+    external_link_flags = ' "${meson_external_libs[@]}"' if build_system == "meson" else ""
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
 mapfile -d '' dependency_archives < <(
   find "$WORK/dependencies" -type f -name '*.a' -print0 2>/dev/null
@@ -1060,8 +1074,9 @@ __SUPPORT_COMPILE__
   -c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"
 "$CXX" $CXXFLAGS "$WORK/generic_harness.o" "${support_objects[@]}" \\
   -Wl,--start-group "${archives[@]}" "${dependency_archives[@]}" -Wl,--end-group \\
-  $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
+  __EXTERNAL_LIBS__ $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
+    link = link.replace("__EXTERNAL_LIBS__", external_link_flags)
     link = link.replace("__HARNESS_INCLUDE__", harness_include)
     link = link.replace("__SUPPORT_COMPILE__", support_compile)
     link = link.replace("__HARNESS_COMPILER__", harness_compiler)
@@ -1072,7 +1087,7 @@ __SUPPORT_COMPILE__
             "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)\n",
             "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)\n" + cmake_source_args,
         )
-    return prelude + dependency_build + build + link
+    return prelude + dependency_build + build + external_libraries + link
 
 
 def _read_optional_json(path: Path) -> dict[str, Any]:

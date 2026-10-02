@@ -98,8 +98,28 @@ class ArchitectureTests(unittest.TestCase):
             result.blockers, ["no_explicit_native_support_evidence:aarch64"]
         )
 
-    def test_other_root_builds_do_not_request_cmake_probe(self):
-        for marker in ("meson.build", "configure.ac"):
+    def test_root_meson_requests_real_native_probe(self):
+        repo = RepoSnapshot(
+            full_name="org/parser",
+            html_url="https://github.com/org/parser",
+            default_branch="main",
+            head_sha="a" * 40,
+            paths=["meson.build", "src/parser.cc"],
+        )
+        result = assess_architecture(
+            repo,
+            {
+                "mode": "native_only",
+                "host_arch": "arm64",
+                "require_explicit_support": True,
+                "allow_portable_native_probe": True,
+            },
+        )
+        self.assertFalse(result.compatible)
+        self.assertEqual(result.blockers, ["native_build_probe_required:aarch64"])
+
+    def test_other_root_builds_do_not_request_native_probe(self):
+        for marker in ("configure.ac",):
             with self.subTest(marker=marker):
                 repo = RepoSnapshot(
                     full_name="org/parser",

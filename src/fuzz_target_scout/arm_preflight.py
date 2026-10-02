@@ -271,6 +271,195 @@ PREFLIGHT_VERSION = hashlib.sha256(
     (DOCKERFILE + "\n" + BUILD_AND_SMOKE).encode("utf-8")
 ).hexdigest()[:16]
 IMAGE_TAG = f"fts-arm-preflight:{PREFLIGHT_VERSION}"
+MESON_DOCKERFILE = """FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang meson ninja-build build-essential pkg-config python3 git ca-certificates libjsoncpp-dev libgtest-dev libgmock-dev && rm -rf /var/lib/apt/lists/*
+"""
+
+# Meson introspection binds the selected test command to a C/C++ executable
+# target and a real compile command. A script or unrelated prebuilt ELF cannot
+# satisfy the native proof.
+SELECT_MESON_NATIVE_TEST = r"""import json
+import re
+import sys
+from pathlib import Path
+
+SOURCE_SUFFIXES = {'.c', '.cc', '.cpp', '.cxx', '.c++'}
+
+
+def resolved(base, raw):
+    path = Path(raw)
+    return (path if path.is_absolute() else base / path).resolve()
+
+
+def within(root, path):
+    try:
+        path.relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def select_meson_native_test(build, source):
+    commands = json.loads((build / 'compile_commands.json').read_text())
+    compiled = {
+        resolved(Path(item['directory']), item['file'])
+        for item in commands
+        if isinstance(item, dict)
+        and isinstance(item.get('directory'), str)
+        and isinstance(item.get('file'), str)
+        and Path(item['file']).suffix.casefold() in SOURCE_SUFFIXES
+    }
+    if not compiled:
+        raise ValueError('no C/C++ compile commands')
+    info = build / 'meson-info'
+    targets = json.loads((info / 'intro-targets.json').read_text())
+    tests = json.loads((info / 'intro-tests.json').read_text())
+    executable_targets = {}
+    for target in targets:
+        if not isinstance(target, dict) or target.get('type') != 'executable':
+            continue
+        source_paths = {
+            resolved(source, raw)
+            for group in target.get('target_sources', [])
+            if isinstance(group, dict)
+            and group.get('language') in {'c', 'cpp', 'c++', 'cxx'}
+            for raw in group.get('sources', [])
+            if isinstance(raw, str) and Path(raw).suffix.casefold() in SOURCE_SUFFIXES
+        }
+        if not any(within(source, path) for path in source_paths & compiled):
+            continue
+        filenames = target.get('filename') or []
+        if isinstance(filenames, str):
+            filenames = [filenames]
+        for raw in filenames:
+            if not isinstance(raw, str):
+                continue
+            artifact = resolved(build, raw)
+            if not within(build, artifact):
+                continue
+            relative = artifact.relative_to(build.resolve()).as_posix()
+            if not re.fullmatch(r'[A-Za-z0-9_./+-]{1,240}', relative):
+                continue
+            executable_targets[artifact] = relative
+    eligible = []
+    for test in tests:
+        if not isinstance(test, dict) or test.get('protocol', 'exitcode') != 'exitcode':
+            continue
+        command = test.get('cmd') or []
+        if not isinstance(command, list) or not command or not isinstance(command[0], str):
+            continue
+        artifact = resolved(build, command[0])
+        target = executable_targets.get(artifact)
+        if target is None:
+            continue
+        if len(command) > 64 or any(not isinstance(arg, str) or len(arg) > 4096 for arg in command):
+            continue
+        name = str(test.get('name') or '')
+        eligible.append((len(command), len(target), name, {
+            'artifact': str(artifact), 'target': target,
+            'command': command, 'workdir': test.get('workdir'),
+            'env': test.get('env') or {},
+        }))
+    if not eligible:
+        raise ValueError('no Meson test backed by a compiled C/C++ executable')
+    return sorted(eligible, key=lambda item: item[:3])[0][3]
+
+
+if __name__ == '__main__':
+    try:
+        selected = select_meson_native_test(Path(sys.argv[1]), Path(sys.argv[2]))
+        Path(sys.argv[3]).write_text(json.dumps(selected))
+    except (OSError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(f'native Meson test selection failed: {exc}')
+"""
+
+VERIFY_MESON_NATIVE_TEST = r"""import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def verify_meson_native_test(build, source, selection_path):
+    selection = json.loads(selection_path.read_text())
+    artifact = Path(selection['artifact']).resolve(strict=True)
+    try:
+        artifact.relative_to(build.resolve())
+    except ValueError:
+        raise ValueError('test executable escapes build directory')
+    if not artifact.is_file() or not os.access(artifact, os.X_OK):
+        raise ValueError('test executable is missing')
+    with artifact.open('rb') as binary:
+        header = binary.read(20)
+    if len(header) < 20 or header[:4] != b'\x7fELF':
+        raise ValueError('test executable is not ELF')
+    endian = {1: 'little', 2: 'big'}.get(header[5])
+    if endian is None or int.from_bytes(header[18:20], endian) != 183:
+        raise ValueError('test executable is not AArch64')
+    command = selection['command']
+    if not isinstance(command, list) or not command or Path(command[0]).resolve() != artifact:
+        raise ValueError('test command differs from selected executable')
+    workdir = selection.get('workdir') or str(build)
+    cwd = Path(workdir).resolve(strict=True)
+    if not any(cwd == root.resolve() or root.resolve() in cwd.parents for root in (build, source)):
+        raise ValueError('test working directory is outside source and build')
+    extra_env = selection.get('env') or {}
+    if not isinstance(extra_env, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in extra_env.items()
+    ):
+        raise ValueError('invalid Meson test environment')
+    environment = os.environ.copy()
+    environment.update(extra_env)
+    result = subprocess.run(
+        command, cwd=cwd, env=environment,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    print((result.stdout + result.stderr)[-8192:])
+    if result.returncode != 0:
+        raise ValueError('selected native Meson test did not pass')
+
+
+if __name__ == '__main__':
+    try:
+        verify_meson_native_test(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))
+    except (OSError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit(f'native Meson test smoke failed: {exc}')
+"""
+
+MESON_BUILD_AND_SMOKE = (
+    """stage=configure
+trap 'code=$?; if [ "$code" -ne 0 ]; then printf "FTS_ARM_PREFLIGHT_FAILED_STAGE:%s:%s\\n" "$stage" "$code" >&2; fi' EXIT
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
+CC=clang CXX=clang++ meson setup /work/build /src --backend=ninja --default-library=static --buildtype=release --wrap-mode=nodownload
+stage=select_native_test
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
+cat > /work/select_meson_native_test.py <<'PY'
+"""
+    + SELECT_MESON_NATIVE_TEST
+    + """PY
+python3 /work/select_meson_native_test.py /work/build /src /work/selection.json
+target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
+stage=build
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
+ninja -C /work/build "$target"
+stage=smoke
+printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
+cat > /work/verify_meson_native_test.py <<'PY'
+"""
+    + VERIFY_MESON_NATIVE_TEST
+    + """PY
+python3 /work/verify_meson_native_test.py /work/build /src /work/selection.json
+printf 'FTS_ARM_PREFLIGHT_OK\\n'
+"""
+)
+
+MESON_PREFLIGHT_VERSION = hashlib.sha256(
+    (MESON_DOCKERFILE + "\n" + MESON_BUILD_AND_SMOKE).encode("utf-8")
+).hexdigest()[:16]
+MESON_IMAGE_TAG = f"fts-arm-meson-preflight:{MESON_PREFLIGHT_VERSION}"
+
+
 REPOSITORY_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
 COMMIT = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -329,6 +518,8 @@ def _failure_evidence(output: str, returncode: int) -> str:
     elif stage == "select_native_test":
         if "no c/c++ compile commands" in normalized:
             kind = "no_native_compile_commands"
+        elif "no meson test backed by a compiled c/c++ executable" in normalized:
+            kind = "no_native_meson_test_target"
         elif "cmake file api reply is missing" in normalized or "cmake codemodel is missing" in normalized:
             kind = "missing_cmake_build_metadata"
         elif "no ctest executable backed by a c/c++ cmake target" in normalized:
@@ -351,6 +542,8 @@ def _failure_evidence(output: str, returncode: int) -> str:
             kind = "test_executable_missing"
         elif "timeout" in normalized or "timed out" in normalized:
             kind = "ctest_timeout"
+        elif "selected native meson test did not pass" in normalized:
+            kind = "meson_test_failed"
         elif _CTEST_FAILURE_COUNTS.search(output) or "selected native ctest did not pass" in normalized:
             kind = "ctest_failed"
         else:
@@ -451,10 +644,26 @@ class ArmPreflight:
                 ).stdout.strip()
                 if actual.casefold() != repo.head_sha.casefold():
                     raise _StepFailure("checkout_mismatch")
-                build_file = checkout / "CMakeLists.txt"
-                if not build_file.is_file() or build_file.is_symlink():
+                cmake_file = checkout / "CMakeLists.txt"
+                meson_file = checkout / "meson.build"
+                if cmake_file.is_file() and not cmake_file.is_symlink():
+                    build_system = "cmake"
+                    image_tag = IMAGE_TAG
+                    dockerfile = DOCKERFILE
+                    build_and_smoke = BUILD_AND_SMOKE
+                    version = PREFLIGHT_VERSION
+                elif meson_file.is_file() and not meson_file.is_symlink():
+                    build_system = "meson"
+                    image_tag = MESON_IMAGE_TAG
+                    dockerfile = MESON_DOCKERFILE
+                    build_and_smoke = MESON_BUILD_AND_SMOKE
+                    version = MESON_PREFLIGHT_VERSION
+                else:
                     raise _StepFailure("no_root_cmake_build")
-                self._ensure_builder(root, deadline, environment)
+                self._ensure_builder(
+                    root, deadline, environment,
+                    image_tag=image_tag, dockerfile=dockerfile,
+                )
                 container_name = "fts-arm-probe-" + uuid.uuid4().hex[:16]
                 command = [
                     "docker", "run", "--rm", "--name", container_name,
@@ -466,7 +675,7 @@ class ArmPreflight:
                     "--tmpfs", "/work:rw,exec,nosuid,size=1024m,uid=65534,gid=65534",
                     "--mount", f"type=bind,source={checkout},target=/src,readonly",
                     "--workdir", "/work", "--env", "HOME=/work",
-                    IMAGE_TAG, "/bin/sh", "-ec", BUILD_AND_SMOKE,
+                    image_tag, "/bin/sh", "-ec", build_and_smoke,
                 ]
                 try:
                     result = self._run(
@@ -491,25 +700,29 @@ class ArmPreflight:
                 return ArmPreflightResult(False, "preflight_unavailable_or_timed_out")
         return ArmPreflightResult(
             True,
-            "native_arm_build_and_ctest_passed",
-            f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:{repo.head_sha.lower()}",
+            f"native_arm_build_and_{'ctest' if build_system == 'cmake' else 'meson_test'}_passed",
+            f"native_arm_preflight:{version}:{build_system}_build_"
+            f"{'ctest' if build_system == 'cmake' else 'meson_test'}:{repo.head_sha.lower()}",
         )
 
-    def _ensure_builder(self, root: Path, deadline: float, environment: dict[str, str]) -> None:
+    def _ensure_builder(
+        self, root: Path, deadline: float, environment: dict[str, str],
+        *, image_tag: str = IMAGE_TAG, dockerfile: str = DOCKERFILE,
+    ) -> None:
         inspected = self._try_run(
-            ["docker", "image", "inspect", "--format", "{{.Architecture}}", IMAGE_TAG],
+            ["docker", "image", "inspect", "--format", "{{.Architecture}}", image_tag],
             deadline, environment,
         )
         if inspected is None:
             context = root / "builder-context"
             context.mkdir()
-            (context / "Dockerfile").write_text(DOCKERFILE, encoding="utf-8")
+            (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
             self._run(
-                ["docker", "build", "--pull", "--tag", IMAGE_TAG, str(context)],
+                ["docker", "build", "--pull", "--tag", image_tag, str(context)],
                 deadline, environment, "builder_unavailable",
             )
             inspected = self._try_run(
-                ["docker", "image", "inspect", "--format", "{{.Architecture}}", IMAGE_TAG],
+                ["docker", "image", "inspect", "--format", "{{.Architecture}}", image_tag],
                 deadline, environment,
             )
         if inspected is None or normalize_architecture(inspected.stdout.strip()) != "aarch64":
