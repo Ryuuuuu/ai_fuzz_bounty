@@ -2918,8 +2918,7 @@ class PipelineRunner:
         if resource_limit_restart:
             accounted_seconds = elapsed
         elif log_limit_error or crashes:
-            # A finding can stop a checkpoint early. Count only time actually fuzzed
-            # so triage and automatic resume do not shorten the campaign budget.
+            # An early finding or log limit accounts only time actually fuzzed.
             accounted_seconds = min(float(seconds), max(0.001, elapsed))
         else:
             accounted_seconds = float(seconds)
@@ -3322,6 +3321,14 @@ class PipelineRunner:
             )
             deadline = time.monotonic() + timeout
             while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+                    raise PipelineInterrupted("command stopped by operator")
                 guard_reason = log_guard() if log_guard is not None else None
                 if guard_reason:
                     self._remove_container(guard_container_name)
@@ -3332,14 +3339,6 @@ class PipelineRunner:
                         process.kill()
                         process.wait(timeout=10)
                     raise FuzzLogLimitExceeded(guard_reason)
-                if cancel_event is not None and cancel_event.is_set():
-                    process.terminate()
-                    try:
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=10)
-                    raise PipelineInterrupted("command stopped by operator")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     process.terminate()
