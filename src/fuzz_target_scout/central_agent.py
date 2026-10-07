@@ -454,6 +454,7 @@ class CentralAgent:
                 raise PipelineError("another central fuzz agent is already running") from exc
             self.state.setdefault("started_at", utc_now())
             self.state["status"] = "running"
+            self.state.pop("paused_reason", None)
             self._save_state()
             try:
                 if once:
@@ -904,26 +905,66 @@ class CentralAgent:
         }
         evidence = self._sanitize(evidence)
         usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
+        review_error: str | None = None
         try:
             with self.ai_lock:
                 review, usage = self.reviewer.cycle(evidence)
         except PipelineError as exc:
+            detail = str(exc).casefold()
+            if "exceeded" in detail and "seconds" in detail:
+                review_error = "timeout"
+            elif "invalid json" in detail or "non-object" in detail:
+                review_error = "invalid_output"
+            elif "was not found" in detail:
+                review_error = "unavailable"
+            else:
+                review_error = "review_failed"
+            # A failed AI review is an operational outage, not an instruction to
+            # pause the campaign. The worker's authorization checks still apply
+            # before every fuzz run. Retry only with fresh evidence after the
+            # next batch; a refusal is not a reason to re-prompt immediately.
+            fallback_outcomes = {
+                item.job_id: (
+                    "limited"
+                    if item.status == "interrupted"
+                    and item.error.casefold() in GRACEFUL_INTERRUPTION_ERRORS
+                    else "failed" if item.status in PROBLEM_STATUSES else "limited"
+                )
+                for item in results
+            }
             review = {
-                "summary": f"중앙 AI 종료 검토 실패: {str(exc)[:500]}",
-                "campaign_action": "pause",
+                "summary": "중앙 AI 종료 검토를 수행할 수 없어 수동 검토로 기록했습니다. 다음 배치에서 다시 시도합니다.",
+                "campaign_action": "continue",
                 "resource_profile": "conservative",
                 "jobs": [
                     {
                         "job_id": job_id,
-                        "outcome": "failed",
+                        "outcome": fallback_outcomes[job_id],
                         "improvement": "manual_review",
                         "rationale": "AI 종료 검토 결과를 검증할 수 없습니다.",
-                        "problems": [str(exc)[:500]],
+                        "problems": ["중앙 AI 검토 응답을 확인할 수 없습니다."],
                         "recommended_changes": ["Codex 상태와 구조화 출력 스키마를 확인합니다."],
                     }
                     for job_id in job_ids
                 ],
             }
+            if not self.state.get("cycle_review_unavailable"):
+                self.state.setdefault("notification_digests", {}).pop(
+                    "cycle_review_recovered", None
+                )
+            self.state["cycle_review_unavailable"] = True
+            self._notify(
+                "cycle_review_unavailable",
+                "⚠️ 중앙 AI 종료 검토가 실패했습니다. 기존 정책 검사를 유지하며 다음 배치에서 새 근거로 재시도합니다.",
+            )
+        if review_error is None and self.state.pop("cycle_review_unavailable", False):
+            self.state.setdefault("notification_digests", {}).pop(
+                "cycle_review_unavailable", None
+            )
+            self._notify(
+                "cycle_review_recovered",
+                "✅ 중앙 AI 종료 검토가 다시 정상 작동합니다.",
+            )
         known = set(job_ids)
         review["jobs"] = [
             item
@@ -937,6 +978,8 @@ class CentralAgent:
             "review": review,
             "ai_usage": usage,
         }
+        if review_error is not None:
+            record["review_error"] = review_error
         self._write_decision("cycle", record)
         for job_id in job_ids:
             item = next(

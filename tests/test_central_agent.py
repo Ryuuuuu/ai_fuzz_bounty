@@ -20,11 +20,197 @@ from fuzz_target_scout.central_agent import (
     _health_job_view,
 )
 from fuzz_target_scout.config import load_config
+from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.pipeline_worker import PipelineWorker, WorkerResult
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 
 
 class CentralAgentTests(unittest.TestCase):
+    def test_cycle_review_failure_continues_without_ai_improvement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            job_id = "org-target-aaaaaaaaaaaa"
+            completed_id = "org-complete-bbbbbbbbbbbb"
+            agent._cycle_job_evidence = lambda current: {"job_id": current}
+            results = [
+                WorkerResult(job_id, "interrupted", "fuzzing", "fuzz"),
+                WorkerResult(completed_id, "exhausted", "complete", "fuzz"),
+            ]
+            allocation = ResourceAllocation(
+                1, 1, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+
+            with patch.object(
+                agent.reviewer, "cycle", side_effect=PipelineError("review refused")
+            ) as cycle, patch.object(agent, "_notify") as notify:
+                review = agent._review_cycle(results, allocation)
+
+            cycle.assert_called_once()
+            notify.assert_called_once()
+            self.assertEqual(notify.call_args.args[0], "cycle_review_unavailable")
+            self.assertEqual(review["campaign_action"], "continue")
+            self.assertEqual(review["resource_profile"], "conservative")
+            self.assertEqual(
+                {item["job_id"]: item["outcome"] for item in review["jobs"]},
+                {job_id: "failed", completed_id: "limited"},
+            )
+            self.assertTrue(all(
+                item["improvement"] == "manual_review" for item in review["jobs"]
+            ))
+            self.assertEqual(agent._apply_cycle_improvements(review, results), [])
+            self.assertTrue(agent.state["cycle_review_unavailable"])
+            record = json.loads(next((root / "agent" / "decisions").glob("*.json")).read_text())
+            self.assertEqual(record["review_error"], "review_failed")
+            self.assertNotIn("review refused", json.dumps(record))
+
+    def test_cycle_review_retries_on_next_batch_and_preserves_explicit_pause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            job_id = "org-target-aaaaaaaaaaaa"
+            agent._cycle_job_evidence = lambda _job_id: {"job_id": job_id}
+            result = WorkerResult(job_id, "exhausted", "complete", "fuzz")
+            allocation = ResourceAllocation(
+                1, 1, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            explicit_pause = {
+                "summary": "Systemic evidence problem",
+                "campaign_action": "pause",
+                "resource_profile": "conservative",
+                "jobs": [],
+            }
+
+            with patch.object(
+                agent.reviewer, "cycle",
+                side_effect=[PipelineError("review unavailable"), (explicit_pause, {})],
+            ) as cycle, patch.object(agent, "_notify") as notify:
+                first = agent._review_cycle([result], allocation)
+                second = agent._review_cycle([result], allocation)
+
+            self.assertEqual(first["campaign_action"], "continue")
+            self.assertEqual(second["campaign_action"], "pause")
+            self.assertEqual(cycle.call_count, 2)
+            self.assertEqual(
+                [call.args[0] for call in notify.call_args_list],
+                ["cycle_review_unavailable", "cycle_review_recovered"],
+            )
+            self.assertNotIn("cycle_review_unavailable", agent.state)
+
+    def test_cycle_review_alerts_again_after_recovery_and_recurrence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            agent._cycle_job_evidence = lambda current: {"job_id": current}
+            result = WorkerResult("org-target-aaaaaaaaaaaa", "exhausted", "complete", "fuzz")
+            allocation = ResourceAllocation(
+                1, 1, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            valid_review = {
+                "summary": "review complete",
+                "campaign_action": "continue",
+                "resource_profile": "balanced",
+                "jobs": [],
+            }
+            responses = [
+                PipelineError("first refusal"),
+                PipelineError("same incident"),
+                (valid_review, {}),
+                PipelineError("new incident"),
+                (valid_review, {}),
+            ]
+
+            with patch.object(agent.reviewer, "cycle", side_effect=responses), patch.object(
+                agent.notifier, "send", return_value=(True, "sent")
+            ) as send:
+                for _ in responses:
+                    agent._review_cycle([result], allocation)
+
+            self.assertEqual(send.call_count, 4)
+            records = [
+                json.loads(line)
+                for line in (root / "agent" / "notifications.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(
+                [record["key"] for record in records],
+                [
+                    "cycle_review_unavailable",
+                    "cycle_review_recovered",
+                    "cycle_review_unavailable",
+                    "cycle_review_recovered",
+                ],
+            )
+
+    def test_restart_clears_old_pause_reason_but_new_pause_is_kept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            agent.state["paused_reason"] = "old pause"
+            agent.monitor = lambda _reason: {}
+
+            agent.run(once=True, discovery=False)
+            self.assertNotIn("paused_reason", agent.state)
+
+            allocation = ResourceAllocation(
+                1, 1, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            agent._runnable_jobs = lambda: [{"job_id": "org-target-aaaaaaaaaaaa"}]
+            agent._choose_capacity = lambda _count: (allocation, {})
+            agent._run_monitored_batch = lambda _worker, _jobs, _capacity: [
+                WorkerResult("org-target-aaaaaaaaaaaa", "exhausted", "complete", "fuzz")
+            ]
+            agent._review_cycle = lambda _results, _allocation: {
+                "campaign_action": "pause",
+                "summary": "new pause",
+                "jobs": [],
+            }
+            agent._apply_cycle_improvements = lambda _review, _results: []
+
+            class FakeWorker:
+                _non_fuzz_lock = None
+
+            with patch(
+                "fuzz_target_scout.central_agent.PipelineWorker",
+                return_value=FakeWorker(),
+            ), patch.object(agent, "_notify"):
+                result = agent.run(max_batches=1, discovery=False)
+
+            self.assertEqual(result["status"], "paused")
+            self.assertEqual(agent.state["paused_reason"], "new pause")
+
     def test_cycle_evidence_explains_low_yield_early_stop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

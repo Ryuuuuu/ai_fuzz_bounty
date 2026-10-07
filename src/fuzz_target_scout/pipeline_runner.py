@@ -65,6 +65,72 @@ from .yield_policy import evaluate_campaign_yield
 
 
 Progress = Callable[[str], None]
+WORKER_LOG_TAIL_BYTES = 4 * 1024 * 1024
+MAX_LOG_LINE_CHARS = 64 * 1024
+FUZZ_LOG_LIMIT_BYTES = 1024 * 1024 * 1024
+FUZZ_DISK_FREE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
+
+
+class FuzzLogLimitExceeded(PipelineError):
+    """A fuzz session produced too much output to continue safely."""
+
+
+def _fuzz_log_limit_reason(
+    runtime_out: Path, log_path: Path, started_ns: int
+) -> str | None:
+    try:
+        total = log_path.stat().st_size
+        for worker_log in runtime_out.glob("fuzz-*.log"):
+            if worker_log.is_symlink() or not worker_log.is_file():
+                continue
+            status = worker_log.stat()
+            if status.st_mtime_ns >= started_ns:
+                total += status.st_size
+        if total >= FUZZ_LOG_LIMIT_BYTES:
+            return (
+                f"fuzz logs used {total} bytes, exceeding the "
+                f"{FUZZ_LOG_LIMIT_BYTES} byte session limit"
+            )
+        free = shutil.disk_usage(runtime_out).free
+        if free < FUZZ_DISK_FREE_RESERVE_BYTES:
+            return (
+                f"fuzz host has {free} free bytes, below the "
+                f"{FUZZ_DISK_FREE_RESERVE_BYTES} byte disk reserve"
+            )
+    except OSError:
+        return "could not verify fuzz log usage and available disk space"
+    return None
+
+
+def _bounded_log_lines(path: Path):
+    """Iterate log lines without retaining a whole oversized line in memory."""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        while line := handle.readline(MAX_LOG_LINE_CHARS):
+            yield line
+            if line.endswith("\n") or len(line) < MAX_LOG_LINE_CHARS:
+                continue
+            # Ignore the rest of an unusually long line; relevant log records
+            # fit within the prefix and reading it all can exhaust memory.
+            while remainder := handle.readline(MAX_LOG_LINE_CHARS):
+                if remainder.endswith("\n"):
+                    break
+
+
+def _copy_log_tail(source: Path, destination: Path) -> None:
+    """Retain a bounded diagnostic tail instead of duplicating multi-GB logs."""
+    with source.open("rb") as input_log:
+        size = input_log.seek(0, os.SEEK_END)
+        remaining = min(size, WORKER_LOG_TAIL_BYTES)
+        input_log.seek(size - remaining)
+        with destination.open("wb") as output_log:
+            while remaining:
+                chunk = input_log.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                output_log.write(chunk)
+                remaining -= len(chunk)
+
+
 JOB_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{2,160}$")
 GITHUB_REPOSITORY_PATTERN = re.compile(
     r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$"
@@ -1126,6 +1192,21 @@ class PipelineRunner:
             return self._finish_fuzz_state(
                 state_path, state, result, completed_seconds
             )
+        if result.get("resource_limit") == "excessive_log_output":
+            state["status"] = "manual_review"
+            state["bounded_exhaustion"] = "excessive_log_output"
+            state["last_error"] = str(
+                result.get("log_limit_reason") or "fuzz log output limit reached"
+            )[:2000]
+            attempts = state.setdefault("attempts", {})
+            attempts["worker_failures"] = max(
+                1, int(attempts.get("worker_failures", 0))
+            )
+            state["fuzz_completed_seconds"] = round(completed_seconds, 3)
+            state["updated_at"] = utc_now()
+            self._write_json(state_path, state)
+            result["state"] = state
+            return result
         low_yield = self._finish_low_yield_campaign(
             job_dir, job, state_path, state, progress, result, completed_seconds
         )
@@ -2774,12 +2855,26 @@ class PipelineRunner:
         result_session_id = session_id or f"{label}-{time.time_ns()}"
         safe_session_id = re.sub(r"[^a-zA-Z0-9_.-]", "-", result_session_id)
         log_path = job_dir / "logs" / f"{label}-{fuzzer}-{safe_session_id}.log"
-        exit_code = self._run_streaming(
-            command,
-            log_path,
-            timeout=seconds + 600,
-            allow_failure=True,
-        )
+        log_limit_error: FuzzLogLimitExceeded | None = None
+        guard_started_ns = time.time_ns()
+        try:
+            exit_code = self._run_streaming(
+                command,
+                log_path,
+                timeout=seconds + 600,
+                allow_failure=True,
+                log_guard=(
+                    lambda: _fuzz_log_limit_reason(
+                        runtime_out, log_path, guard_started_ns
+                    )
+                    if label == "fuzz"
+                    else None
+                ),
+                guard_container_name=container_name,
+            )
+        except FuzzLogLimitExceeded as exc:
+            log_limit_error = exc
+            exit_code = -1
         cancel_event = getattr(self, "cancel_event", None)
         if cancel_event is not None and cancel_event.is_set():
             raise PipelineInterrupted("fuzzing stopped by operator")
@@ -2822,7 +2917,7 @@ class PipelineRunner:
             )
         if resource_limit_restart:
             accounted_seconds = elapsed
-        elif crashes:
+        elif log_limit_error or crashes:
             # A finding can stop a checkpoint early. Count only time actually fuzzed
             # so triage and automatic resume do not shorten the campaign budget.
             accounted_seconds = min(float(seconds), max(0.001, elapsed))
@@ -2845,15 +2940,22 @@ class PipelineRunner:
             "sanitizer": "address",
             "network": "none",
             "status": (
-                "resource_limit_restart"
+                "sanitizer_finding"
+                if crashes
+                else "resource_limit_required"
+                if log_limit_error
+                else "resource_limit_restart"
                 if resource_limit_restart
-                else "sanitizer_finding" if crashes else "passed"
+                else "passed"
             ),
             "exit_code": exit_code,
             "accounted_seconds": accounted_seconds,
             "resource_limit": (
-                "libfuzzer_rss" if resource_limit_restart else None
+                "excessive_log_output"
+                if log_limit_error
+                else "libfuzzer_rss" if resource_limit_restart else None
             ),
+            "log_limit_reason": str(log_limit_error) if log_limit_error else None,
             "resource_artifacts": resource_artifacts,
             "dictionary_used": dictionary_used,
             "adaptive_seed_files_added": seeded,
@@ -2873,7 +2975,12 @@ class PipelineRunner:
             "runtime_output_directory": str(runtime_out),
         }
         self._write_json(job_dir / "artifacts" / f"{label}-run.json", result)
-        if exit_code != 0 and not crashes and not resource_limit_restart:
+        if (
+            exit_code != 0
+            and not crashes
+            and not resource_limit_restart
+            and not log_limit_error
+        ):
             raise PipelineError(
                 f"fuzzer exited with {exit_code} without a sanitizer artifact; see {log_path}"
             )
@@ -2923,40 +3030,50 @@ class PipelineRunner:
         runtime_out: Path, logs_dir: Path, label: str
     ) -> list[dict[str, int | str]]:
         records: list[dict[str, int | str]] = []
-        pattern = re.compile(r"^stat::([a-z_]+):\s+(\d+)", re.MULTILINE)
+        pattern = re.compile(r"^stat::([a-z_]+):\s+(\d+)")
         coverage_pattern = re.compile(r"\bcov:\s*(\d+)\s+ft:\s*(\d+)")
         for index, source in enumerate(sorted(runtime_out.rglob("fuzz-*.log"))):
             if source.is_symlink() or not source.is_file():
                 continue
-            text = source.read_text(encoding="utf-8", errors="replace")
             destination = logs_dir / f"{label}-worker-{index}.log"
-            shutil.copy2(source, destination)
             record: dict[str, int | str] = {"log_path": str(destination)}
-            for name, value in pattern.findall(text):
-                record[name] = int(value)
-            coverage = coverage_pattern.findall(text)
-            if coverage:
-                record["coverage_edges"] = max(int(value[0]) for value in coverage)
-                record["coverage_features"] = max(int(value[1]) for value in coverage)
+            for line in _bounded_log_lines(source):
+                stat_match = pattern.match(line)
+                if stat_match:
+                    record[stat_match[1]] = int(stat_match[2])
+                for coverage_match in coverage_pattern.finditer(line):
+                    record["coverage_edges"] = max(
+                        int(record.get("coverage_edges", 0)),
+                        int(coverage_match[1]),
+                    )
+                    record["coverage_features"] = max(
+                        int(record.get("coverage_features", 0)),
+                        int(coverage_match[2]),
+                    )
+            _copy_log_tail(source, destination)
             records.append(record)
         return records
 
     @staticmethod
     def _sanitizer_summaries(log_path: Path) -> list[str]:
-        text = log_path.read_text(encoding="utf-8", errors="replace")
-        findings: list[str] = []
-        patterns = (
-            re.compile(r"(?m)^==\d+==ERROR: [^\r\n]+"),
-            re.compile(r"(?m)^SUMMARY: [^\r\n]+"),
-        )
-        for pattern in patterns:
-            for match in pattern.findall(text):
-                normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", match)[:500]
-                if normalized not in findings:
-                    findings.append(normalized)
-                if len(findings) >= 8:
-                    return findings
-        return findings
+        errors: list[str] = []
+        summaries: list[str] = []
+        error_pattern = re.compile(r"^==\d+==ERROR: [^\r\n]+")
+        summary_pattern = re.compile(r"^SUMMARY: [^\r\n]+")
+        for line in _bounded_log_lines(log_path):
+            error = error_pattern.match(line)
+            summary = summary_pattern.match(line)
+            if error is not None:
+                normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", error[0])[:500]
+                if normalized not in errors and len(errors) < 8:
+                    errors.append(normalized)
+            elif summary is not None:
+                normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", summary[0])[:500]
+                if normalized not in summaries and len(summaries) < 8:
+                    summaries.append(normalized)
+            if len(errors) == 8:
+                break
+        return (errors + [value for value in summaries if value not in errors])[:8]
 
     def _smoke_fuzzer(self, job_dir: Path, job: dict[str, Any]) -> None:
         del job
@@ -3186,6 +3303,8 @@ class PipelineRunner:
         timeout: int,
         *,
         allow_failure: bool = False,
+        log_guard: Callable[[], str | None] | None = None,
+        guard_container_name: str = "",
     ) -> int:
         cancel_event = getattr(self, "cancel_event", None)
         if cancel_event is not None and cancel_event.is_set():
@@ -3203,6 +3322,16 @@ class PipelineRunner:
             )
             deadline = time.monotonic() + timeout
             while True:
+                guard_reason = log_guard() if log_guard is not None else None
+                if guard_reason:
+                    self._remove_container(guard_container_name)
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+                    raise FuzzLogLimitExceeded(guard_reason)
                 if cancel_event is not None and cancel_event.is_set():
                     process.terminate()
                     try:

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import tracemalloc
 import unittest
 import zipfile
 from datetime import date
@@ -11,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from fuzz_target_scout.central_agent import CentralAgent
 from fuzz_target_scout.config import DEFAULTS
 from fuzz_target_scout.coverage_analysis import (
     analysis_record,
@@ -28,7 +30,9 @@ from fuzz_target_scout.pipeline import (
     UnsupportedIntegrationError,
 )
 from fuzz_target_scout.pipeline_runner import (
+    FuzzLogLimitExceeded,
     PipelineRunner,
+    _fuzz_log_limit_reason,
     _adapt_allocation_for_resource_limits,
     _offline_external_dependency_failure,
     _select_smoke_target,
@@ -951,21 +955,68 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertTrue((logs / "probe-worker-0.log").is_file())
             self.assertFalse((logs / "probe-worker-1.log").exists())
 
+    def test_large_worker_log_is_streamed_and_archive_is_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            logs = root / "logs"
+            runtime.mkdir()
+            logs.mkdir()
+            source = runtime / "fuzz-0.log"
+            source.write_text(
+                "stat::number_of_executed_units: 123\n"
+                "#1 NEW cov: 51 ft: 77 corp: 1/1Kb\n"
+                + "X" * (4 * 1024 * 1024)
+                + "\n#2 NEW cov: 42 ft: 100 corp: 2/1Kb\n"
+                "stat::average_exec_per_sec: 60\n"
+                "END OF WORKER LOG\n",
+                encoding="utf-8",
+            )
+            with (
+                patch("fuzz_target_scout.pipeline_runner.WORKER_LOG_TAIL_BYTES", 1024),
+                patch.object(Path, "read_text", side_effect=AssertionError("full log read")),
+            ):
+                tracemalloc.start()
+                try:
+                    records = PipelineRunner._collect_worker_stats(runtime, logs, "fuzz")
+                    _, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+            self.assertEqual(records[0]["number_of_executed_units"], 123)
+            self.assertEqual(records[0]["average_exec_per_sec"], 60)
+            self.assertEqual(records[0]["coverage_edges"], 51)
+            self.assertEqual(records[0]["coverage_features"], 100)
+            self.assertLess(peak, 2 * 1024 * 1024)
+            tail = (logs / "fuzz-worker-0.log").read_bytes()
+            self.assertLessEqual(len(tail), 1024)
+            self.assertTrue(tail.endswith(b"END OF WORKER LOG\n"))
+            self.assertNotIn(b"number_of_executed_units", tail)
+
     def test_sanitizer_summaries_are_bounded_and_addresses_normalized(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "probe.log"
             log.write_text(
-                "==12==ERROR: LeakSanitizer: detected memory leaks at 0x123abc\n"
+                "SUMMARY: AddressSanitizer: 72 byte(s) leaked at 0xfeed\n"
+                + "X" * (4 * 1024 * 1024)
+                + "\n==12==ERROR: LeakSanitizer: detected memory leaks at 0x123abc\n"
                 "SUMMARY: AddressSanitizer: 72 byte(s) leaked at 0xfeed\n",
                 encoding="utf-8",
             )
+            with patch.object(Path, "read_text", side_effect=AssertionError("full log read")):
+                tracemalloc.start()
+                try:
+                    summaries = PipelineRunner._sanitizer_summaries(log)
+                    _, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
             self.assertEqual(
-                PipelineRunner._sanitizer_summaries(log),
+                summaries,
                 [
                     "==12==ERROR: LeakSanitizer: detected memory leaks at 0xADDR",
                     "SUMMARY: AddressSanitizer: 72 byte(s) leaked at 0xADDR",
                 ],
             )
+            self.assertLess(peak, 2 * 1024 * 1024)
 
     def test_quartet_probe_exception_evidence_reaches_review_and_repair(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1997,6 +2048,177 @@ class PipelineRunnerTests(unittest.TestCase):
                 )
 
         self.assertTrue(process.terminated)
+
+    def test_fuzz_log_guard_counts_worker_and_host_logs_and_disk_reserve(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            worker_log = runtime / "fuzz-0.log"
+            worker_log.write_bytes(b"w" * 20)
+            host_log = root / "fuzz.log"
+            host_log.write_bytes(b"h" * 10)
+            started_ns = worker_log.stat().st_mtime_ns - 1
+            with (
+                patch("fuzz_target_scout.pipeline_runner.FUZZ_LOG_LIMIT_BYTES", 30),
+                patch("fuzz_target_scout.pipeline_runner.FUZZ_DISK_FREE_RESERVE_BYTES", 20),
+                patch(
+                    "fuzz_target_scout.pipeline_runner.shutil.disk_usage",
+                    return_value=SimpleNamespace(free=100),
+                ),
+            ):
+                self.assertIn(
+                    "session limit",
+                    _fuzz_log_limit_reason(runtime, host_log, started_ns),
+                )
+            with (
+                patch("fuzz_target_scout.pipeline_runner.FUZZ_LOG_LIMIT_BYTES", 100),
+                patch("fuzz_target_scout.pipeline_runner.FUZZ_DISK_FREE_RESERVE_BYTES", 20),
+                patch(
+                    "fuzz_target_scout.pipeline_runner.shutil.disk_usage",
+                    return_value=SimpleNamespace(free=19),
+                ),
+            ):
+                self.assertIn(
+                    "disk reserve",
+                    _fuzz_log_limit_reason(runtime, host_log, started_ns),
+                )
+
+    def test_streaming_command_stops_container_on_fuzz_log_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = object.__new__(PipelineRunner)
+
+            class FakeProcess:
+                terminated = False
+
+                def terminate(self):
+                    self.terminated = True
+
+                def wait(self, timeout):
+                    if not self.terminated:
+                        raise subprocess.TimeoutExpired("docker", timeout)
+                    return -15
+
+                def kill(self):
+                    raise AssertionError("container removal should finish the process")
+
+            process = FakeProcess()
+            with (
+                patch(
+                    "fuzz_target_scout.pipeline_runner.subprocess.Popen",
+                    return_value=process,
+                ),
+                patch.object(runner, "_remove_container") as remove_container,
+                self.assertRaisesRegex(FuzzLogLimitExceeded, "session limit"),
+            ):
+                runner._run_streaming(
+                    ["docker", "run", "image"],
+                    Path(directory) / "run.log",
+                    timeout=30,
+                    log_guard=lambda: "fuzz log session limit reached",
+                    guard_container_name="fts-test-abc",
+                )
+            remove_container.assert_called_once_with("fts-test-abc")
+            self.assertTrue(process.terminated)
+
+    def test_fuzz_log_limit_requires_review_unless_crash_exists(self):
+        for has_crash in (False, True):
+            with self.subTest(has_crash=has_crash), tempfile.TemporaryDirectory() as directory:
+                job_dir = Path(directory) / "test-job"
+                artifacts = job_dir / "artifacts"
+                output = job_dir / "build-output" / "asan"
+                for candidate in (artifacts, output, job_dir / "logs"):
+                    candidate.mkdir(parents=True)
+                (output / "fuzz_parser").write_bytes(b"fuzzer")
+                (artifacts / "build-manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "oss_fuzz_project": "parser",
+                            "fuzz_targets": ["fuzz_parser"],
+                            "output_directory": str(output),
+                        }
+                    )
+                )
+                (artifacts / "smoke.json").write_text(
+                    json.dumps({"fuzz_target": "fuzz_parser"})
+                )
+                (artifacts / "coverage-plan.json").write_text(
+                    json.dumps({"review": {"selected_fuzz_target": "fuzz_parser"}})
+                )
+                runner = object.__new__(PipelineRunner)
+                runner.pipeline = {
+                    "container_memory_mb": 1024,
+                    "fuzzer_rss_limit_mb": 512,
+                    "input_timeout_seconds": 10,
+                }
+
+                def fake_run(_command, log_path, **_kwargs):
+                    log_path.write_text("SUMMARY: AddressSanitizer: crash\n")
+                    if has_crash:
+                        crash_dir = job_dir / "crashes" / "fuzz_parser"
+                        (crash_dir / "fuzz_parser-crash-abcd").write_bytes(b"input")
+                    raise FuzzLogLimitExceeded("fuzz log session limit reached")
+
+                with (
+                    patch.object(runner, "_run_streaming", side_effect=fake_run),
+                    patch(
+                        "fuzz_target_scout.pipeline_runner.time.monotonic",
+                        side_effect=[0.0, 10.0],
+                    ),
+                ):
+                    result = runner._fuzz_session(
+                        job_dir,
+                        {},
+                        seconds=3600,
+                        workers=1,
+                        label="fuzz",
+                        session_id="log-guard-test",
+                    )
+                self.assertTrue((artifacts / "fuzz-run.json").is_file())
+                state_path = job_dir / "state.json"
+                progress_path = artifacts / "fuzz-progress.json"
+                state = {"stage": "fuzzing", "status": "running", "attempts": {}}
+                progress = {"completed_seconds": 0, "sessions": []}
+                state_path.write_text(json.dumps(state))
+                progress_path.write_text(json.dumps(progress))
+                runner._apply_fuzz_result(
+                    job_dir,
+                    {"budgets": {"fuzz_seconds": 86400}, "route": {}},
+                    state_path,
+                    state,
+                    progress_path,
+                    progress,
+                    result,
+                )
+                saved = json.loads(state_path.read_text())
+                if has_crash:
+                    self.assertEqual(saved["status"], "triage_pending")
+                    self.assertEqual(saved["stage"], "triage")
+                    self.assertEqual(saved["triage_artifact"], "fuzz-run.json")
+                    self.assertEqual(saved["finding_source"], "fuzz_checkpoint")
+                    self.assertNotIn("bounded_exhaustion", saved)
+                else:
+                    self.assertEqual(saved["status"], "manual_review")
+                    self.assertEqual(
+                        saved["bounded_exhaustion"], "excessive_log_output"
+                    )
+                    self.assertGreaterEqual(
+                        saved["attempts"]["worker_failures"], 1
+                    )
+                    agent = object.__new__(CentralAgent)
+                    agent.runs_root = Path(directory)
+                    agent.agent = {
+                        "auto_recover_failures": True,
+                        "max_automatic_recoveries_per_job": 2,
+                    }
+                    recovery = agent._failure_recovery_evidence(
+                        job_dir.name, saved
+                    )
+                    self.assertTrue(recovery["eligible"])
+                    self.assertEqual(
+                        [item["action"] for item in recovery["options"]],
+                        ["skip_target"],
+                    )
 
     def test_afl_banner_runs_only_inside_isolated_container(self):
         completed = subprocess.CompletedProcess(
