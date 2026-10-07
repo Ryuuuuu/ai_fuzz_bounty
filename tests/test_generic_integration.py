@@ -386,6 +386,7 @@ class GenericIntegrationTests(unittest.TestCase):
             (source / "CMakeLists.txt").write_text(
                 "find_package(absl REQUIRED)\n"
                 "find_package(Boost REQUIRED)\n"
+                "find_package(GTest REQUIRED)\n"
                 "find_package(OpenSSL REQUIRED)\n"
                 "find_package(gflags REQUIRED)\n"
                 "set(CPUINFO_SOURCE_DIR ignored)\n"
@@ -398,11 +399,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 "cmake", "ubuntu:24.04", dependencies, source_dependencies
             )
 
-        self.assertEqual(dependencies, ["libboost-dev", "libgflags-dev", "libssl-dev"])
+        self.assertEqual(dependencies, ["libboost-dev", "libgflags-dev", "libgtest-dev", "libssl-dev"])
         self.assertEqual(
             source_dependencies, ["absl", "cpuinfo", "fxdiv", "pthreadpool"]
         )
-        self.assertIn("libboost-dev libgflags-dev libssl-dev git", dockerfile)
+        self.assertIn("libboost-dev libgflags-dev libgtest-dev libssl-dev git", dockerfile)
         self.assertIn("https://github.com/abseil/abseil-cpp.git", dockerfile)
         self.assertIn("d38452e1ee03523a208362186fd42248ff2609f6", dockerfile)
         self.assertIn("https://github.com/pytorch/cpuinfo.git", dockerfile)
@@ -482,6 +483,77 @@ class GenericIntegrationTests(unittest.TestCase):
         )
         self.assertIn("python3-yaml ragel", dockerfile)
         self.assertNotIn("unapproved-tool", dockerfile)
+
+    def test_exact_cmake_gtest_failure_repairs_builder_without_touching_harness(self):
+        error = (
+            "CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:230 (message):\n"
+            "  Could NOT find GTest (missing: GTEST_LIBRARY GTEST_INCLUDE_DIR GTEST_MAIN_LIBRARY)\n"
+        )
+        self.assertEqual(
+            _infer_system_dependencies_from_build_error(error),
+            {"libgtest-dev"},
+        )
+        self.assertEqual(
+            _infer_system_dependencies_from_build_error(
+                "Could NOT find GTest (missing: GTEST_INCLUDE_DIR)"
+            ),
+            set(),
+        )
+        self.assertEqual(
+            _infer_system_dependencies_from_build_error(
+                "Could NOT find Other (missing: GTEST_LIBRARY GTEST_INCLUDE_DIR GTEST_MAIN_LIBRARY)"
+            ),
+            set(),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            artifacts = root / "artifacts"
+            for path in (source, project, artifacts):
+                path.mkdir()
+            harness = (
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const unsigned char*, unsigned long) { return 0; }\n'
+            )
+            (project / "generic_harness.cc").write_text(harness)
+            (project / "build.sh").write_text("#!/bin/sh\n")
+            (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+            record = {
+                "project": "fts-test",
+                "build_system": "cmake",
+                "execution_mode": "native_container",
+                "base_image": "ubuntu:24.04",
+                "candidate": {"file": "src/api.h"},
+                "harness_origin": "codex_oss_fuzz_gen_adapter",
+                "system_dependencies": [],
+                "source_dependencies": [],
+                "repair_attempts": [],
+            }
+            (artifacts / "generic-integration.json").write_text(
+                __import__("json").dumps(record)
+            )
+            with patch(
+                "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter"
+            ) as regenerate:
+                repair = repair_generic_harness(
+                    job_dir=root, source=source, project_dir=project,
+                    pipeline={}, build_error=error, attempt=1,
+                )
+                regenerate.assert_not_called()
+            saved = __import__("json").loads(
+                (artifacts / "generic-integration.json").read_text()
+            )
+            self.assertEqual(
+                (project / "generic_harness.cc").read_text(), harness
+            )
+            self.assertEqual((project / "build.sh").read_text(), "#!/bin/sh\n")
+            self.assertIn("libgtest-dev", (project / "Dockerfile").read_text())
+            self.assertEqual(repair["repair_kind"], "deterministic_system_dependency")
+            self.assertEqual(repair["added_system_dependencies"], ["libgtest-dev"])
+            self.assertTrue(repair["requires_clean_build"])
+            self.assertEqual(saved["system_dependencies"], ["libgtest-dev"])
 
     def test_build_feedback_adds_only_reviewed_system_dependency(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -37,6 +37,7 @@ CMAKE_SYSTEM_DEPENDENCIES = {
     "cli11": ("libcli11-dev",),
     "expat": ("libexpat1-dev",),
     "gflags": ("libgflags-dev",),
+    "gtest": ("libgtest-dev",),
     "libxml2": ("libxml2-dev",),
     "openssl": ("libssl-dev",),
     "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
@@ -872,6 +873,12 @@ def _infer_system_dependencies_from_build_error(build_error: str) -> set[str]:
     dependencies: set[str] = set()
     if "no lua implementation was found" in error:
         dependencies.add("liblua5.4-dev")
+    if re.search(
+        r"\bcould not find gtest\s*\(\s*missing:\s*"
+        r"gtest_library\s+gtest_include_dir\s+gtest_main_library\s*\)",
+        error,
+    ):
+        dependencies.update(CMAKE_SYSTEM_DEPENDENCIES["gtest"])
     for tool in REVIEWED_BUILD_TOOL_PACKAGES - {"python3-yaml"}:
         if re.search(
             rf"\berror:\s+program\s+['\"]?{re.escape(tool)}['\"]?\s+not\s+found",
