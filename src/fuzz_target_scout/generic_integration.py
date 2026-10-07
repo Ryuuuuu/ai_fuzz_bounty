@@ -113,6 +113,26 @@ def detect_build_system(source: Path) -> str:
     raise PipelineError("no supported CMake, Meson, Autotools, or Cargo build was detected")
 
 
+def _has_root_cmake_interface_library(source: Path) -> bool:
+    """Allow archive-free linking only for an explicit root header-only target."""
+    root = source / "CMakeLists.txt"
+    if source.is_symlink() or root.is_symlink() or not root.is_file():
+        return False
+    try:
+        if root.stat().st_size > 250_000:
+            return False
+        text = root.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    text = re.sub(r"#\[(=*)\[.*?\]\1\]", "", text, flags=re.DOTALL)
+    active = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    return bool(re.search(
+        r"(?im)^[ \t]*add_library[ \t]*\([ \t]*"
+        r"[A-Za-z_][A-Za-z0-9_.+-]*[ \t]+INTERFACE[ \t]*\)",
+        active,
+    ))
+
+
 def create_generic_project(
     *,
     job_dir: Path,
@@ -129,6 +149,9 @@ def create_generic_project(
     build_system = detect_build_system(source)
     system_dependencies = _detect_system_dependencies(source, build_system)
     source_dependencies = _detect_source_dependencies(source, build_system)
+    allow_header_only_cmake = (
+        build_system == "cmake" and _has_root_cmake_interface_library(source)
+    )
     project_dir.mkdir(parents=True, exist_ok=False)
     harness, origin, usage, candidate = _obtain_harness(
         job_dir, source, project_name, pipeline, progress,
@@ -157,6 +180,7 @@ def create_generic_project(
         harness_language,
         support_include_dirs,
         source_dependencies,
+        allow_header_only_cmake=allow_header_only_cmake,
     )
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
@@ -182,6 +206,7 @@ def create_generic_project(
         "support_include_dirs": support_include_dirs,
         "system_dependencies": system_dependencies,
         "source_dependencies": source_dependencies,
+        "allow_header_only_cmake": allow_header_only_cmake,
         "ai_usage": usage,
         "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
         "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
@@ -234,6 +259,10 @@ def repair_generic_harness(
     candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin", ""))
     if harness_origin.startswith("existing:"):
+        allow_header_only_cmake = (
+            record.get("build_system") == "cmake"
+            and _has_root_cmake_interface_library(source)
+        )
         discovered_sources, discovered_include_dirs = (
             _candidate_support_dependencies(source, candidate)
         )
@@ -255,6 +284,7 @@ def repair_generic_harness(
             harness_language,
             support_include_dirs,
             tuple(record.get("source_dependencies") or ()),
+            allow_header_only_cmake=allow_header_only_cmake,
         )
         build_path = project_dir / "build.sh"
         build_path.write_text(build_script, encoding="utf-8")
@@ -270,6 +300,7 @@ def repair_generic_harness(
             build_script.encode()
         ).hexdigest()
         record["harness_language"] = harness_language
+        record["allow_header_only_cmake"] = allow_header_only_cmake
         record["support_sources"] = support_sources
         record["support_include_dirs"] = support_include_dirs
         record.setdefault("repair_attempts", []).append(item)
@@ -1131,6 +1162,8 @@ def _build_script(
     harness_language: str = "c++",
     support_include_dirs: list[str] | tuple[str, ...] = (),
     source_dependencies: list[str] | tuple[str, ...] = (),
+    *,
+    allow_header_only_cmake: bool = False,
 ) -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
@@ -1331,7 +1364,7 @@ if (( ${#include_flags[@]} == 1 )); then
   )
 fi
 include_flags+=("-I$WORK/build")
-if (( ${#archives[@]} == 0 )); then
+if (( ${#archives[@]} == 0 && __REQUIRE_STATIC_ARCHIVES__ == 1 )); then
   echo 'generic integration found no static libraries' >&2
   exit 1
 fi
@@ -1343,6 +1376,10 @@ __SUPPORT_COMPILE__
   -Wl,--start-group "${archives[@]}" "${dependency_archives[@]}" -Wl,--end-group \\
   __EXTERNAL_LIBS__ $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
 """
+    link = link.replace(
+        "__REQUIRE_STATIC_ARCHIVES__",
+        "0" if build_system == "cmake" and allow_header_only_cmake else "1",
+    )
     link = link.replace("__EXTERNAL_LIBS__", external_link_flags)
     link = link.replace("__HARNESS_INCLUDE__", harness_include)
     link = link.replace("__SUPPORT_COMPILE__", support_compile)

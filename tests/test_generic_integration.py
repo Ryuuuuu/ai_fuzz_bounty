@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from fuzz_target_scout.generic_integration import (
     _detect_system_dependencies,
     _infer_system_dependencies_from_build_error,
     _find_existing_harness,
+    _has_root_cmake_interface_library,
     _select_public_candidate,
     create_generic_project,
     detect_build_system,
@@ -352,7 +354,7 @@ class GenericIntegrationTests(unittest.TestCase):
 
             script = _build_script("meson")
             start = script.index('include_flags=')
-            end = script.index('if (( ${#archives[@]} == 0 )); then', start)
+            end = script.index('if (( ${#archives[@]} == 0 && 1 == 1 )); then', start)
             snippet = script[start:end] + (
                 'for flag in "${include_flags[@]}"; do echo "$flag"; done'
             )
@@ -532,7 +534,7 @@ class GenericIntegrationTests(unittest.TestCase):
                 "repair_attempts": [],
             }
             (artifacts / "generic-integration.json").write_text(
-                __import__("json").dumps(record)
+                json.dumps(record)
             )
             with patch(
                 "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter"
@@ -542,7 +544,7 @@ class GenericIntegrationTests(unittest.TestCase):
                     pipeline={}, build_error=error, attempt=1,
                 )
                 regenerate.assert_not_called()
-            saved = __import__("json").loads(
+            saved = json.loads(
                 (artifacts / "generic-integration.json").read_text()
             )
             self.assertEqual(
@@ -721,6 +723,127 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("-DBUILD_TESTING=OFF", args)
         self.assertIn("-DBENCHMARK_ENABLE_TESTING=OFF", args)
         self.assertNotIn("-DBENCHMARK_ENABLE_INSTALL=OFF", args)
+
+    def test_interface_library_must_be_declared_in_active_root_cmake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            nested = source / "nested"
+            nested.mkdir()
+            (nested / "CMakeLists.txt").write_text(
+                "add_library(Nested INTERFACE)\n"
+            )
+            root = source / "CMakeLists.txt"
+            root.write_text("add_subdirectory(nested)\n")
+            self.assertFalse(_has_root_cmake_interface_library(source))
+            root.write_text(
+                "# add_library(Commented INTERFACE)\n"
+                "#[[\nadd_library(BlockComment INTERFACE)\n]]\n"
+                "add_library(MyEnum STATIC enum.cc)\n"
+            )
+            self.assertFalse(_has_root_cmake_interface_library(source))
+            root.write_text("add_library(MyEnum INTERFACE)\n")
+            self.assertTrue(_has_root_cmake_interface_library(source))
+            root.unlink()
+            root.symlink_to(nested / "CMakeLists.txt")
+            self.assertFalse(_has_root_cmake_interface_library(source))
+
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash") and shutil.which("g++"),
+        "requires Bash and a C++ compiler",
+    )
+    def test_header_only_cmake_links_without_archives_but_other_builds_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            project = source / "project"
+            work = root / "work"
+            out = root / "out"
+            tools = root / "tools"
+            project.mkdir(parents=True)
+            tools.mkdir()
+            cmake_file = project / "CMakeLists.txt"
+            cmake_file.write_text("add_library(MyEnum INTERFACE)\n")
+            (project / "api.h").write_text(
+                "inline int consume(const unsigned char *data, unsigned long size) "
+                "{ return size && data[0] == 7 ? 0 : 1; }\n"
+            )
+            (source / "generic_harness.cc").write_text(
+                '#include "api.h"\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const unsigned char *data, unsigned long size) '
+                '{ return consume(data, size); }\n'
+                'int main() { unsigned char value = 7; '
+                'return LLVMFuzzerTestOneInput(&value, 1); }\n'
+            )
+            fake_cmake = tools / "cmake"
+            fake_cmake.write_text("#!/bin/sh\nexit 0\n")
+            fake_cmake.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
+                "SRC": str(source), "WORK": str(work), "OUT": str(out),
+                "CC": "gcc", "CXX": "g++", "CFLAGS": "-O0",
+                "CXXFLAGS": "-O0", "LIB_FUZZING_ENGINE": "",
+            }
+            script = source / "build.sh"
+            script.write_text(_build_script(
+                "cmake",
+                allow_header_only_cmake=_has_root_cmake_interface_library(project),
+            ))
+            allowed = subprocess.run(
+                ["bash", str(script)], cwd=project, env=environment,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            fuzzer = out / "generic_fuzzer"
+            self.assertTrue(fuzzer.is_file())
+            self.assertEqual(subprocess.run([str(fuzzer)], timeout=5).returncode, 0)
+
+            cmake_file.write_text("add_library(MyEnum STATIC enum.cc)\n")
+            script.write_text(_build_script(
+                "cmake",
+                allow_header_only_cmake=_has_root_cmake_interface_library(project),
+            ))
+            refused = subprocess.run(
+                ["bash", str(script)], cwd=project, env=environment,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("found no static libraries", refused.stderr)
+            self.assertIn(
+                "&& 1 == 1", _build_script("meson", allow_header_only_cmake=True)
+            )
+
+    def test_generic_project_preserves_interface_link_permission_on_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            artifacts = root / "artifacts"
+            source.mkdir()
+            artifacts.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                "add_library(MyEnum INTERFACE)\n"
+            )
+            (source / "fuzz.cc").write_text(
+                '#include <cstddef>\n#include <cstdint>\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const uint8_t*, size_t) { return 0; }\n'
+            )
+            record = create_generic_project(
+                job_dir=root, source=source, project_dir=project,
+                project_name="fts-test", pipeline={}, native=True,
+            )
+            self.assertTrue(record["allow_header_only_cmake"])
+            self.assertIn("&& 0 == 1", (project / "build.sh").read_text())
+            (artifacts / "generic-integration.json").write_text(json.dumps(record))
+            repair_generic_harness(
+                job_dir=root, source=source, project_dir=project,
+                pipeline={}, build_error="header include error", attempt=1,
+            )
+            self.assertIn("&& 0 == 1", (project / "build.sh").read_text())
+            saved = json.loads((artifacts / "generic-integration.json").read_text())
+            self.assertTrue(saved["allow_header_only_cmake"])
 
     def test_detects_all_supported_build_families(self):
         markers = {
