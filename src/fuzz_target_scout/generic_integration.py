@@ -31,6 +31,7 @@ HARNESS_SUPPORT_DIRECTORY_NAMES = {"test", "tests", "fuzz", "fuzzer", "fuzzing"}
 # files may name arbitrary packages, so inferred values must never reach apt
 # directly.
 CMAKE_SYSTEM_DEPENDENCIES = {
+    "boost": ("libboost-dev",),
     "bzip2": ("libbz2-dev",),
     "expat": ("libexpat1-dev",),
     "gflags": ("libgflags-dev",),

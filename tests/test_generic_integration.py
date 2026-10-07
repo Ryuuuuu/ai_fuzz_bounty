@@ -275,6 +275,7 @@ class GenericIntegrationTests(unittest.TestCase):
             source = Path(directory)
             (source / "CMakeLists.txt").write_text(
                 "find_package(absl REQUIRED)\n"
+                "find_package(Boost REQUIRED)\n"
                 "find_package(OpenSSL REQUIRED)\n"
                 "find_package(gflags REQUIRED)\n"
                 "set(CPUINFO_SOURCE_DIR ignored)\n"
@@ -287,11 +288,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 "cmake", "ubuntu:24.04", dependencies, source_dependencies
             )
 
-        self.assertEqual(dependencies, ["libgflags-dev", "libssl-dev"])
+        self.assertEqual(dependencies, ["libboost-dev", "libgflags-dev", "libssl-dev"])
         self.assertEqual(
             source_dependencies, ["absl", "cpuinfo", "fxdiv", "pthreadpool"]
         )
-        self.assertIn("libgflags-dev libssl-dev git", dockerfile)
+        self.assertIn("libboost-dev libgflags-dev libssl-dev git", dockerfile)
         self.assertIn("https://github.com/abseil/abseil-cpp.git", dockerfile)
         self.assertIn("d38452e1ee03523a208362186fd42248ff2609f6", dockerfile)
         self.assertIn("https://github.com/pytorch/cpuinfo.git", dockerfile)

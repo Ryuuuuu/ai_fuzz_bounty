@@ -19,7 +19,7 @@ from .models import RepoSnapshot
 
 
 DOCKERFILE = """FROM ubuntu:24.04
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libboost-dev && rm -rf /var/lib/apt/lists/*
 """
 
 # These scripts run inside the networkless container. The CMake File API ties
@@ -612,6 +612,10 @@ class ArmPreflight:
             root = Path(directory)
             checkout = root / "source"
             checkout.mkdir()
+            # The service may run with UMask=0077. Docker uses an unprivileged
+            # UID and needs to traverse the bind-mounted source directory.
+            # Keep the TemporaryDirectory parent private.
+            checkout.chmod(0o755)
             url = f"https://github.com/{repo.full_name}.git"
             environment = {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -745,7 +749,7 @@ class ArmPreflight:
             process = subprocess.Popen(
                 command, env=environment, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True,
+                start_new_session=True, umask=0o022,
             )
             assert process.stdout is not None
             with selectors.DefaultSelector() as selector:

@@ -16,6 +16,7 @@ from fuzz_target_scout.arm_preflight import (
     ArmPreflight,
     ArmPreflightResult,
     BUILD_AND_SMOKE,
+    DOCKERFILE,
     MESON_BUILD_AND_SMOKE,
     MESON_DOCKERFILE,
     MESON_PREFLIGHT_VERSION,
@@ -130,6 +131,62 @@ class ArmPreflightTests(unittest.TestCase):
         )
         self.assertIn("ctest --test-dir /work/build", container[-1])
         self.assertTrue(all("GITHUB_TOKEN" not in env for env in environments))
+
+    def test_strict_service_umask_keeps_bind_source_readable(self):
+        checker = ArmPreflight({"host_arch": "aarch64"})
+        observed = {}
+
+        def fake_run(command, _deadline, _environment, _failure):
+            if command[0] == "git" and "checkout" in command:
+                checkout = Path(command[2])
+                (checkout / "CMakeLists.txt").write_text("project(parser)\n")
+            if command[0] == "git" and "rev-parse" in command:
+                return subprocess.CompletedProcess(command, 0, SHA + "\n", "")
+            if command[:2] == ["docker", "run"]:
+                source = Path(command[command.index("--mount") + 1].split(",")[1].split("=", 1)[1])
+                observed["source_mode"] = source.stat().st_mode & 0o777
+                observed["parent_mode"] = source.parent.stat().st_mode & 0o777
+                return subprocess.CompletedProcess(command, 0, "FTS_ARM_PREFLIGHT_OK\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        previous = os.umask(0o077)
+        try:
+            with patch("fuzz_target_scout.arm_preflight.platform.machine", return_value="aarch64"), patch.object(
+                checker, "_run", side_effect=fake_run
+            ), patch.object(checker, "_ensure_builder"), patch(
+                "fuzz_target_scout.arm_preflight.subprocess.run"
+            ):
+                result = checker.check(repository())
+        finally:
+            os.umask(previous)
+        self.assertTrue(result.passed)
+        self.assertEqual(observed, {"source_mode": 0o755, "parent_mode": 0o700})
+        self.assertIn("libboost-dev", DOCKERFILE)
+
+    def test_child_process_files_use_readable_umask_under_strict_service_umask(self):
+        checker = ArmPreflight({"host_arch": "aarch64"})
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            previous = os.umask(0o077)
+            try:
+                source.mkdir()
+                source.chmod(0o755)
+                command = [
+                    "/bin/sh", "-c",
+                    'mkdir "$1/child"; printf data > "$1/child/file"',
+                    "sh", str(source),
+                ]
+                result = checker._try_run(
+                    command, time.monotonic() + 10,
+                    {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                )
+            finally:
+                os.umask(previous)
+            self.assertIsNotNone(result)
+            self.assertEqual(source.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((source / "child").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((source / "child" / "file").stat().st_mode & 0o777, 0o644)
+            self.assertEqual(Path(directory).stat().st_mode & 0o777, 0o700)
 
     def test_meson_preflight_uses_separate_builder_and_cache_version(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
