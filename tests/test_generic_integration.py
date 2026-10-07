@@ -303,6 +303,41 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("15a6644ba1c45f1acc16ac1e883efc3e56c6bed2", dockerfile)
         self.assertNotIn("attacker_controlled", dockerfile)
 
+    def test_nested_cmake_cli11_dependency_is_bounded_and_symlink_safe(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            source = Path(directory)
+            (source / "CMakeLists.txt").write_text(
+                "add_subdirectory(examples)\n", encoding="utf-8"
+            )
+            examples = source / "examples"
+            examples.mkdir()
+            (examples / "CMakeLists.txt").write_text(
+                "find_package(CLI11 CONFIG REQUIRED)\n"
+                "find_package(unreviewed REQUIRED)\n",
+                encoding="utf-8",
+            )
+            external = Path(outside) / "CMakeLists.txt"
+            external.write_text("find_package(Protobuf REQUIRED)\n", encoding="utf-8")
+            (source / "linked").symlink_to(Path(outside), target_is_directory=True)
+            cmake = source / "cmake"
+            cmake.mkdir()
+            (cmake / "linked-file.cmake").symlink_to(external)
+            large = source / "large"
+            large.mkdir()
+            (large / "CMakeLists.txt").write_text(
+                " " * 250_001 + "find_package(gflags REQUIRED)\n",
+                encoding="utf-8",
+            )
+
+            dependencies = _detect_system_dependencies(source, "cmake")
+            dockerfile = _dockerfile("cmake", "ubuntu:24.04", dependencies)
+
+        self.assertEqual(dependencies, ["libcli11-dev"])
+        self.assertIn("libcli11-dev", dockerfile)
+        self.assertNotIn("unreviewed", dockerfile)
+        self.assertNotIn("libprotobuf-dev", dockerfile)
+        self.assertNotIn("libgflags-dev", dockerfile)
+
     def test_meson_required_dependencies_use_reviewed_packages(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

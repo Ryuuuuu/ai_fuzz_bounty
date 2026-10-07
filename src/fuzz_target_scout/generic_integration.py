@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -33,6 +34,7 @@ HARNESS_SUPPORT_DIRECTORY_NAMES = {"test", "tests", "fuzz", "fuzzer", "fuzzing"}
 CMAKE_SYSTEM_DEPENDENCIES = {
     "boost": ("libboost-dev",),
     "bzip2": ("libbz2-dev",),
+    "cli11": ("libcli11-dev",),
     "expat": ("libexpat1-dev",),
     "gflags": ("libgflags-dev",),
     "libxml2": ("libxml2-dev",),
@@ -675,20 +677,45 @@ def _declared_cmake_packages(source: Path) -> set[str]:
 
 
 def _cmake_metadata_text(source: Path) -> str:
+    # Walk breadth-first so root and immediate subprojects are examined before
+    # deep vendored trees. Never traverse symlinks into unrelated host files.
+    if source.is_symlink() or not source.is_dir():
+        return ""
     files: list[Path] = []
-    root = source / "CMakeLists.txt"
-    if root.is_file() and not root.is_symlink():
-        files.append(root)
+    directories = [source]
     cmake_dir = source / "cmake"
-    if cmake_dir.is_dir() and not cmake_dir.is_symlink():
-        files.extend(
-            path
-            for path in sorted(cmake_dir.rglob("*.cmake"))
-            if path.is_file() and not path.is_symlink()
-        )
+    cursor = 0
+    while cursor < len(directories) and len(files) < 100:
+        directory = directories[cursor]
+        cursor += 1
+        try:
+            with os.scandir(directory) as entries:
+                children = sorted(entries, key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in children:
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in {".git", ".venv"} and len(directories) < 500:
+                        directories.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                path = Path(entry.path)
+                is_cmake_script = entry.name.endswith(".cmake") and (
+                    directory == cmake_dir or cmake_dir in directory.parents
+                )
+                if entry.name == "CMakeLists.txt" or is_cmake_script:
+                    files.append(path)
+                    if len(files) >= 100:
+                        break
+            except OSError:
+                continue
     chunks: list[str] = []
     total_bytes = 0
-    for path in files[:100]:
+    for path in files:
         try:
             size = path.stat().st_size
             if size > 250_000 or total_bytes + size > 1_000_000:

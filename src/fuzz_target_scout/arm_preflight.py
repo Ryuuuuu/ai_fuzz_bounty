@@ -19,7 +19,7 @@ from .models import RepoSnapshot
 
 
 DOCKERFILE = """FROM ubuntu:24.04
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libboost-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libboost-dev libcli11-dev && rm -rf /var/lib/apt/lists/*
 """
 
 # These scripts run inside the networkless container. The CMake File API ties

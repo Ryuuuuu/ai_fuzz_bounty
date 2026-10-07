@@ -162,6 +162,7 @@ class ArmPreflightTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(observed, {"source_mode": 0o755, "parent_mode": 0o700})
         self.assertIn("libboost-dev", DOCKERFILE)
+        self.assertIn("libcli11-dev", DOCKERFILE)
 
     def test_child_process_files_use_readable_umask_under_strict_service_umask(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
