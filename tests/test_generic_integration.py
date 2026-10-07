@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fuzz_target_scout.harness_generation import validate_generated_harness
 from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
@@ -135,6 +137,114 @@ class GenericIntegrationTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(PipelineError, "no existing harness"):
                 _select_public_candidate(source)
+
+    def test_macro_body_and_expression_are_not_selected_as_prototypes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            header = source / "EnumFlagsO.h"
+            header.write_text("\n".join([
+                "#define MY_ENUMFLAGS_OSTREAM_OVERLOAD(NAME) " + chr(92),
+                "  os << toPretty(value); " + chr(92),
+                "  os << value",
+                "sink << parse_fake(data);",
+                "return parse_fake(data);",
+                "std::vector<std::vector<int>> parse_bytes(const char* data, size_t size);",
+            ]) + "\n")
+
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"],
+                         "std::vector<std::vector<int>> parse_bytes(const char* data, size_t size);")
+        self.assertEqual(candidate["local_symbol_line"], 6)
+        self.assertNotEqual(candidate.get("candidate_kind"), "macro")
+
+    def test_public_macro_definition_is_fallback_when_no_function_is_declared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            header = source / "EnumFlagsO.h"
+            header.write_text("\n".join([
+                "#define MY_ENUMFLAGS_OSTREAM_OVERLOAD(NAME) " + chr(92),
+                "  os << toPretty(value); " + chr(92),
+                "  os << value",
+                "#define MY_ENUMFLAGS_DEF_O(EnumName, UINT_TYPE, ...) " + chr(92),
+                "  enum class EnumName : UINT_TYPE { __VA_ARGS__ };",
+                "#define MY_ENUMFLAGS_O(EnumName, UINT_TYPE, ...) " + chr(92),
+                "  MY_ENUMFLAGS_DEF_O(EnumName, UINT_TYPE, __VA_ARGS__)",
+                "MY_ENUMFLAGS_O(FuzzFlags, uint64_t, Alpha, Beta);",
+            ]) + "\n")
+
+            candidate = _select_public_candidate(source)
+            next_candidate = _select_public_candidate(source, {candidate["id"]})
+
+        self.assertEqual(candidate["signature"],
+                         "MY_ENUMFLAGS_O(EnumName, UINT_TYPE, ...)")
+        self.assertEqual(candidate["candidate_kind"], "macro")
+        self.assertEqual(candidate["local_symbol_line"], 6)
+        validation = validate_generated_harness(
+            "MY_ENUMFLAGS_O(FuzzFlags, uint64_t, Alpha, Beta); "
+            "extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* data, "
+            "size_t size) { return size > 0 && data[0] ? 1 : 0; }",
+            candidate,
+        )
+        self.assertEqual(validation["target_symbol"], "MY_ENUMFLAGS_O")
+        self.assertNotEqual(next_candidate["id"], candidate["id"])
+        self.assertNotIn("os <<", next_candidate["signature"])
+
+    def test_internal_header_declaration_does_not_preempt_public_macro(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "impl").mkdir()
+            (source / "impl" / "helper.h").write_text(
+                "int parse_internal(const unsigned char* data);"
+            )
+            (source / "Enum.h").write_text(
+                "#define MY_ENUM(NAME, ...) " + chr(92) + chr(10)
+                + "  enum class NAME { __VA_ARGS__ };" + chr(10)
+            )
+
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"], "MY_ENUM(NAME, ...)")
+        self.assertEqual(candidate["candidate_kind"], "macro")
+
+    def test_macro_use_and_continuation_without_definition_are_not_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text("\n".join([
+                "os << toPretty(value); " + chr(92),
+                "return parse_fake(data);",
+                "MY_ENUMFLAGS_O(FuzzFlags, uint64_t, Alpha, Beta);",
+            ]) + "\n")
+            with self.assertRaisesRegex(PipelineError, "no existing harness"):
+                _select_public_candidate(source)
+
+    def test_generation_records_selected_macro_before_adapter_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            source = job / "source"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_text("project(enum)")
+            (source / "EnumFlagsO.h").write_text(
+                "#define MY_ENUMFLAGS_O(EnumName, UINT_TYPE, ...) " + chr(92) + "\n"
+                "  enum class EnumName : UINT_TYPE { __VA_ARGS__ };\n"
+            )
+            with patch(
+                "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter",
+                side_effect=PipelineError("adapter failed"),
+            ):
+                with self.assertRaisesRegex(PipelineError, "adapter failed"):
+                    create_generic_project(
+                        job_dir=job, source=source, project_dir=job / "integration",
+                        project_name="enum", pipeline={},
+                    )
+            selection = json.loads(
+                (job / "artifacts" / "generic-integration-selection.json").read_text()
+            )
+
+        self.assertEqual(selection["schema_version"], 1)
+        self.assertEqual(selection["candidate"]["candidate_kind"], "macro")
+        self.assertEqual(selection["candidate"]["file"], "EnumFlagsO.h")
+        self.assertTrue(selection["candidate"]["id"])
 
     def test_prefers_simple_public_harness_over_static_only_harness(self):
         with tempfile.TemporaryDirectory() as directory:

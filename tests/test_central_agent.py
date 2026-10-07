@@ -1357,6 +1357,76 @@ class CentralAgentTests(unittest.TestCase):
         self.assertTrue(progress_preserved)
         self.assertTrue(integration_archived)
 
+    def test_initial_harness_validation_failure_excludes_selected_candidate_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            state = {
+                "job_id": job.name,
+                "stage": "integration",
+                "status": "recovery_pending",
+                "last_error": "generated harness does not reference the selected target symbol",
+                "attempts": {"worker_failures": 1},
+            }
+            (job / "state.json").write_text(json.dumps(state))
+            selection = {
+                "schema_version": 1,
+                "candidate": {
+                    "id": "failed-symbol",
+                    "file": "src/parser.cc",
+                    "signature": "parse(const char*)",
+                },
+            }
+            (artifacts / "generic-integration-selection.json").write_text(
+                json.dumps(selection)
+            )
+            (artifacts / "harness-exclusions.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "paths": ["tests/fuzz/bad.cc"],
+                    "candidate_ids": ["older-symbol"],
+                })
+            )
+
+            agent = CentralAgent(config)
+            evidence = agent._failure_recovery_evidence(job.name, state)
+            self.assertIn(
+                "restart_from_integration",
+                [item["action"] for item in evidence["options"]],
+            )
+            result = agent._apply_failure_recovery(
+                job.name,
+                "restart_from_integration",
+                "Try another public function after generated harness validation failed.",
+                "ai",
+            )
+            final_state = json.loads((job / "state.json").read_text())
+            exclusions = json.loads(
+                (artifacts / "harness-exclusions.json").read_text()
+            )
+            archived_selection = json.loads(
+                (job / result["archive"] / "generic-integration-selection.json").read_text()
+            )
+            selection_archived = not (
+                artifacts / "generic-integration-selection.json"
+            ).exists()
+
+        self.assertEqual(final_state["stage"], "integration")
+        self.assertEqual(final_state["status"], "prepared")
+        self.assertEqual(exclusions["paths"], ["tests/fuzz/bad.cc"])
+        self.assertEqual(
+            exclusions["candidate_ids"], ["older-symbol", "failed-symbol"]
+        )
+        self.assertEqual(archived_selection, selection)
+        self.assertTrue(selection_archived)
+
     def test_recovery_exhaustion_skips_target_instead_of_stalling(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

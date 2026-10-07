@@ -87,6 +87,20 @@ class RetargetNativeJobTests(unittest.TestCase):
                 self.config, self.job_id, "Old harness ignores fuzz bytes", **kwargs
             )
 
+    def _failed_generation(self):
+        (self.artifacts / "generic-integration.json").unlink()
+        generation = self.artifacts / "generic-integration-generation"
+        generation.mkdir()
+        (generation / "prompt.txt").write_text("Generate a harness", encoding="utf-8")
+        (generation / "01.rawoutput").write_text("wrong harness", encoding="utf-8")
+        (generation / "adapter.log").write_text("adapter finished", encoding="utf-8")
+        state_path = self.job / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update(stage="complete", status="skipped_after_recovery",
+                     last_error="generated harness does not reference the selected target symbol")
+        self._json(state_path, state)
+        return generation
+
     def test_archive_and_reset_same_job(self):
         result = self._retarget()
         archive = self.job / result["archive"]
@@ -109,6 +123,66 @@ class RetargetNativeJobTests(unittest.TestCase):
             "central-recovery.json",
         ):
             self.assertTrue((self.artifacts / name).is_file())
+
+    def test_failed_generation_without_integration_record_requeues_same_job(self):
+        self._failed_generation()
+        result = self._retarget()
+        archive = self.job / result["archive"]
+        state = json.loads((self.job / "state.json").read_text(encoding="utf-8"))
+        archived_state = json.loads((archive / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["job_id"], self.job_id)
+        self.assertEqual(result["previous_candidate"], {})
+        self.assertEqual((state["stage"], state["status"]), ("integration", "prepared"))
+        self.assertEqual(state["attempts"], {"retargets": 1})
+        self.assertEqual(archived_state["status"], "skipped_after_recovery")
+        self.assertTrue((archive / "artifacts" / "generic-integration-generation" / "prompt.txt").is_file())
+        self.assertTrue((archive / "artifacts" / "generic-integration-generation" / "01.rawoutput").is_file())
+        self.assertTrue((archive / "artifacts" / "generic-integration-generation" / "adapter.log").is_file())
+        self.assertTrue((self.artifacts / "central-recovery.json").is_file())
+        self.assertTrue((self.job / "build-source" / "api.h").is_file())
+        self.assertFalse((self.artifacts / "generic-integration.json").exists())
+        with self.assertRaisesRegex(PipelineError, "no generated harness integration"):
+            self._retarget()
+
+    def test_missing_generation_evidence_refuses_retarget(self):
+        generation = self._failed_generation()
+        (generation / "01.rawoutput").unlink()
+        (generation / "adapter.log").unlink()
+        with self.assertRaisesRegex(PipelineError, "failed generation evidence"):
+            self._retarget()
+        (generation / "adapter.log").write_text("adapter failed", encoding="utf-8")
+        (generation / "prompt.txt").unlink()
+        with self.assertRaisesRegex(PipelineError, "failed generation evidence"):
+            self._retarget()
+        self.assertEqual(json.loads((self.job / "state.json").read_text())["status"], "skipped_after_recovery")
+
+    def test_failed_generation_requires_terminal_recovery_state(self):
+        self._failed_generation()
+        state_path = self.job / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        for stage, status, error in (
+            ("integration", "prepared", state["last_error"]),
+            ("complete", "exhausted", state["last_error"]),
+            ("integration", "skipped_after_recovery", state["last_error"]),
+            ("complete", "skipped_after_recovery", None),
+        ):
+            with self.subTest(stage=stage, status=status, error=error):
+                state.update(stage=stage, status=status, last_error=error)
+                self._json(state_path, state)
+                with self.assertRaisesRegex(PipelineError, "failed generation evidence"):
+                    self._retarget()
+        self.assertFalse((self.artifacts / "history").exists())
+
+    def test_failed_generation_still_checks_findings_and_pinned_source(self):
+        self._failed_generation()
+        finding = self.artifacts / "bug-bounty-report-draft.md"
+        finding.write_text("draft", encoding="utf-8")
+        with self.assertRaisesRegex(PipelineError, "retarget refused"):
+            self._retarget()
+        finding.unlink()
+        (self.job / "build-source" / "api.h").write_text("changed\n")
+        with self.assertRaisesRegex(PipelineError, "uncommitted changes"):
+            self._retarget()
 
     def test_dry_run_does_not_change_evidence(self):
         result = self._retarget(dry_run=True)

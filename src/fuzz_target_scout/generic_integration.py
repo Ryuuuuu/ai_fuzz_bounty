@@ -276,6 +276,7 @@ def repair_generic_harness(
         return item
     if not candidate.get("file"):
         candidate = _select_public_candidate(source)
+    _record_generation_candidate(job_dir, candidate)
     context = source_context(source, candidate, radius=140)
     harness_path = project_dir / "generic_harness.cc"
     prior = harness_path.read_text(encoding="utf-8", errors="replace")
@@ -346,6 +347,7 @@ def _obtain_harness(
         if isinstance(value, str)
     }
     candidate = _select_public_candidate(source, excluded_candidate_ids)
+    _record_generation_candidate(job_dir, candidate)
     context = source_context(source, candidate, radius=140)
     prompt = generation_prompt(
         project=project,
@@ -368,6 +370,16 @@ def _obtain_harness(
     code = extract_harness_code(response)
     validate_generated_harness(code, candidate)
     return code, "codex_oss_fuzz_gen_adapter", usage, candidate
+
+
+def _record_generation_candidate(job_dir: Path, candidate: dict[str, Any]) -> None:
+    path = job_dir / "artifacts" / "generic-integration-selection.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path, {
+        "schema_version": 1,
+        "created_at": utc_now(),
+        "candidate": candidate,
+    })
 
 
 def _find_existing_harness(
@@ -435,8 +447,9 @@ def _select_public_candidate(
 ) -> dict[str, Any]:
     excluded_candidate_ids = excluded_candidate_ids or set()
     prototype = re.compile(
-        r"^\s*(?:extern\s+\"C\"\s+)?(?:[A-Za-z_][\w:<>,*&\s]+)\s+"
-        r"(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;{}]*\)\s*;"
+        r'^\s*(?:extern\s+"C"\s+)?'
+        r'(?P<result>[A-Za-z_][\w:<>,*&\s]*)\s+'
+        r'(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;{}]*\)\s*;\s*$'
     )
     rejected = {
         "alignof",
@@ -460,8 +473,10 @@ def _select_public_candidate(
     excluded_directories = {
         "bench", "benchmark", "benchmarks", "examples", "test", "tests",
         "third_party", "third-party", "tools", "vendor",
+        "detail", "details", "impl", "implementation", "internal", "private",
     }
     candidates: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    macro_candidates: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for path in sorted(headers, key=lambda item: _public_header_rank(source, item)):
         relative_parts = {
             part.casefold() for part in path.relative_to(source).parts[:-1]
@@ -476,7 +491,11 @@ def _select_public_candidate(
             continue
         for number, line in _accessible_header_lines(lines):
             match = prototype.match(line)
-            if not match or match.group("name").split("::")[-1] in rejected:
+            if (
+                not match
+                or match.group("name").split("::")[-1] in rejected
+                or not _is_declaration_result(match.group("result"))
+            ):
                 continue
             candidate = {
                 "id": hashlib.sha256(f"{path}:{number}".encode()).hexdigest()[:16],
@@ -494,9 +513,82 @@ def _select_public_candidate(
                 ),
                 candidate,
             ))
+        for number, name, parameters in _public_macro_definitions(lines):
+            candidate = {
+                "id": hashlib.sha256(f"{path}:{number}".encode()).hexdigest()[:16],
+                "file": path.relative_to(source).as_posix(),
+                "local_symbol_line": number,
+                "signature": f"{name}({parameters})"[:1000],
+                "candidate_kind": "macro",
+            }
+            if candidate["id"] in excluded_candidate_ids:
+                continue
+            macro_candidates.append((
+                (
+                    _public_macro_rank(name, parameters),
+                    _public_header_rank(source, path),
+                    number,
+                ),
+                candidate,
+            ))
     if candidates:
         return min(candidates, key=lambda item: item[0])[1]
-    raise PipelineError("no existing harness or public function prototype was found")
+    if macro_candidates:
+        return min(macro_candidates, key=lambda item: item[0])[1]
+    raise PipelineError("no existing harness or public function or macro API was found")
+
+
+def _is_declaration_result(result: str) -> bool:
+    """Reject expression prefixes that resemble a function return type."""
+    if re.search(
+        r"\b(?:return|co_return|throw|delete|new|if|else|for|while|"
+        r"switch|case|goto|break|continue|using|typedef|sizeof|alignof)\b",
+        result,
+    ):
+        return False
+    depth = 0
+    for character in result:
+        if character == "<":
+            depth += 1
+        elif character == ">":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _public_macro_definitions(lines: list[str]):
+    """Yield named function-like macros, never their replacement text."""
+    pattern = re.compile(
+        r"^\s*#\s*define\s+(?P<name>[A-Z][A-Z0-9_]*)"
+        r"\((?P<parameters>[^()]*)\)(?=\s|$)"
+    )
+    parameter = re.compile(r"(?:[A-Za-z_]\w*|\.\.\.|[A-Za-z_]\w*\.\.\.)$")
+    in_comment = False
+    in_directive = False
+    for number, raw_line in enumerate(lines, 1):
+        visible, _, in_comment = _scan_header_line(raw_line, in_comment)
+        if not in_directive:
+            match = pattern.match(visible)
+            if match:
+                parameters = match.group("parameters").strip()
+                names = [value.strip() for value in parameters.split(",")]
+                if all(parameter.fullmatch(value) for value in names):
+                    yield number, match.group("name"), parameters
+        in_directive = (
+            (in_directive or visible.lstrip().startswith("#"))
+            and raw_line.rstrip().endswith(chr(92))
+        )
+
+
+def _public_macro_rank(name: str, parameters: str) -> tuple[int, int, int]:
+    parts = name.split("_")
+    helper_parts = {
+        "ALIAS", "DEF", "DETAIL", "DETAILS", "FWD", "HELPER", "IMPL",
+        "INTERNAL", "OVERLOAD", "PRIVATE",
+    }
+    helper = int(bool(set(parts) & helper_parts))
+    return (helper, -len(parameters.split(",")), len(parts))
 
 
 def _candidate_input_rank(signature: str, name: str) -> int:
@@ -527,7 +619,12 @@ def _accessible_header_lines(lines: list[str]):
     in_comment = False
     tokens = re.compile(r"\{|\}|;|\b(?:public|protected|private)\s*:")
     class_kind = re.compile(r"\b(class|struct|union)\s+[A-Za-z_]\w*")
+    in_directive = False
     for number, raw_line in enumerate(lines, 1):
+        if in_directive or raw_line.lstrip().startswith("#"):
+            _, _, in_comment = _scan_header_line(raw_line, in_comment)
+            in_directive = raw_line.rstrip().endswith(chr(92))
+            continue
         visible, structural, in_comment = _scan_header_line(raw_line, in_comment)
         if all(scope["kind"] == "other" or scope["access"] == "public" for scope in scopes):
             yield number, visible

@@ -149,6 +149,19 @@ def _check_finding_evidence(job_dir: Path, state: dict[str, Any]) -> None:
             raise PipelineError("job has reproduced finding or report evidence; retarget refused")
 
 
+def _has_failed_generation_evidence(artifacts: Path) -> bool:
+    generation = artifacts / "generic-integration-generation"
+    if generation.is_symlink() or not generation.is_dir():
+        return False
+    prompt = generation / "prompt.txt"
+    if prompt.is_symlink() or not prompt.is_file():
+        return False
+    return any(
+        path.is_file() and not path.is_symlink()
+        for path in (generation / "adapter.log", generation / "01.rawoutput")
+    )
+
+
 def retarget_native_job(
     config: dict[str, Any], job_id: str, rationale: str, *, dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -184,9 +197,20 @@ def retarget_native_job(
         if artifacts.is_symlink() or not artifacts.is_dir():
             raise PipelineError("job artifacts directory is missing or a symlink")
         generic_path = artifacts / "generic-integration.json"
-        if generic_path.is_symlink() or not generic_path.is_file():
+        if generic_path.is_symlink():
             raise PipelineError("job has no generated harness integration to retarget")
-        generic = _read_json(generic_path)
+        if generic_path.is_file():
+            generic = _read_json(generic_path)
+        elif (
+            not generic_path.exists()
+            and state.get("stage") == "complete"
+            and state.get("status") == "skipped_after_recovery"
+            and state.get("last_error")
+            and _has_failed_generation_evidence(artifacts)
+        ):
+            generic = {}
+        else:
+            raise PipelineError("job has no generated harness integration or failed generation evidence to retarget")
         _check_finding_evidence(job_dir, state)
         _check_build_source(job_dir, job)
         archive_items = [
