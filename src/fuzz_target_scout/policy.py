@@ -206,8 +206,9 @@ class PolicyVerifier:
     def _readme_excludes_inherited_bounty(repo: RepoSnapshot) -> bool:
         owner = repo.full_name.split("/", 1)[0].casefold()
         inherited = f"github.com/{owner}/.github/" in repo.security_url.casefold()
+        readme = " ".join(repo.readme_excerpt.split())
         return inherited and any(
-            pattern.search(repo.readme_excerpt)
+            pattern.search(readme)
             for pattern in README_PROJECT_EXCLUSION_PATTERNS
         )
 

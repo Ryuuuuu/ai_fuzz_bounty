@@ -32,14 +32,20 @@ class GenericIntegrationTests(unittest.TestCase):
             source = Path(directory)
             (source / "include" / "dna").mkdir(parents=True)
             (source / "include" / "trio").mkdir(parents=True)
+            (source / "src" / "dna").mkdir(parents=True)
             (source / "include" / "dna" / "BinaryStreamReader.h").write_text(
-                "class BinaryStreamReader {\n"
+                "class DNAAPI BinaryStreamReader : public StreamReader {\n"
                 "public:\n"
-                "  static BinaryStreamReader* create(BoundedIOStream* stream,\n"
+                "  DNAAPI_MEMBER static BinaryStreamReader* create(BoundedIOStream* stream,\n"
                 "                                    const Configuration& config = {},\n"
                 "                                    MemoryResource* memRes = nullptr);\n"
                 "  static void destroy(BinaryStreamReader* instance);\n"
                 "  void read() override;\n"
+                "};\n"
+            )
+            (source / "src" / "dna" / "WriterImpl.h").write_text(
+                "struct WriterImpl {\n"
+                "  void setDBComplexity(const char* name) override;\n"
                 "};\n"
             )
             (source / "include" / "trio" / "MemoryStream.h").write_text(
@@ -52,7 +58,7 @@ class GenericIntegrationTests(unittest.TestCase):
 
         self.assertEqual(candidate["file"], "include/dna/BinaryStreamReader.h")
         self.assertEqual(candidate["local_symbol_line"], 3)
-        self.assertIn("create(BoundedIOStream* stream,", candidate["signature"])
+        self.assertIn("DNAAPI_MEMBER static BinaryStreamReader* create(BoundedIOStream* stream,", candidate["signature"])
         self.assertIn("const Configuration& config = {}", candidate["signature"])
         self.assertNotIn("destroy", candidate["signature"])
 
@@ -104,6 +110,21 @@ class GenericIntegrationTests(unittest.TestCase):
 
         self.assertEqual(candidate["signature"],
                          "int decode(const uint8_t* data, size_t length);")
+
+    def test_public_include_parser_beats_equal_internal_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "include").mkdir()
+            (source / "src").mkdir()
+            (source / "include" / "reader.h").write_text(
+                "int parse(InputStream* input);\n"
+            )
+            (source / "src" / "reader_impl.h").write_text(
+                "int parse(InputStream* input);\n"
+            )
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["file"], "include/reader.h")
 
     def test_direct_byte_api_does_not_add_unrelated_stream_context(self):
         with tempfile.TemporaryDirectory() as directory:

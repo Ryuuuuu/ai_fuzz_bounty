@@ -96,8 +96,8 @@ repository {
                 "They might fetch a bounty."
             ),
             readme_excerpt=(
-                "This project is experimental. Issues are expected and are not "
-                "eligible for bug bounty or considered security findings."
+                "**This project is experimental. Issues are expected and\n"
+                "are not eligible for bug bounty or considered security findings.**"
             ),
         )
 

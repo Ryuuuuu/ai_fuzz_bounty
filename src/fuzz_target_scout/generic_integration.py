@@ -712,6 +712,7 @@ def _candidate_input_rank(signature: str, name: str) -> int:
     arguments = signature.partition("(")[2].rpartition(")")[0].strip()
     if not arguments or arguments == "void":
         return 4
+    words = _symbol_words(name)
     has_byte_input = bool(re.search(
         r"\b(?:basic_string|string(?:_view)?|span|vector)\b"
         r"|\b(?:(?:const|unsigned)\s+)*(?:std::)?(?:char|byte|u?int8_t)\s*[*&]",
@@ -724,15 +725,23 @@ def _candidate_input_rank(signature: str, name: str) -> int:
         arguments,
         re.IGNORECASE,
     ))
-    parser_name = bool(re.search(
-        r"parse|decode|deseriali[sz]e|tokeni[sz]e|lex|read|load|"
-        r"from_?(?:json|string|bytes|stream)",
-        name,
-        re.IGNORECASE,
-    ))
+    parser_name = bool(set(words) & {
+        "parse", "decode", "deserialize", "deserialise", "tokenize",
+        "tokenise", "lex", "read", "load",
+    }) or ("from" in words and bool(set(words) & {
+        "json", "string", "bytes", "stream",
+    }))
     reader_factory = bool(re.search(r"\b(?:create|make|open|from\w*)$", name, re.IGNORECASE)) and bool(
         re.search(r"reader|parser|decoder|deseriali[sz]er", signature, re.IGNORECASE)
     )
+    if words and words[0] in {"set", "get", "is", "has", "query"}:
+        input_field = bool(set(words) & {
+            "input", "data", "buffer", "bytes", "payload", "content", "stream",
+        })
+        has_length = bool(re.search(r"\b(?:size|length|count|len)\b", arguments,
+                                    re.IGNORECASE))
+        if not has_stream_input and not (has_byte_input and input_field and has_length):
+            return 4
     if has_byte_input:
         return 0 if parser_name else 2
     if has_stream_input:
@@ -742,8 +751,7 @@ def _candidate_input_rank(signature: str, name: str) -> int:
 
 def _is_lifetime_api(name: str) -> bool:
     """Do not fuzz object teardown as if it were an input parser."""
-    symbol = name.split("::")[-1]
-    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", symbol).casefold().split("_")
+    words = _symbol_words(name)
     if words[0] in {"parse", "decode", "deserialize", "read", "load"}:
         return False
     return any(word in {
@@ -751,6 +759,14 @@ def _is_lifetime_api(name: str) -> bool:
         "destroy", "dispose", "finalize", "free", "release", "reset",
         "shutdown", "terminate",
     } for word in words)
+
+
+def _symbol_words(name: str) -> list[str]:
+    """Split identifier words without finding parser verbs inside unrelated words."""
+    symbol = name.split("::")[-1]
+    symbol = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", symbol)
+    symbol = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", symbol)
+    return [word.casefold() for word in symbol.split("_") if word]
 
 
 def _public_function_declarations(lines: list[str]):
