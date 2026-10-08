@@ -143,7 +143,11 @@ class StorageTests(unittest.TestCase):
             add("org/extra-blocker", score=99, blockers=["native_build_probe_required:aarch64", "unsupported:aarch64"])
             add("org/other-arm", score=99, blockers=["no_explicit_native_support_evidence:x86_64"])
             add("org/nested-cmake", score=99, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:src/cmakelists.txt"])
-            add("org/other-build", score=99, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:meson.build"])
+            add("org/other-build", score=99, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:makefile"])
+            add("org/meson", score=80, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:MeSoN.BuIlD"])
+            add("org/meson-conditional", score=80, status="conditional", blockers=["native_build_probe_required:aarch64"], signals=["standard_build:meson.build"])
+            add("org/meson-low", score=54, blockers=["native_build_probe_required:aarch64"], signals=["standard_build:meson.build"])
+            add("org/meson-rust", score=80, language="Rust", blockers=["native_build_probe_required:aarch64"], signals=["standard_build:meson.build"])
             add("org/no-program", score=99, blockers=["native_build_probe_required:aarch64"], program_url="")
             add("org/no-security", score=99, blockers=["native_build_probe_required:aarch64"], security_url="")
             add("org/conditional", score=99, status="conditional", blockers=["native_build_probe_required:aarch64"])
@@ -175,6 +179,22 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(
                 store.revalidation_backlog_names(55, ["C++"], set(), 2),
                 ["org/no-evidence", "org/probe-large"],
+            )
+            self.assertEqual(
+                store.revalidation_backlog_names(
+                    55, ["C++"],
+                    {"org/compatible", "org/probe-small", "org/no-evidence", "org/probe-large"},
+                    2,
+                ),
+                ["org/meson"],
+            )
+            self.assertEqual(
+                store.revalidation_backlog_names(
+                    55, ["C++"],
+                    {"org/compatible", "org/probe-small", "org/no-evidence", "org/probe-large", "ORG/MESON"},
+                    2,
+                ),
+                [],
             )
             store.close()
 

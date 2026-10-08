@@ -23,14 +23,17 @@ additional_queries = [
   "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
   "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C",
   "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:EpicGames archived:false fork:false pushed:>={pushed_after} language:C++",
 ]
 
 [policy]
 catalog_path = "catalog.json"
 max_catalog_age_days = 45
 allow_conditional_handoff = false
-# 공식 Google OSS VRP 저장소 범위 목록을 매 탐색 때 동기화합니다.
-google_oss_vrp_feed_enabled = true
+# Google OSS VRP는 2026-10-01부터 신규 product vulnerability 접수를 중단했습니다.
+# https://github.com/google/bughunters/commit/f8bf23ad
+# 현재는 목록 동기화를 기본적으로 끕니다. 이전 저장소 목록도 정책 검사에서 제외됩니다.
+google_oss_vrp_feed_enabled = false
 google_oss_vrp_feed_repository = "google/bughunters"
 google_oss_vrp_feed_path = "oss-repository-tier/external_repositories.txtpb"
 google_oss_vrp_feed_branch = "main"
@@ -184,6 +187,8 @@ discovery_interval_seconds = 21600
 idle_discovery_interval_seconds = 3600
 # 작업이 비면 검색 쿼리마다 연속된 페이지를 더 살펴봅니다.
 idle_search_pages_per_query = 2
+idle_arm_preflight_max_attempts = 4
+idle_arm_preflight_budget_seconds = 1800
 # 과거 미시도 후보 최대 6개를 매 탐색마다 최신 GitHub/정책 정보로 재검증합니다.
 revalidation_backlog_per_scan = 6
 # 후보 갱신 자체가 실패하면 정상 주기를 기다리지 않고 이 시간 뒤 재시도합니다.

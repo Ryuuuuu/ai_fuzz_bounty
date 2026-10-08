@@ -90,7 +90,7 @@ class PolicyRecheckTests(unittest.TestCase):
         }
         return runner, job_dir, job, feed_fetch
 
-    def test_google_recheck_accepts_current_feed_entry(self):
+    def test_google_recheck_rejects_current_feed_entry_after_product_pause(self):
         feed = """
 repository {
   url: "https://github.com/google/benchmark"
@@ -100,18 +100,16 @@ repository {
 """
         with tempfile.TemporaryDirectory() as directory:
             runner, job_dir, job, feed_fetch = self._fixture(directory, feed=feed)
-            runner._recheck_policy(job_dir, job)
-            record = json.loads(
-                (job_dir / "artifacts" / "authorization-recheck.json").read_text()
+            with self.assertRaisesRegex(PipelineError, "no longer verified"):
+                runner._recheck_policy(job_dir, job)
+            self.assertFalse(
+                (job_dir / "artifacts" / "authorization-recheck.json").exists()
             )
         feed_fetch.assert_called_once_with(
             "google/bughunters",
             "oss-repository-tier/external_repositories.txtpb",
             "main",
         )
-        self.assertEqual(record["status"], "verified")
-        self.assertEqual(record["source"], "catalog")
-        self.assertEqual(record["repository"], "google/benchmark")
 
     def test_google_recheck_rejects_removed_repo_despite_static_catalog(self):
         feed = """

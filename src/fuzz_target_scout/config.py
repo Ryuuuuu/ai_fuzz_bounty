@@ -28,13 +28,14 @@ DEFAULTS: dict[str, Any] = {
             "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
             "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C",
             "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C++",
+            "org:EpicGames archived:false fork:false pushed:>={pushed_after} language:C++",
         ],
     },
     "policy": {
         "catalog_path": "catalog.json",
         "max_catalog_age_days": 45,
         "allow_conditional_handoff": False,
-        "google_oss_vrp_feed_enabled": True,
+        "google_oss_vrp_feed_enabled": False,
         "google_oss_vrp_feed_repository": "google/bughunters",
         "google_oss_vrp_feed_path": (
             "oss-repository-tier/external_repositories.txtpb"
@@ -171,6 +172,8 @@ DEFAULTS: dict[str, Any] = {
         "discovery_interval_seconds": 21600,
         "idle_discovery_interval_seconds": 3600,
         "idle_search_pages_per_query": 2,
+        "idle_arm_preflight_max_attempts": 4,
+        "idle_arm_preflight_budget_seconds": 1800,
         "revalidation_backlog_per_scan": 6,
         "discovery_error_retry_seconds": 300,
         "discovery_limit": 0,

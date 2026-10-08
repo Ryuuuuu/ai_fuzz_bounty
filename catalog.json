@@ -2,6 +2,15 @@
   "schema_version": 1,
   "entries": [
     {
+      "full_name": "EpicGames/OpenRigLogic",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/EpicGames/OpenRigLogic/blob/main/SECURITY.md",
+      "program_url": "https://hackerone.com/epicgames",
+      "scope_note": "Repository SECURITY.md explicitly includes OpenRigLogic C++ libraries and Python bindings in Epic's public paid bug bounty. Third-party dependencies and previously disclosed issues are excluded; verify live scope before reporting.",
+      "last_verified": "2026-10-08"
+    },
+    {
       "full_name": "facebook/zstd",
       "status": "verified",
       "access": "public",

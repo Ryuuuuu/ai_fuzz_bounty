@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -42,6 +43,113 @@ class _SearchGitHub:
 
 
 class EngineIdleDiscoveryTests(unittest.TestCase):
+    def test_arm_preflight_idle_budget_limits_expensive_probes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["architecture"]["arm_preflight_failure_retry_hours"] = 0
+            engine = ScoutEngine(config)
+
+            def candidate(index):
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=f"org/parser-{index}",
+                        html_url=f"https://github.com/org/parser-{index}",
+                        default_branch="main", head_sha=f"{index:x}" * 40,
+                        language="C++", size_kb=100,
+                        security_url=f"https://github.com/org/parser-{index}/security/policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=80, reproduce_difficulty=1,
+                        signals=["standard_build:cmakelists.txt"],
+                        blockers=["native_build_probe_required:aarch64"],
+                        suggested_entry_kind="library_api",
+                    ),
+                    policy=PolicyAssessment(
+                        status="verified", confidence=95, source="security.md",
+                        program_url="https://hackerone.com/example",
+                    ),
+                    final_score=80,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=False, confidence=40,
+                        blockers=["native_build_probe_required:aarch64"],
+                    ),
+                )
+
+            probes = [candidate(index) for index in range(1, 4)]
+            try:
+                with patch("fuzz_target_scout.engine.time.monotonic",
+                           side_effect=[0, 1, 100]), patch(
+                    "fuzz_target_scout.engine.ArmPreflight"
+                ) as runner:
+                    runner.return_value.check.return_value = SimpleNamespace(
+                        passed=False, reason="native_build_or_smoke_failed",
+                        evidence="native_arm_failure:stage=build;kind=missing_dependency;exit=1",
+                    )
+                    attempted, passed = engine._preflight_arm_candidates(
+                        probes, max_attempts=3, budget_seconds=120,
+                    )
+                self.assertEqual((attempted, passed), (1, 0))
+                self.assertEqual(runner.call_count, 1)
+                self.assertEqual(
+                    runner.call_args.args[0]["arm_preflight_timeout_seconds"], 119,
+                )
+            finally:
+                engine.close()
+
+    def test_readme_exclusion_rechecks_policy_after_code_hydration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["github"]["seed_policy_catalog"] = False
+            config["pipeline"]["languages"] = ["C++"]
+            engine = ScoutEngine(config)
+            engine.policy.entries = {}
+            engine._refresh_policy_sources = lambda: None
+
+            class GitHub:
+                def get_repository(self, name):
+                    return RepoSnapshot(
+                        full_name=name,
+                        html_url=f"https://github.com/{name}",
+                        default_branch="main",
+                        head_sha="a" * 40,
+                        language="C++",
+                        size_kb=1000,
+                    )
+
+                def load_security_policy(self, target):
+                    return replace(
+                        target,
+                        security_url="https://github.com/facebookincubator/.github/blob/main/SECURITY.md",
+                        security_text=(
+                            "This project has a bug bounty program at "
+                            "https://www.facebook.com/whitehat."
+                        ),
+                    )
+
+                def hydrate_code_evidence(self, target):
+                    return replace(
+                        target,
+                        readme_excerpt=(
+                            "Issues are expected and are not eligible for bug bounty "
+                            "or considered security findings."
+                        ),
+                    )
+
+            engine.github = GitHub()
+            try:
+                summary = engine.scan(
+                    queries=[], seed_repositories=["facebookincubator/bpfjailer"],
+                    use_ai=False,
+                )
+                self.assertEqual((summary.verified, summary.rejected), (0, 1))
+                self.assertEqual(
+                    list(engine.store.export_rows(55, False, scan_id=summary.scan_id)),
+                    [],
+                )
+            finally:
+                engine.close()
+
     def test_seeded_repository_rechecks_current_policy_code_and_head(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")

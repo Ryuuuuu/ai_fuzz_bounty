@@ -82,6 +82,45 @@ repository {
         self.assertEqual(assessment.status, "verified")
         self.assertEqual(assessment.program_url, "https://www.facebook.com/whitehat")
 
+    def test_repository_readme_exclusion_overrides_inherited_meta_policy(self):
+        verifier = PolicyVerifier(self.catalog)
+        target = RepoSnapshot(
+            full_name="facebookincubator/bpfjailer",
+            html_url="https://github.com/facebookincubator/bpfjailer",
+            default_branch="main",
+            head_sha="a" * 40,
+            security_url="https://github.com/facebookincubator/.github/blob/main/SECURITY.md",
+            security_text=(
+                "Security issues in this open source project can be reported "
+                "through the Meta Bug Bounty program at https://www.facebook.com/whitehat. "
+                "They might fetch a bounty."
+            ),
+            readme_excerpt=(
+                "This project is experimental. Issues are expected and are not "
+                "eligible for bug bounty or considered security findings."
+            ),
+        )
+
+        self.assertEqual(verifier.verify(target).status, "rejected")
+        self.assertEqual(verifier.verify(target).source, "readme")
+
+    def test_report_class_exclusion_does_not_reject_entire_repository(self):
+        verifier = PolicyVerifier(self.catalog)
+        target = RepoSnapshot(
+            full_name="facebook/example",
+            html_url="https://github.com/facebook/example",
+            default_branch="main",
+            head_sha="a" * 40,
+            security_url="https://github.com/facebook/.github/blob/main/SECURITY.md",
+            security_text=(
+                "This project has a bug bounty program at "
+                "https://www.facebook.com/whitehat."
+            ),
+            readme_excerpt="Known issues are not eligible for a bug bounty.",
+        )
+
+        self.assertEqual(verifier.verify(target).status, "verified")
+
     def test_direct_explicit_bounty_is_verified(self):
         verifier = PolicyVerifier(self.catalog)
         result = verifier.verify(
@@ -222,6 +261,56 @@ repository {
             today=date(2026, 9, 9),
         )
         self.assertEqual(result.status, "rejected")
+
+    def test_google_oss_vrp_product_pause_blocks_new_fuzzing_candidates(self):
+        verifier = PolicyVerifier(self.catalog)
+        verifier.merge_google_oss_vrp_feed(
+            'repository { url: "https://github.com/google/flatbuffers" '
+            'tier: TIER_OT1 product_vuln_scope: SCOPE_OSS_VRP }',
+            "https://bughunters.google.com/about/rules/open-source/"
+            "google-open-source-software-vulnerability-reward-program-rules",
+            verified_on=date(2026, 9, 30),
+        )
+        target = repo("google/flatbuffers", "Report vulnerabilities through g.co/vulnz.")
+
+        self.assertEqual(verifier.verify(target, today=date(2026, 9, 30)).status, "verified")
+        paused = verifier.verify(target, today=date(2026, 10, 1))
+        self.assertEqual(paused.status, "rejected")
+        self.assertEqual(paused.source, "google_oss_vrp")
+
+    def test_google_oss_vrp_pause_does_not_block_a_separate_paid_program(self):
+        verifier = PolicyVerifier(self.catalog)
+        verifier.merge_google_oss_vrp_feed(
+            'repository { url: "https://github.com/google/flatbuffers" '
+            'tier: TIER_OT1 product_vuln_scope: SCOPE_OSS_VRP }',
+            "https://bughunters.google.com/about/rules/open-source/"
+            "google-open-source-software-vulnerability-reward-program-rules",
+            verified_on=date(2026, 10, 1),
+        )
+        target = repo(
+            "google/flatbuffers",
+            "This project has a public bug bounty program at https://hackerone.com/google.",
+        )
+
+        assessment = verifier.verify(target, today=date(2026, 10, 1))
+        self.assertEqual(assessment.status, "verified")
+        self.assertEqual(assessment.program_url, "https://hackerone.com/google")
+
+    def test_google_oss_vrp_pause_is_limited_to_oss_product_program_url(self):
+        self.catalog.write_text(
+            json.dumps({"entries": [{
+                "full_name": "google/other",
+                "status": "verified",
+                "security_url": "https://github.com/google/other/security/policy",
+                "program_url": "https://bughunters.google.com/about/rules/google-cloud-vrp",
+                "last_verified": "2026-10-01",
+            }]}),
+            encoding="utf-8",
+        )
+        verifier = PolicyVerifier(self.catalog)
+        target = repo("google/other", "Report vulnerabilities through the current program.")
+
+        self.assertEqual(verifier.verify(target, today=date(2026, 10, 1)).status, "verified")
 
 
 if __name__ == "__main__":

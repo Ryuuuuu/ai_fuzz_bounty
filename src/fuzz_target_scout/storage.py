@@ -403,7 +403,7 @@ class Store:
                 if not isinstance(signals, list) or not any(
                     isinstance(signal, str)
                     and signal.casefold().startswith("standard_build:")
-                    and "cmakelists.txt" in {
+                    and {"cmakelists.txt", "meson.build"} & {
                         part.strip().casefold()
                         for part in signal.split(":", 1)[1].split(",")
                     }

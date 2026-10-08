@@ -2022,6 +2022,14 @@ class CentralAgent:
                     exclude_repositories=exclusions,
                     seed_repositories=backlog,
                     run_arm_preflight=True,
+                    arm_preflight_max_attempts=(
+                        int(self.agent.get("idle_arm_preflight_max_attempts", 4))
+                        if idle else None
+                    ),
+                    arm_preflight_budget_seconds=(
+                        int(self.agent.get("idle_arm_preflight_budget_seconds", 1800))
+                        if idle else None
+                    ),
                     search_pages_per_query=(
                         int(self.agent.get("idle_search_pages_per_query", 2))
                         if idle

@@ -21,6 +21,7 @@ from fuzz_target_scout.arm_preflight import (
     MESON_DOCKERFILE,
     MESON_PREFLIGHT_VERSION,
     PREFLIGHT_VERSION,
+    SELECT_CMAKE_NONTEST_OPTIONS,
     SELECT_MESON_NATIVE_TEST,
     VERIFY_MESON_NATIVE_TEST,
     SELECT_NATIVE_TEST,
@@ -302,11 +303,20 @@ class ArmPreflightTests(unittest.TestCase):
             "[ -f /usr/src/googletest/googlemock/CMakeLists.txt ]",
             BUILD_AND_SMOKE,
         )
-        self.assertIn("set -- -DGOOGLETEST_PATH=/usr/src/googletest", BUILD_AND_SMOKE)
-        self.assertIn("set --\nfi\ncmake -S /src", BUILD_AND_SMOKE)
+        self.assertIn("cp -a /src/. /work/src/", BUILD_AND_SMOKE)
+        self.assertIn("set -- \"$@\" -DGOOGLETEST_PATH=/usr/src/googletest", BUILD_AND_SMOKE)
+        self.assertIn(
+            "set -- \"$@\" -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/usr/src/googletest",
+            BUILD_AND_SMOKE,
+        )
+        self.assertIn("cmake -S /work/src", BUILD_AND_SMOKE)
         self.assertIn('-DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"', BUILD_AND_SMOKE)
         self.assertIn("verify_native_test.py", BUILD_AND_SMOKE)
-        self.assertIn("--candidates /work/build /src > /work/candidates.txt", BUILD_AND_SMOKE)
+        self.assertIn("--candidates /work/build /work/src > /work/candidates.txt", BUILD_AND_SMOKE)
+        self.assertIn(
+            '--standalone /work/build /work/src /work/selection.json "$candidate"',
+            BUILD_AND_SMOKE,
+        )
         self.assertIn(
             'if cmake --build /work/build --target "$candidate" --parallel 2; then',
             BUILD_AND_SMOKE,
@@ -318,12 +328,39 @@ class ArmPreflightTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_shell_reports_failed_stage_on_command_error(self):
-        probe_script = (
-            "stage=configure\n"
-            + BUILD_AND_SMOKE.split("stage=configure\n", 1)[1].split("cmake -S ", 1)[0]
-            + "false\n"
+    def test_only_declared_benchmark_and_example_options_are_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "CMakeLists.txt").write_text(
+                "option(RL_BUILD_BENCHMARKS \"benchmarks\" ON)\n"
+                "option(BUILD_EXAMPLES \"examples\" ON)\n"
+                "option(BUILD_TESTING \"tests\" ON)\n"
+                "# option(FAKE_BUILD_BENCHMARKS \"comment\" ON)\n"
+                "option(UNSAFE_BUILD_BENCHMARKS;echo \"bad\" ON)\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", SELECT_CMAKE_NONTEST_OPTIONS, directory],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["-DBUILD_EXAMPLES=OFF", "-DRL_BUILD_BENCHMARKS=OFF"],
         )
+
+    def test_meson_uses_writable_isolated_source_copy(self):
+        self.assertIn("cp -a /src/. /work/src/", MESON_BUILD_AND_SMOKE)
+        self.assertIn("meson setup /work/build /work/src", MESON_BUILD_AND_SMOKE)
+        self.assertIn(
+            "select_meson_native_test.py /work/build /work/src",
+            MESON_BUILD_AND_SMOKE,
+        )
+
+    def test_shell_reports_failed_stage_on_command_error(self):
+        trap_line = next(
+            line for line in BUILD_AND_SMOKE.splitlines() if line.startswith("trap ")
+        )
+        probe_script = "stage=configure\n" + trap_line + "\nfalse\n"
         result = subprocess.run(
             ["/bin/sh", "-ec", probe_script], capture_output=True, text=True,
             check=False,
@@ -403,6 +440,23 @@ class ArmPreflightTests(unittest.TestCase):
                 scope["select_native_test"](build, source, tests_path, candidates=True),
                 ["unit"],
             )
+            with self.assertRaisesRegex(ValueError, "built standalone test executable is missing"):
+                scope["select_native_test"](
+                    build, source, None, standalone_target="unit"
+                )
+            (build / "unit").write_bytes(b"built")
+            standalone = scope["select_native_test"](
+                build, source, None, standalone_target="unit"
+            )
+            self.assertEqual(standalone, {
+                "artifact": str(build / "unit"),
+                "target": "unit",
+                "kind": "standalone",
+            })
+            with self.assertRaisesRegex(ValueError, r"not a C/C\+\+ test candidate"):
+                scope["select_native_test"](
+                    build, source, None, standalone_target="other"
+                )
             # CTest can omit the command of an unbuilt executable. Building
             # the File API candidate makes its command discoverable.
             tests_path.write_text(json.dumps({"tests": [{"name": "unit"}]}))
@@ -423,6 +477,44 @@ class ArmPreflightTests(unittest.TestCase):
             }))
             with self.assertRaisesRegex(ValueError, "no CTest executable"):
                 scope["select_native_test"](build, source, tests_path)
+            with self.assertRaisesRegex(ValueError, r"not a C/C\+\+ test candidate"):
+                scope["select_native_test"](
+                    build, source, None, standalone_target="unit"
+                )
+
+    def test_standalone_selector_rejects_outside_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, build = root / "source", root / "build"
+            reply = build / ".cmake/api/v1/reply"
+            source.mkdir()
+            reply.mkdir(parents=True)
+            cpp = source / "test.cpp"
+            cpp.write_text("int main() { return 0; }\n")
+            (build / "compile_commands.json").write_text(json.dumps([{
+                "directory": str(build), "file": str(cpp),
+            }]))
+            (reply / "index-fixture.json").write_text(json.dumps({
+                "reply": {"codemodel-v2": {"jsonFile": "model.json"}}
+            }))
+            (reply / "model.json").write_text(json.dumps({
+                "configurations": [{"targets": [{
+                    "name": "tests", "jsonFile": "target.json",
+                }]}]
+            }))
+            (reply / "target.json").write_text(json.dumps({
+                "type": "EXECUTABLE",
+                "compileGroups": [{"language": "CXX"}],
+                "sources": [{"path": str(cpp), "compileGroupIndex": 0}],
+                "artifacts": [{"path": "../outside"}],
+            }))
+            (root / "outside").write_bytes(b"built")
+            scope = {"__name__": "selector_fixture"}
+            exec(SELECT_NATIVE_TEST, scope)
+            with self.assertRaisesRegex(ValueError, r"not a C/C\+\+ test candidate"):
+                scope["select_native_test"](
+                    build, source, None, standalone_target="tests"
+                )
 
     def test_candidate_target_selection_is_bounded_and_safe(self):
         scope = {"__name__": "selector_fixture"}
@@ -466,6 +558,77 @@ class ArmPreflightTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not AArch64"):
                     scope["verify_native_test"](build, selection)
                 run.assert_not_called()
+
+    def test_standalone_smoke_runs_one_listed_gtest_with_bounded_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory)
+            artifact = build / "rltests"
+            header = bytearray(20)
+            header[:4] = b"\x7fELF"
+            header[5] = 1
+            header[18:20] = (183).to_bytes(2, "little")
+            artifact.write_bytes(header)
+            artifact.chmod(0o755)
+            selection = build / "selection.json"
+            selection.write_text(json.dumps({
+                "artifact": str(artifact), "target": "rltests",
+                "kind": "standalone",
+            }))
+            scope = {"__name__": "smoke_fixture"}
+            exec(VERIFY_NATIVE_TEST, scope)
+            results = [
+                subprocess.CompletedProcess([], 0,
+                    "DisabledSuite.\n  DISABLED_Broken\nParserTest.\n  ValidInput\n", ""),
+                subprocess.CompletedProcess([], 0,
+                    "[ RUN      ] ParserTest.ValidInput\n"
+                    "[       OK ] ParserTest.ValidInput (0 ms)\n"
+                    "[  PASSED  ] 1 test.\n", ""),
+            ]
+            with patch("subprocess.run", side_effect=results) as run:
+                scope["verify_native_test"](build, selection)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0], [
+                str(artifact), "--gtest_list_tests",
+            ])
+            self.assertEqual(run.call_args_list[0].kwargs["timeout"], 8)
+            self.assertEqual(run.call_args_list[1].args[0], [
+                str(artifact), "--gtest_filter=ParserTest.ValidInput",
+                "--gtest_color=no",
+            ])
+            self.assertEqual(run.call_args_list[1].kwargs["timeout"], 30)
+
+            results[1] = subprocess.CompletedProcess([], 0, "[  PASSED  ] 0 tests.\n", "")
+            with patch("subprocess.run", side_effect=results):
+                with self.assertRaisesRegex(ValueError, "did not pass one test"):
+                    scope["verify_native_test"](build, selection)
+            results[1] = subprocess.CompletedProcess([], 0,
+                "[ RUN      ] OtherTest.Case\n"
+                "[       OK ] OtherTest.Case (0 ms)\n"
+                "[  PASSED  ] 1 test.\n", "")
+            with patch("subprocess.run", side_effect=results):
+                with self.assertRaisesRegex(ValueError, "did not pass one test"):
+                    scope["verify_native_test"](build, selection)
+
+    def test_standalone_smoke_requires_output_if_not_gtest(self):
+        scope = {"__name__": "smoke_fixture"}
+        exec(VERIFY_NATIVE_TEST, scope)
+        artifact = Path("/work/build/tests")
+        listing = subprocess.CompletedProcess([], 0, "", "")
+        direct = subprocess.CompletedProcess([], 0, "native smoke passed\n", "")
+        with patch("subprocess.run", side_effect=[listing, direct]) as run:
+            scope["run_standalone_test"](artifact, artifact.parent)
+        self.assertEqual(run.call_args_list[1].args[0], [str(artifact)])
+        with patch("subprocess.run", side_effect=[listing, subprocess.CompletedProcess([], 0, "", "")]):
+            with self.assertRaisesRegex(ValueError, "passing smoke"):
+                scope["run_standalone_test"](artifact, artifact.parent)
+        listing_with_success_text = subprocess.CompletedProcess(
+            [], 0, "native smoke passed\n", ""
+        )
+        with patch("subprocess.run", side_effect=[
+            listing_with_success_text, subprocess.CompletedProcess([], 0, "", ""),
+        ]):
+            with self.assertRaisesRegex(ValueError, "passing smoke"):
+                scope["run_standalone_test"](artifact, artifact.parent)
 
     def test_process_deadline_is_not_reported_as_build_failure(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
@@ -552,6 +715,36 @@ class ArmPreflightTests(unittest.TestCase):
         self.assertIn("failed_tests=1/1", evidence)
         self.assertNotIn(secret, evidence)
         self.assertLess(len(evidence), 160)
+
+    def test_missing_folly_header_is_not_mislabeled_as_missing_compiler(self):
+        output = (
+            "FTS_ARM_PREFLIGHT_STAGE:configure\n"
+            "-- The CXX compiler identification is Clang 18.1.3\n"
+            "CMake Error at CMakeLists.txt:91 (MESSAGE):\n"
+            "  /src/../folly/folly/Conv.h not found\n"
+            "  token=private-build-log-value\n"
+            "FTS_ARM_PREFLIGHT_FAILED_STAGE:configure:1\n"
+        )
+        evidence = _failure_evidence(output, 1)
+        self.assertEqual(
+            evidence,
+            "native_arm_failure:stage=configure;kind=missing_dependency;exit=1",
+        )
+        self.assertNotIn("private-build-log-value", evidence)
+
+    def test_actual_missing_compiler_remains_distinct_from_dependency_failure(self):
+        output = (
+            "FTS_ARM_PREFLIGHT_STAGE:configure\n"
+            "CMake Error at CMakeLists.txt:3 (project):\n"
+            "  The CMAKE_CXX_COMPILER:\n"
+            "    clang++\n"
+            "  is not a full path and was not found in the PATH.\n"
+            "FTS_ARM_PREFLIGHT_FAILED_STAGE:configure:1\n"
+        )
+        self.assertEqual(
+            _failure_evidence(output, 1),
+            "native_arm_failure:stage=configure;kind=compiler_unavailable;exit=1",
+        )
 
     def test_native_selection_failure_has_specific_safe_category(self):
         output = (

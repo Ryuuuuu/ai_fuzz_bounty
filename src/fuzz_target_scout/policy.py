@@ -49,6 +49,28 @@ NEGATIVE_PATTERNS = [
     )
 ]
 
+# An organization-wide SECURITY.md does not override a narrower statement in
+# the repository's own README. Keep these patterns limited to project-wide
+# exclusions, so a README describing an ineligible *class* of reports does not
+# exclude the entire project.
+README_PROJECT_EXCLUSION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(?:this|the) (?:repository|project)\b[^.!?\n]{0,120}"
+        r"\bnot eligible for (?:a |the )?(?:bug )?bount(?:y|ies)\b",
+        r"\b(?:this|the) (?:repository|project)\b[^.!?\n]{0,120}"
+        r"\bdoes not offer (?:monetary )?(?:bug )?bounties\b",
+        r"\bissues are expected and (?:are )?not eligible for "
+        r"(?:a |the )?bug bounty\b",
+    )
+]
+
+GOOGLE_OSS_VRP_PRODUCT_PAUSE_DATE = date(2026, 10, 1)
+GOOGLE_OSS_VRP_RULES_PATH = (
+    "/about/rules/open-source/"
+    "google-open-source-software-vulnerability-reward-program-rules"
+)
+
 URL_RE = re.compile(r"https://[^\s)>\"']+", re.IGNORECASE)
 
 
@@ -127,10 +149,67 @@ class PolicyVerifier:
                 note="Repository is archived or disabled.",
             )
 
+        current_day = today or date.today()
+        if self._readme_excludes_inherited_bounty(repo):
+            return PolicyAssessment(
+                status="rejected",
+                confidence=100,
+                source="readme",
+                note="The repository README explicitly excludes this project from bug bounties.",
+            )
+
         entry = self.entries.get(repo.full_name.casefold())
         if entry:
-            return self._from_catalog(repo, entry, today or date.today())
-        return self._from_security_file(repo)
+            assessment = self._from_catalog(repo, entry, current_day)
+            if (
+                current_day >= GOOGLE_OSS_VRP_PRODUCT_PAUSE_DATE
+                and self._is_google_oss_vrp_program(entry.get("program_url", ""))
+            ):
+                # A separately verified active program can still cover the
+                # repository; the paused OSS VRP alone cannot.
+                alternative = self._from_security_file(repo)
+                if alternative.status == "verified" and not self._is_google_oss_vrp_program(
+                    alternative.program_url
+                ):
+                    assessment = alternative
+        else:
+            assessment = self._from_security_file(repo)
+
+        if (
+            current_day >= GOOGLE_OSS_VRP_PRODUCT_PAUSE_DATE
+            and assessment.status in {"verified", "conditional"}
+            and self._is_google_oss_vrp_program(assessment.program_url)
+        ):
+            return PolicyAssessment(
+                status="rejected",
+                confidence=100,
+                source="google_oss_vrp",
+                note=(
+                    "Google OSS VRP stopped accepting new product vulnerability "
+                    "submissions on 2026-10-01."
+                ),
+            )
+        return assessment
+
+    @staticmethod
+    def _is_google_oss_vrp_program(program_url: str) -> bool:
+        parsed = urlparse(str(program_url))
+        return (
+            parsed.scheme == "https"
+            and (parsed.hostname or "").casefold() in {
+                "bughunters.google.com", "www.bughunters.google.com"
+            }
+            and parsed.path.rstrip("/").casefold() == GOOGLE_OSS_VRP_RULES_PATH
+        )
+
+    @staticmethod
+    def _readme_excludes_inherited_bounty(repo: RepoSnapshot) -> bool:
+        owner = repo.full_name.split("/", 1)[0].casefold()
+        inherited = f"github.com/{owner}/.github/" in repo.security_url.casefold()
+        return inherited and any(
+            pattern.search(repo.readme_excerpt)
+            for pattern in README_PROJECT_EXCLUSION_PATTERNS
+        )
 
     def _from_catalog(
         self, repo: RepoSnapshot, entry: dict[str, Any], today: date

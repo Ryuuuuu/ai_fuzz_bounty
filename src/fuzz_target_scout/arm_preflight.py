@@ -62,7 +62,9 @@ def candidate_targets(targets):
     return [name for _priority, _length, name in sorted(ranked)[:3]]
 
 
-def select_native_test(build, source, tests_path, *, candidates=False):
+def select_native_test(
+    build, source, tests_path, *, candidates=False, standalone_target=None
+):
     commands = json.loads((build / "compile_commands.json").read_text())
     compiled = {
         resolved(Path(item["directory"]), item["file"])
@@ -113,6 +115,18 @@ def select_native_test(build, source, tests_path, *, candidates=False):
     if candidates:
         return candidate_targets(targets)
 
+    if standalone_target is not None:
+        if standalone_target not in candidate_targets(targets):
+            raise ValueError("standalone target is not a C/C++ test candidate")
+        for artifact, target_name in targets:
+            if target_name == standalone_target and artifact.is_file():
+                return {
+                    "artifact": str(artifact),
+                    "target": target_name,
+                    "kind": "standalone",
+                }
+        raise ValueError("built standalone test executable is missing")
+
     tests = json.loads(tests_path.read_text()).get("tests", [])
     for number, test in enumerate(tests, 1):
         command = test.get("command") or []
@@ -140,6 +154,12 @@ if __name__ == "__main__":
             )
             if names:
                 print("\n".join(names))
+        elif sys.argv[1:2] == ["--standalone"]:
+            selected = select_native_test(
+                Path(sys.argv[2]), Path(sys.argv[3]), None,
+                standalone_target=sys.argv[5],
+            )
+            Path(sys.argv[4]).write_text(json.dumps(selected))
         else:
             selected = select_native_test(
                 Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
@@ -155,6 +175,65 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def first_gtest_case(output):
+    suite = None
+    for raw in output.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if not line[0].isspace():
+            name = line[:-1] if line.endswith(".") else ""
+            suite = name if re.fullmatch(r"[A-Za-z0-9_./]+", name) else None
+            continue
+        case = line.strip()
+        if suite and re.fullmatch(r"[A-Za-z0-9_./]+", case):
+            parts = (suite + "." + case).replace("/", ".").split(".")
+            if not any(part.startswith("DISABLED_") for part in parts):
+                return suite + "." + case
+    return None
+
+
+def run_standalone_test(artifact, build):
+    listing = subprocess.run(
+        [str(artifact), "--gtest_list_tests"], cwd=build,
+        capture_output=True, text=True, timeout=8, check=False,
+    )
+    case = first_gtest_case(listing.stdout) if listing.returncode == 0 else None
+    if case:
+        result = subprocess.run(
+            [str(artifact), f"--gtest_filter={case}", "--gtest_color=no"],
+            cwd=build, capture_output=True, text=True, timeout=30, check=False,
+        )
+        output = result.stdout + result.stderr
+        print(output[-8192:])
+        ran = re.search(
+            r"^\[\s*RUN\s*\]\s+" + re.escape(case) + r"$",
+            output, re.MULTILINE,
+        )
+        passed_case = re.search(
+            r"^\[\s*OK\s*\]\s+" + re.escape(case) + r"\s+\(",
+            output, re.MULTILINE,
+        )
+        passed_count = re.search(
+            r"^\[\s*PASSED\s*\]\s+1 test\.$", output, re.MULTILINE,
+        )
+        if result.returncode != 0 or not (ran and passed_case and passed_count):
+            raise ValueError("standalone GoogleTest did not pass one test")
+        return
+    if listing.returncode == 0 and re.search(
+        r"(?m)^[A-Za-z0-9_./]+\.$", listing.stdout
+    ):
+        raise ValueError("standalone GoogleTest has no enabled test")
+    result = subprocess.run(
+        [str(artifact)], cwd=build,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    output = result.stdout + result.stderr
+    print(output[-8192:])
+    if result.returncode != 0 or not output.strip():
+        raise ValueError("standalone native test did not provide a passing smoke")
 
 
 def verify_native_test(build, selection_path):
@@ -173,6 +252,11 @@ def verify_native_test(build, selection_path):
     endian = {1: "little", 2: "big"}.get(header[5])
     if endian is None or int.from_bytes(header[18:20], endian) != 183:
         raise ValueError("test executable is not AArch64")
+    if selection.get("kind") == "standalone":
+        run_standalone_test(artifact, build)
+        return
+    if selection.get("kind") not in (None, "ctest"):
+        raise ValueError("unknown native test selection kind")
     number = int(selection["test_index"])
     result = subprocess.run(
         [
@@ -196,22 +280,54 @@ if __name__ == "__main__":
         raise SystemExit(f"native test smoke failed: {exc}")
 """
 
+SELECT_CMAKE_NONTEST_OPTIONS = r"""import re
+import sys
+from pathlib import Path
+
+# Only declared, conventional benchmark/example switches may be changed.
+# The names are validated before they become individual quoted shell arguments.
+DECLARATION = re.compile(
+    r'(?im)^[ \t]*(?:option|cmake_dependent_option)[ \t]*\([ \t]*'
+    r'([A-Za-z][A-Za-z0-9_]*)(?=[ \t\r\n)])'
+)
+NONTEST_OPTION = re.compile(
+    r'(?:[A-Z][A-Z0-9]*_)*(?:BUILD|ENABLE|WITH)_(?:BENCHMARKS?|EXAMPLES?)'
+)
+
+source = Path(sys.argv[1]) / 'CMakeLists.txt'
+if source.stat().st_size > 2 * 1024 * 1024:
+    raise SystemExit('CMake option scan exceeded size limit')
+names = sorted(set(DECLARATION.findall(source.read_text(errors='replace'))))
+for name in [n for n in names if len(n) <= 64 and NONTEST_OPTION.fullmatch(n)][:24]:
+    print(f'-D{name}=OFF')
+"""
+
 BUILD_AND_SMOKE = (
-    """mkdir -p /work/build/.cmake/api/v1/query
-: > /work/build/.cmake/api/v1/query/codemodel-v2
-stage=configure
+    """stage=configure
 trap 'code=$?; if [ "$code" -ne 0 ]; then printf "FTS_ARM_PREFLIGHT_FAILED_STAGE:%s:%s\\n" "$stage" "$code" >&2; fi' EXIT
 printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
+mkdir /work/src
+cp -a /src/. /work/src/
+mkdir -p /work/build/.cmake/api/v1/query
+: > /work/build/.cmake/api/v1/query/codemodel-v2
+cat > /work/select_cmake_nontest_options.py <<'PY'
+"""
+    + SELECT_CMAKE_NONTEST_OPTIONS
+    + """PY
+python3 /work/select_cmake_nontest_options.py /work/src > /work/nontest-options.txt
+set --
 # Use the GoogleTest sources supplied by the base image when available.
 # Other CMake projects can ignore this cache entry.
 if [ -f /usr/src/googletest/CMakeLists.txt ] &&
    [ -f /usr/src/googletest/googletest/CMakeLists.txt ] &&
    [ -f /usr/src/googletest/googlemock/CMakeLists.txt ]; then
-  set -- -DGOOGLETEST_PATH=/usr/src/googletest
-else
-  set --
+  set -- "$@" -DGOOGLETEST_PATH=/usr/src/googletest
+  set -- "$@" -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/usr/src/googletest
 fi
-cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"
+while IFS= read -r option; do
+  set -- "$@" "$option"
+done < /work/nontest-options.txt
+cmake -S /work/src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"
 stage=select_native_test
 printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
 ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
@@ -219,10 +335,10 @@ cat > /work/select_native_test.py <<'PY'
 """
     + SELECT_NATIVE_TEST
     + """PY
-if ! python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json; then
+if ! python3 /work/select_native_test.py /work/build /work/src /work/tests.json /work/selection.json; then
   # Some CTest entries, including gtest_discover_tests, gain a command only
   # after their executable has been built. Probe at most three likely targets.
-  python3 /work/select_native_test.py --candidates /work/build /src > /work/candidates.txt
+  python3 /work/select_native_test.py --candidates /work/build /work/src > /work/candidates.txt
   if [ ! -s /work/candidates.txt ]; then
     printf 'native test selection failed: no CTest executable backed by a C/C++ CMake target\n' >&2
     exit 1
@@ -236,7 +352,12 @@ if ! python3 /work/select_native_test.py /work/build /src /work/tests.json /work
       stage=select_native_test
       printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
       ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
-      if python3 /work/select_native_test.py /work/build /src /work/tests.json /work/selection.json; then
+      if python3 /work/select_native_test.py /work/build /work/src /work/tests.json /work/selection.json; then
+        break
+      fi
+      # A compiled C/C++ test executable can be runnable even when CTest has
+      # no entry. Verify the exact built target directly in the smoke stage.
+      if python3 /work/select_native_test.py --standalone /work/build /work/src /work/selection.json "$candidate"; then
         break
       fi
     fi
@@ -431,14 +552,16 @@ MESON_BUILD_AND_SMOKE = (
     """stage=configure
 trap 'code=$?; if [ "$code" -ne 0 ]; then printf "FTS_ARM_PREFLIGHT_FAILED_STAGE:%s:%s\\n" "$stage" "$code" >&2; fi' EXIT
 printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
-CC=clang CXX=clang++ meson setup /work/build /src --backend=ninja --default-library=static --buildtype=release --wrap-mode=nodownload
+mkdir /work/src
+cp -a /src/. /work/src/
+CC=clang CXX=clang++ meson setup /work/build /work/src --backend=ninja --default-library=static --buildtype=release --wrap-mode=nodownload
 stage=select_native_test
 printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
 cat > /work/select_meson_native_test.py <<'PY'
 """
     + SELECT_MESON_NATIVE_TEST
     + """PY
-python3 /work/select_meson_native_test.py /work/build /src /work/selection.json
+python3 /work/select_meson_native_test.py /work/build /work/src /work/selection.json
 target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
 stage=build
 printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
@@ -449,7 +572,7 @@ cat > /work/verify_meson_native_test.py <<'PY'
 """
     + VERIFY_MESON_NATIVE_TEST
     + """PY
-python3 /work/verify_meson_native_test.py /work/build /src /work/selection.json
+python3 /work/verify_meson_native_test.py /work/build /work/src /work/selection.json
 printf 'FTS_ARM_PREFLIGHT_OK\\n'
 """
 )
@@ -485,6 +608,18 @@ _CTEST_FAILURE_COUNTS = re.compile(
     r"\b([0-9]{1,5}) tests? failed out of ([0-9]{1,5})\b",
     re.IGNORECASE,
 )
+_COMPILER_NOT_FOUND = re.compile(
+    r"\bno CMAKE_(?:C|CXX)_COMPILER could be found\b"
+    r"|\bthe CMAKE_(?:C|CXX)_COMPILER:\s*\S+\s+"
+    r"is not a full path and was not found in the PATH\b"
+    r"|(?m:^\s*(?:(?:/bin/)?(?:ba)?sh:\s*(?:[0-9]+:\s*)?)?"
+    r"(?:clang\+\+|clang|g\+\+|gcc|c\+\+|cc):\s*"
+    r"(?:command )?not found\b)",
+    re.IGNORECASE,
+)
+_MISSING_HEADER_DEPENDENCY = re.compile(
+    r"\b\S+\.(?:h|hpp) not found\b", re.IGNORECASE,
+)
 
 
 def _failure_evidence(output: str, returncode: int) -> str:
@@ -509,10 +644,10 @@ def _failure_evidence(output: str, returncode: int) -> str:
     elif stage == "configure":
         if "fetchcontent" in normalized or "network is unreachable" in normalized:
             kind = "offline_dependency"
-        elif "could not find" in normalized or "could not find a package" in normalized:
-            kind = "missing_dependency"
-        elif "compiler" in normalized and "not found" in normalized:
+        elif _COMPILER_NOT_FOUND.search(output):
             kind = "compiler_unavailable"
+        elif "could not find" in normalized or _MISSING_HEADER_DEPENDENCY.search(output):
+            kind = "missing_dependency"
         else:
             kind = "configure_failed"
     elif stage == "select_native_test":

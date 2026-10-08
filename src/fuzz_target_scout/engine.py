@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -74,6 +75,8 @@ class ScoutEngine:
         search_pages_per_query: int = 1,
         run_arm_preflight: bool = False,
         seed_repositories: Iterable[str] | None = None,
+        arm_preflight_max_attempts: int | None = None,
+        arm_preflight_budget_seconds: int | None = None,
     ) -> ScanSummary:
         source = "catalog" if catalog_only else "github-search"
         scan_id = self.store.start_scan(source)
@@ -103,6 +106,7 @@ class ScoutEngine:
                     if policy.status in {"verified", "conditional"}:
                         self.progress(f"[{index}/{len(repos)}] code evidence {repo.full_name}")
                         with_policy = self.github.hydrate_code_evidence(with_policy)
+                        policy = self.policy.verify(with_policy)
                     architecture = assess_architecture(
                         with_policy, self.config["architecture"]
                     )
@@ -130,7 +134,11 @@ class ScoutEngine:
                     self.progress(f"warning: {repo.full_name}: {exc}")
 
             arm_attempted, arm_passed = (
-                self._preflight_arm_candidates(candidates)
+                self._preflight_arm_candidates(
+                    candidates,
+                    max_attempts=arm_preflight_max_attempts,
+                    budget_seconds=arm_preflight_budget_seconds,
+                )
                 if run_arm_preflight else (0, 0)
             )
             ai_calls, ai_cache_hits, ai_errors = self._apply_ai(candidates, use_ai)
@@ -339,7 +347,13 @@ class ScoutEngine:
         if signal not in candidate.static.signals:
             candidate.static.signals.append(signal)
 
-    def _preflight_arm_candidates(self, candidates: list[Candidate]) -> tuple[int, int]:
+    def _preflight_arm_candidates(
+        self,
+        candidates: list[Candidate],
+        *,
+        max_attempts: int | None = None,
+        budget_seconds: int | None = None,
+    ) -> tuple[int, int]:
         architecture = self.config["architecture"]
         if (
             not bool(architecture.get("arm_preflight_enabled", True))
@@ -438,10 +452,26 @@ class ScoutEngine:
                 item[1].repo.full_name.casefold(),
             )
         )
-        maximum = min(2, max(0, int(architecture.get("arm_preflight_max_per_scan", 2))))
-        runner = ArmPreflight(architecture, progress=self.progress)
+        configured_maximum = max(0, int(architecture.get("arm_preflight_max_per_scan", 2)))
+        maximum = min(8, configured_maximum if max_attempts is None else max(0, max_attempts))
+        deadline = (
+            time.monotonic() + max(60, budget_seconds)
+            if budget_seconds is not None else None
+        )
         attempted = 0
         for _prior_success, candidate, version in pending[:maximum]:
+            remaining = None if deadline is None else int(deadline - time.monotonic())
+            if remaining is not None and remaining < 60:
+                self.progress("ARM preflight deferred: discovery time budget exhausted")
+                break
+            runner_config = architecture if remaining is None else {
+                **architecture,
+                "arm_preflight_timeout_seconds": min(
+                    int(architecture.get("arm_preflight_timeout_seconds", 900)),
+                    remaining,
+                ),
+            }
+            runner = ArmPreflight(runner_config, progress=self.progress)
             self.progress(f"ARM preflight: {candidate.repo.full_name}")
             result = runner.check(candidate.repo)
             attempted += 1
