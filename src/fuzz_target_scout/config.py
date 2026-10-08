@@ -91,7 +91,7 @@ DEFAULTS: dict[str, Any] = {
         "triage_schema_path": "schemas/triage-report.schema.json",
         "validation_schema_path": "schemas/validation-agent.schema.json",
         "coverage_ai_timeout_seconds": 180,
-        "quartet_ai_timeout_seconds": 360,
+        "quartet_ai_timeout_seconds": 600,
         "generation_ai_timeout_seconds": 240,
         "generation_max_tokens": 4096,
         "max_generation_cycles": 2,
