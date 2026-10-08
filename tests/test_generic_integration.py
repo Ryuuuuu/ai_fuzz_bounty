@@ -33,6 +33,7 @@ class GenericIntegrationTests(unittest.TestCase):
             (source / "include" / "dna").mkdir(parents=True)
             (source / "include" / "trio").mkdir(parents=True)
             (source / "src" / "dna").mkdir(parents=True)
+            (source / "src" / "trio" / "streams").mkdir(parents=True)
             (source / "include" / "dna" / "BinaryStreamReader.h").write_text(
                 "class DNAAPI BinaryStreamReader : public StreamReader {\n"
                 "public:\n"
@@ -48,6 +49,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 "  void setDBComplexity(const char* name) override;\n"
                 "};\n"
             )
+            (source / "src" / "trio" / "streams" / "FileStreamImpl.h").write_text(
+                "struct FileStreamImpl {\n"
+                "  std::size_t read(char* destination, std::size_t size) override;\n"
+                "};\n"
+            )
             (source / "include" / "trio" / "MemoryStream.h").write_text(
                 "class MemoryStream {\npublic:\n"
                 "  void write(const char* bytes, size_t length);\n"
@@ -61,6 +67,16 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("DNAAPI_MEMBER static BinaryStreamReader* create(BoundedIOStream* stream,", candidate["signature"])
         self.assertIn("const Configuration& config = {}", candidate["signature"])
         self.assertNotIn("destroy", candidate["signature"])
+
+    def test_mutable_read_destination_is_not_a_fuzz_input_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "std::size_t read(char* destination, std::size_t size);\n"
+                "std::size_t readBytes(uint8_t* dst, std::size_t size);\n"
+            )
+            with self.assertRaisesRegex(PipelineError, "no existing harness"):
+                _select_public_candidate(source)
 
     def test_stream_factory_context_exposes_bounded_memory_adapter_and_read_api(self):
         with tempfile.TemporaryDirectory() as directory:

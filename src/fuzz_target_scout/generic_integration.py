@@ -713,6 +713,18 @@ def _candidate_input_rank(signature: str, name: str) -> int:
     if not arguments or arguments == "void":
         return 4
     words = _symbol_words(name)
+    mutable_read_buffer = "read" in words and any(
+        re.search(
+            r"\b(?:(?:unsigned|signed)\s+)?(?:char|byte|u?int8_t|void)\s*\*",
+            parameter,
+            re.IGNORECASE,
+        ) and not re.search(r"\bconst\b", parameter)
+        for parameter in arguments.split(",")
+    )
+    if mutable_read_buffer:
+        # Stream::read(dst, size) fills an output buffer; fuzz bytes never
+        # reach a parser through that API alone.
+        return 4
     has_byte_input = bool(re.search(
         r"\b(?:basic_string|string(?:_view)?|span|vector)\b"
         r"|\b(?:(?:const|unsigned)\s+)*(?:std::)?(?:char|byte|u?int8_t)\s*[*&]",
