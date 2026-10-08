@@ -309,7 +309,7 @@ def repair_generic_harness(
     if not candidate.get("file"):
         candidate = _select_public_candidate(source)
     _record_generation_candidate(job_dir, candidate)
-    context = source_context(source, candidate, radius=140)
+    context = _generation_context(source, candidate)
     harness_path = project_dir / "generic_harness.cc"
     prior = harness_path.read_text(encoding="utf-8", errors="replace")
     prompt = generation_prompt(
@@ -380,7 +380,7 @@ def _obtain_harness(
     }
     candidate = _select_public_candidate(source, excluded_candidate_ids)
     _record_generation_candidate(job_dir, candidate)
-    context = source_context(source, candidate, radius=140)
+    context = _generation_context(source, candidate)
     prompt = generation_prompt(
         project=project,
         language="C++",
@@ -412,6 +412,85 @@ def _record_generation_candidate(job_dir: Path, candidate: dict[str, Any]) -> No
         "created_at": utc_now(),
         "candidate": candidate,
     })
+
+
+def _generation_context(source: Path, candidate: dict[str, Any]) -> str:
+    """Include a bounded public memory-stream API for stream-based targets."""
+    primary = source_context(source, candidate, radius=140)
+    signature = str(candidate.get("signature") or "")
+    if not re.search(
+        r"\b(?:[A-Za-z_]\w*::)*(?:[A-Za-z_]\w*)?(?:InputStream|"
+        r"IOStream|MemoryStream|BoundedStream|StreamReader|istream|streambuf)\s*[*&]",
+        signature,
+        re.IGNORECASE,
+    ):
+        return primary
+    target = Path(str(candidate.get("file") or ""))
+    target_text = (source / target).read_text(encoding="utf-8", errors="replace")
+    target_type = target.stem
+    base_names = {
+        match.group(1).casefold()
+        for match in re.finditer(
+            r"\b(?:class|struct)\s+(?:[A-Za-z_]\w*\s+){0,2}"
+            + re.escape(target_type)
+            + r"\s*:\s*public\s+([A-Za-z_]\w*)",
+            target_text,
+        )
+    }
+    adapters: list[tuple[int, Path]] = []
+    bases: list[Path] = []
+    excluded = {"bench", "benchmark", "benchmarks", "examples", "test", "tests",
+                "third_party", "third-party", "tools", "vendor", "internal", "private"}
+    for scanned, path in enumerate(source.rglob("*")):
+        if scanned >= 20_000:
+            break
+        if path == source / target or path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix.casefold() not in HEADER_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_size > 100_000:
+                continue
+        except OSError:
+            continue
+        relative = path.relative_to(source)
+        if {part.casefold() for part in relative.parts[:-1]} & excluded:
+            continue
+        stem = path.stem.casefold()
+        memory_like = bool(re.search(
+            r"(?:memory|buffer|span|byte|string).*(?:stream|reader)"
+            r"|(?:stream|reader).*(?:memory|buffer|span|byte|string)",
+            stem,
+        ))
+        if memory_like:
+            adapters.append((0 if "memory" in stem else 1, path))
+        elif stem in base_names:
+            bases.append(path)
+    selected = [path for _, path in sorted(adapters, key=lambda item: (item[0],
+        _public_header_rank(source, item[1])))[:1]]
+    selected += sorted(bases, key=lambda path: _public_header_rank(source, path))[:1]
+    if not selected:
+        return primary
+    related: list[str] = []
+    for path in selected:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        stem = path.stem.casefold()
+        class_line = next((number for number, line in _accessible_header_lines(lines)
+                           if re.search(r"\b(?:class|struct)\b", line)
+                           and re.search(r"\b" + re.escape(stem) + r"\b", line,
+                                         re.IGNORECASE)
+                           and not line.rstrip().endswith(";")), 1)
+        snippet = [f"Related public header: {path.relative_to(source).as_posix()}"]
+        for number, visible in _accessible_header_lines(lines):
+            if number < max(1, class_line - 3) or number > class_line + 100:
+                continue
+            if visible.strip():
+                snippet.append(f"{number:05d}: {visible}")
+        related.append("\n".join(snippet)[:2600])
+    return (primary[:12000] + "\n\n" + "\n\n".join(related))[:18000]
 
 
 def _find_existing_harness(
@@ -481,7 +560,8 @@ def _select_public_candidate(
     prototype = re.compile(
         r'^\s*(?:extern\s+"C"\s+)?'
         r'(?P<result>[A-Za-z_][\w:<>,*&\s]*)\s+'
-        r'(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;{}]*\)\s*;\s*$'
+        r'(?P<name>[A-Za-z_][A-Za-z0-9_:]*)\s*\([^;]*\)\s*'
+        r'(?:(?:const|noexcept|override|final)\s*)*;\s*$'
     )
     rejected = {
         "alignof",
@@ -521,11 +601,12 @@ def _select_public_candidate(
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for number, line in _accessible_header_lines(lines):
-            match = prototype.match(line)
+        for number, signature in _public_function_declarations(lines):
+            match = prototype.match(signature)
             if (
                 not match
                 or match.group("name").split("::")[-1] in rejected
+                or _is_lifetime_api(match.group("name"))
                 or not _is_declaration_result(match.group("result"))
             ):
                 continue
@@ -533,13 +614,16 @@ def _select_public_candidate(
                 "id": hashlib.sha256(f"{path}:{number}".encode()).hexdigest()[:16],
                 "file": path.relative_to(source).as_posix(),
                 "local_symbol_line": number,
-                "signature": line.strip()[:1000],
+                "signature": signature[:1000],
             }
             if candidate["id"] in excluded_candidate_ids:
                 continue
+            input_rank = _candidate_input_rank(candidate["signature"], match.group("name"))
+            if input_rank == 4:
+                continue
             candidates.append((
                 (
-                    _candidate_input_rank(candidate["signature"], match.group("name")),
+                    input_rank,
                     _public_header_rank(source, path),
                     number,
                 ),
@@ -624,24 +708,80 @@ def _public_macro_rank(name: str, parameters: str) -> tuple[int, int, int]:
 
 
 def _candidate_input_rank(signature: str, name: str) -> int:
-    """Prefer APIs that can consume fuzz bytes as data over no-input methods."""
+    """Prefer parsing bytes or an input stream over state-only methods."""
     arguments = signature.partition("(")[2].rpartition(")")[0].strip()
     if not arguments or arguments == "void":
-        return 3
+        return 4
     has_byte_input = bool(re.search(
         r"\b(?:basic_string|string(?:_view)?|span|vector)\b"
         r"|\b(?:(?:const|unsigned)\s+)*(?:std::)?(?:char|byte|u?int8_t)\s*[*&]",
         arguments,
         re.IGNORECASE,
     ))
-    if not has_byte_input:
-        return 2
+    has_stream_input = bool(re.search(
+        r"\b(?:[A-Za-z_]\w*::)*(?:[A-Za-z_]\w*)?(?:InputStream|"
+        r"IOStream|MemoryStream|BoundedStream|StreamReader|istream|streambuf)\s*[*&]",
+        arguments,
+        re.IGNORECASE,
+    ))
     parser_name = bool(re.search(
-        r"parse|decode|deseriali[sz]e|tokeni[sz]e|lex|from_?(?:json|string|bytes)",
+        r"parse|decode|deseriali[sz]e|tokeni[sz]e|lex|read|load|"
+        r"from_?(?:json|string|bytes|stream)",
         name,
         re.IGNORECASE,
     ))
-    return 0 if parser_name else 1
+    reader_factory = bool(re.search(r"\b(?:create|make|open|from\w*)$", name, re.IGNORECASE)) and bool(
+        re.search(r"reader|parser|decoder|deseriali[sz]er", signature, re.IGNORECASE)
+    )
+    if has_byte_input:
+        return 0 if parser_name else 2
+    if has_stream_input:
+        return 1 if parser_name or reader_factory else 2
+    return 3
+
+
+def _is_lifetime_api(name: str) -> bool:
+    """Do not fuzz object teardown as if it were an input parser."""
+    symbol = name.split("::")[-1]
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", symbol).casefold().split("_")
+    if words[0] in {"parse", "decode", "deserialize", "read", "load"}:
+        return False
+    return any(word in {
+        "clear", "cleanup", "close", "dealloc", "deallocate", "delete",
+        "destroy", "dispose", "finalize", "free", "release", "reset",
+        "shutdown", "terminate",
+    } for word in words)
+
+
+def _public_function_declarations(lines: list[str]):
+    """Join short public declarations without crossing access or scope boundaries."""
+    fragments: list[str] = []
+    start = 0
+    previous = 0
+    for number, visible in _accessible_header_lines(lines):
+        if previous and number != previous + 1:
+            fragments = []
+        previous = number
+        fragment = visible.strip()
+        if not fragment:
+            continue
+        if "{" in fragment and "(" not in " ".join(fragments + [fragment]):
+            fragments = []
+            continue
+        if fragment.startswith("}") or fragment in {"public:", "protected:", "private:"}:
+            fragments = []
+            continue
+        if not fragments:
+            start = number
+        fragments.append(fragment)
+        statement = " ".join(fragments)
+        if len(statement) > 1000 or len(fragments) > 16:
+            fragments = []
+            continue
+        if ";" in fragment:
+            if statement.endswith(";") and statement.count(";") == 1:
+                yield start, statement
+            fragments = []
 
 
 def _accessible_header_lines(lines: list[str]):

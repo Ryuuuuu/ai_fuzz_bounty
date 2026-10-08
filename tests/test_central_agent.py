@@ -1782,6 +1782,10 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(
             [call["arm_preflight_budget_seconds"] for call in calls], [1800, None]
         )
+        self.assertEqual(
+            [call["arm_preflight_stop_after_success"] for call in calls],
+            [True, False],
+        )
         self.assertEqual(exports, [(1, 2), (2, 0)])
         self.assertEqual([call["seed_repositories"] for call in calls],
                          [["org/fresh"], ["org/fresh"]])

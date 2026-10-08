@@ -16,6 +16,9 @@ from typing import Any
 from .models import RepoSnapshot
 
 
+_GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
+
+
 class GitHubError(RuntimeError):
     pass
 
@@ -206,14 +209,26 @@ class GitHubClient:
             urllib.parse.quote(part, safe="") for part in repo.full_name.split("/", 1)
         )
         branch = urllib.parse.quote(repo.default_branch, safe="")
-        tree = self._request(f"/repos/{encoded}/git/trees/{branch}?recursive=1") or {}
+        commit = self._request(f"/repos/{encoded}/commits/{branch}")
+        if not isinstance(commit, dict):
+            raise GitHubError(f"GitHub did not return a pinned commit for {repo.full_name}")
+        commit_sha = str(commit.get("sha") or "")
+        tree_sha = str(((commit.get("commit") or {}).get("tree") or {}).get("sha") or "")
+        if not _GIT_SHA.fullmatch(commit_sha) or not _GIT_SHA.fullmatch(tree_sha):
+            raise GitHubError(f"GitHub did not return a pinned commit for {repo.full_name}")
+        tree = self._request(f"/repos/{encoded}/git/trees/{tree_sha}?recursive=1")
+        if not isinstance(tree, dict) or (
+            str(tree.get("sha") or "").casefold() != tree_sha.casefold()
+            or not isinstance(tree.get("tree"), list)
+        ):
+            raise GitHubError(f"GitHub returned an inconsistent tree for {repo.full_name}")
         blobs = [
             item
             for item in (tree.get("tree") or [])
             if item.get("type") == "blob" and isinstance(item.get("path"), str)
         ][: self.max_tree_paths]
         paths = [str(item["path"]) for item in blobs]
-        readme = self._request(f"/repos/{encoded}/readme")
+        readme = self._request(f"/repos/{encoded}/readme?ref={commit_sha}")
         architecture_files: dict[str, str] = {}
         for item in self._architecture_blobs(blobs):
             payload = self._request(f"/repos/{encoded}/git/blobs/{item['sha']}") or {}
@@ -222,7 +237,7 @@ class GitHubClient:
                 architecture_files[str(item["path"])] = content[:32_000]
         return replace(
             repo,
-            head_sha=tree.get("sha") or repo.head_sha,
+            head_sha=commit_sha,
             language=_infer_fuzzable_language(paths, repo.language),
             paths=paths,
             readme_excerpt=self._compact_readme(self._decode_content(readme)),

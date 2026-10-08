@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import unittest
 from dataclasses import replace
@@ -43,6 +44,55 @@ class _SearchGitHub:
 
 
 class EngineIdleDiscoveryTests(unittest.TestCase):
+    def test_idle_preflight_stops_after_first_native_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+            first = Candidate(
+                repo=RepoSnapshot(
+                    full_name="org/parser-one", html_url="https://github.com/org/parser-one",
+                    default_branch="main", head_sha="a" * 40,
+                    language="C++", size_kb=100,
+                    security_url="https://github.com/org/parser-one/security/policy",
+                ),
+                static=StaticAssessment(
+                    fuzz_score=80, reproduce_difficulty=1,
+                    signals=["standard_build:cmakelists.txt"],
+                    blockers=["native_build_probe_required:aarch64"],
+                    suggested_entry_kind="library_api",
+                ),
+                policy=PolicyAssessment(
+                    status="verified", confidence=95, source="security.md",
+                    program_url="https://hackerone.com/example",
+                ),
+                final_score=80,
+                architecture=ArchitectureAssessment(
+                    host_arch="aarch64", compatible=False, confidence=40,
+                    blockers=["native_build_probe_required:aarch64"],
+                ),
+            )
+            second = copy.deepcopy(first)
+            second.repo.full_name = "org/parser-two"
+            second.repo.head_sha = "b" * 40
+            second.repo.html_url = "https://github.com/org/parser-two"
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = SimpleNamespace(
+                        passed=True, reason="native_test_passed",
+                        evidence="native_arm_preflight:test:cmake_build_ctest:" + "a" * 40,
+                    )
+                    attempted, passed = engine._preflight_arm_candidates(
+                        [first, second], max_attempts=4,
+                        stop_after_success=True,
+                    )
+                self.assertEqual((attempted, passed), (1, 1))
+                runner.return_value.check.assert_called_once()
+                self.assertTrue(first.architecture.compatible)
+                self.assertFalse(second.architecture.compatible)
+            finally:
+                engine.close()
+
     def test_arm_preflight_idle_budget_limits_expensive_probes(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")

@@ -77,6 +77,7 @@ class ScoutEngine:
         seed_repositories: Iterable[str] | None = None,
         arm_preflight_max_attempts: int | None = None,
         arm_preflight_budget_seconds: int | None = None,
+        arm_preflight_stop_after_success: bool = False,
     ) -> ScanSummary:
         source = "catalog" if catalog_only else "github-search"
         scan_id = self.store.start_scan(source)
@@ -138,6 +139,7 @@ class ScoutEngine:
                     candidates,
                     max_attempts=arm_preflight_max_attempts,
                     budget_seconds=arm_preflight_budget_seconds,
+                    stop_after_success=arm_preflight_stop_after_success,
                 )
                 if run_arm_preflight else (0, 0)
             )
@@ -353,6 +355,7 @@ class ScoutEngine:
         *,
         max_attempts: int | None = None,
         budget_seconds: int | None = None,
+        stop_after_success: bool = False,
     ) -> tuple[int, int]:
         architecture = self.config["architecture"]
         if (
@@ -444,6 +447,8 @@ class ScoutEngine:
                 version,
             ))
 
+        if stop_after_success and passed:
+            return 0, passed
         pending.sort(
             key=lambda item: (
                 not item[0],
@@ -484,6 +489,8 @@ class ScoutEngine:
                 self._accept_arm_preflight(candidate, result.evidence)
                 passed += 1
                 self.progress(f"ARM preflight passed: {candidate.repo.full_name}")
+                if stop_after_success:
+                    break
             else:
                 detail = (
                     f"; {result.evidence}"

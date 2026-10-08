@@ -278,7 +278,8 @@ class RetargetNativeJobTests(unittest.TestCase):
         source = self.root / "selector"
         source.mkdir()
         (source / "api.h").write_text(
-            "class Parser {\npublic:\n  int parse(std::string input);\n  int refresh();\n};\n"
+            "class Parser {\npublic:\n  int parse(std::string input);\n"
+            "  int parse_bytes(const uint8_t* input, size_t size);\n};\n"
         )
         chosen = _select_public_candidate(source)
         alternate = _select_public_candidate(source, {chosen["id"]})

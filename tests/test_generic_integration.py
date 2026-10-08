@@ -17,6 +17,7 @@ from fuzz_target_scout.generic_integration import (
     _detect_system_dependencies,
     _infer_system_dependencies_from_build_error,
     _find_existing_harness,
+    _generation_context,
     _has_root_cmake_interface_library,
     _select_public_candidate,
     create_generic_project,
@@ -26,6 +27,137 @@ from fuzz_target_scout.generic_integration import (
 
 
 class GenericIntegrationTests(unittest.TestCase):
+    def test_multiline_stream_reader_factory_beats_teardown_and_stream_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "include" / "dna").mkdir(parents=True)
+            (source / "include" / "trio").mkdir(parents=True)
+            (source / "include" / "dna" / "BinaryStreamReader.h").write_text(
+                "class BinaryStreamReader {\n"
+                "public:\n"
+                "  static BinaryStreamReader* create(BoundedIOStream* stream,\n"
+                "                                    const Configuration& config = {},\n"
+                "                                    MemoryResource* memRes = nullptr);\n"
+                "  static void destroy(BinaryStreamReader* instance);\n"
+                "  void read() override;\n"
+                "};\n"
+            )
+            (source / "include" / "trio" / "MemoryStream.h").write_text(
+                "class MemoryStream {\npublic:\n"
+                "  void write(const char* bytes, size_t length);\n"
+                "};\n"
+            )
+
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["file"], "include/dna/BinaryStreamReader.h")
+        self.assertEqual(candidate["local_symbol_line"], 3)
+        self.assertIn("create(BoundedIOStream* stream,", candidate["signature"])
+        self.assertIn("const Configuration& config = {}", candidate["signature"])
+        self.assertNotIn("destroy", candidate["signature"])
+
+    def test_stream_factory_context_exposes_bounded_memory_adapter_and_read_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "include" / "dna").mkdir(parents=True)
+            (source / "include" / "trio").mkdir(parents=True)
+            (source / "include" / "dna" / "BinaryStreamReader.h").write_text(
+                "class BinaryStreamReader : public StreamReader {\n"
+                "public:\n"
+                "  static BinaryStreamReader* create(\n"
+                "      BoundedIOStream* source);\n"
+                "};\n"
+            )
+            (source / "include" / "dna" / "StreamReader.h").write_text(
+                "class StreamReader {\npublic:\n"
+                "  virtual void read() = 0;\n"
+                "};\n"
+            )
+            (source / "include" / "trio" / "MemoryStream.h").write_text(
+                "class MemoryStream : public BoundedIOStream {\npublic:\n"
+                "  void write(const char* data, size_t size);\n"
+                "  void seek(size_t offset);\n"
+                "};\n"
+            )
+            candidate = _select_public_candidate(source)
+            context = _generation_context(source, candidate)
+
+        self.assertIn("create( BoundedIOStream* source)", candidate["signature"])
+        self.assertIn("Related public header: include/trio/MemoryStream.h", context)
+        self.assertIn("write(const char* data, size_t size)", context)
+        self.assertIn("seek(size_t offset)", context)
+        self.assertIn("Related public header: include/dna/StreamReader.h", context)
+        self.assertIn("void read()", context)
+        self.assertLessEqual(len(context), 18000)
+
+    def test_direct_byte_parser_beats_stream_factory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "reader.h").write_text(
+                "struct Reader {\n"
+                "  static Reader* create(InputStream* source);\n"
+                "  static void destroy(Reader* instance);\n"
+                "};\n"
+                "int decode(const uint8_t* data, size_t length);\n"
+            )
+            candidate = _select_public_candidate(source)
+
+        self.assertEqual(candidate["signature"],
+                         "int decode(const uint8_t* data, size_t length);")
+
+    def test_direct_byte_api_does_not_add_unrelated_stream_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "parse.h").write_text(
+                "int parse(const uint8_t* data, size_t size);\n"
+            )
+            (source / "MemoryStream.h").write_text(
+                "class MemoryStream {\npublic:\nvoid write(const char* data);\n};\n"
+            )
+            candidate = _select_public_candidate(source)
+            context = _generation_context(source, candidate)
+
+        self.assertIn("int parse(const uint8_t* data", context)
+        self.assertNotIn("Related public header", context)
+
+    def test_lifetime_only_header_has_no_fuzzable_function_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "void destroy(void* instance);\n"
+                "void Buffer_free(void* instance);\n"
+                "void releaseBuffer(void* instance);\n"
+            )
+            with self.assertRaisesRegex(PipelineError, "no existing harness"):
+                _select_public_candidate(source)
+
+    def test_state_only_methods_do_not_trigger_harness_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "bool isReady();\n"
+                "void refresh();\n"
+            )
+            with self.assertRaisesRegex(PipelineError, "no existing harness"):
+                _select_public_candidate(source)
+
+    def test_multiline_private_stream_parser_does_not_leak(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "api.h").write_text(
+                "class Reader {\n"
+                "  int parse_private(\n"
+                "      InputStream* stream);\n"
+                "public:\n"
+                "  int parse_public(\n"
+                "      InputStream* stream);\n"
+                "};\n"
+            )
+            candidate = _select_public_candidate(source)
+
+        self.assertIn("parse_public", candidate["signature"])
+        self.assertNotIn("parse_private", candidate["signature"])
+
     def test_public_candidate_prefers_data_parser_over_zero_input_method(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
