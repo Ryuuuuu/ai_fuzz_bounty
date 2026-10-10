@@ -34,6 +34,7 @@ from fuzz_target_scout.pipeline_runner import (
     FuzzLogLimitExceeded,
     PipelineRunner,
     _fuzz_log_limit_reason,
+    _native_generated_fuzz_targets,
     _adapt_allocation_for_resource_limits,
     _offline_external_dependency_failure,
     _select_smoke_target,
@@ -49,6 +50,23 @@ from fuzz_target_scout.quartet_gate import (
     resolve_generic_integration_harness,
     validate_quartet_review,
 )
+
+
+class NativeTargetSelectionTests(unittest.TestCase):
+    def test_shared_libraries_are_not_fuzz_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            fuzzer = out / "generic_fuzzer"
+            fuzzer.write_bytes(b"fuzzer")
+            fuzzer.chmod(0o755)
+            library = out / "libcosigner.so"
+            library.write_bytes(b"library")
+            library.chmod(0o755)
+            self.assertEqual(
+                _native_generated_fuzz_targets(out), ["generic_fuzzer"]
+            )
+            fuzzer.unlink()
+            self.assertEqual(_native_generated_fuzz_targets(out), [])
 
 
 class PolicyRecheckTests(unittest.TestCase):

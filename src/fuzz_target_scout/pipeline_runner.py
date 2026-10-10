@@ -75,6 +75,15 @@ class FuzzLogLimitExceeded(PipelineError):
     """A fuzz session produced too much output to continue safely."""
 
 
+def _native_generated_fuzz_targets(out_dir: Path) -> list[str]:
+    # The generated integration emits one libFuzzer entrypoint. Shared
+    # libraries copied beside it are runtime dependencies, not fuzz targets.
+    target = out_dir / "generic_fuzzer"
+    if target.is_symlink() or not target.is_file() or not os.access(target, os.X_OK):
+        return []
+    return [target.name]
+
+
 def _fuzz_log_limit_reason(
     runtime_out: Path, log_path: Path, started_ns: int
 ) -> str | None:
@@ -2720,13 +2729,7 @@ class PipelineRunner:
                         "FUZZ_REUSE_BUILD=1",
                         *build_command[-2:],
                     ]
-        fuzzers = sorted(
-            path.name
-            for path in out_dir.iterdir()
-            if not path.is_symlink()
-            and path.is_file()
-            and os.access(path, os.X_OK)
-        )
+        fuzzers = _native_generated_fuzz_targets(out_dir)
         if not fuzzers:
             raise PipelineError("native build produced no executable fuzz targets")
         snapshot_root = job_dir / "build-output"
