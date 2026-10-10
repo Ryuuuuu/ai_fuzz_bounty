@@ -523,7 +523,7 @@ class GenericIntegrationTests(unittest.TestCase):
 
             script = _build_script("meson")
             start = script.index('include_flags=')
-            end = script.index('if (( ${#archives[@]} == 0 && 1 == 1 )); then', start)
+            end = script.index('if (( ${#archives[@]} == 0 && ${#shared_libraries[@]} == 0 &&', start)
             snippet = script[start:end] + (
                 'for flag in "${include_flags[@]}"; do echo "$flag"; done'
             )
@@ -994,9 +994,68 @@ class GenericIntegrationTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=30,
             )
             self.assertNotEqual(refused.returncode, 0)
-            self.assertIn("found no static libraries", refused.stderr)
+            self.assertIn("found no linkable libraries", refused.stderr)
             self.assertIn(
-                "&& 1 == 1", _build_script("meson", allow_header_only_cmake=True)
+                "1 == 1 ));", _build_script("meson", allow_header_only_cmake=True)
+            )
+
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash") and shutil.which("g++"),
+        "requires Bash and a C++ compiler",
+    )
+    def test_cmake_shared_library_is_linked_and_available_at_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            project = source / "project"
+            work = root / "work"
+            out = root / "out"
+            tools = root / "tools"
+            project.mkdir(parents=True)
+            tools.mkdir()
+            (project / "CMakeLists.txt").write_text(
+                "add_library(Foo SHARED foo.cpp)\n"
+            )
+            (project / "foo.cpp").write_text(
+                'extern "C" int foo() { return 7; }\n'
+            )
+            (project / "api.h").write_text('extern "C" int foo();\n')
+            (source / "generic_harness.cc").write_text(
+                '#include "api.h"\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const unsigned char*, unsigned long) '
+                '{ return foo() == 7 ? 0 : 1; }\n'
+                'int main() { return LLVMFuzzerTestOneInput(nullptr, 0); }\n'
+            )
+            fake_cmake = tools / "cmake"
+            fake_cmake.write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = "--build" ]; then\n'
+                '  g++ -shared -fPIC "$PWD/foo.cpp" -o "$WORK/build/libfoo.so"\n'
+                'fi\n'
+            )
+            fake_cmake.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
+                "SRC": str(source), "WORK": str(work), "OUT": str(out),
+                "CC": "gcc", "CXX": "g++", "CFLAGS": "-O0",
+                "CXXFLAGS": "-O0", "LIB_FUZZING_ENGINE": "",
+            }
+            script = source / "build.sh"
+            script.write_text(_build_script("cmake"))
+            result = subprocess.run(
+                ["bash", str(script)], cwd=project, env=environment,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((out / "libfoo.so").is_file())
+            self.assertEqual(
+                subprocess.run(
+                    [str(out / "generic_fuzzer")],
+                    capture_output=True, text=True, timeout=5,
+                ).returncode,
+                0,
             )
 
     def test_generic_project_preserves_interface_link_permission_on_repair(self):
@@ -1020,13 +1079,13 @@ class GenericIntegrationTests(unittest.TestCase):
                 project_name="fts-test", pipeline={}, native=True,
             )
             self.assertTrue(record["allow_header_only_cmake"])
-            self.assertIn("&& 0 == 1", (project / "build.sh").read_text())
+            self.assertIn("0 == 1 ));", (project / "build.sh").read_text())
             (artifacts / "generic-integration.json").write_text(json.dumps(record))
             repair_generic_harness(
                 job_dir=root, source=source, project_dir=project,
                 pipeline={}, build_error="header include error", attempt=1,
             )
-            self.assertIn("&& 0 == 1", (project / "build.sh").read_text())
+            self.assertIn("0 == 1 ));", (project / "build.sh").read_text())
             saved = json.loads((artifacts / "generic-integration.json").read_text())
             self.assertTrue(saved["allow_header_only_cmake"])
 

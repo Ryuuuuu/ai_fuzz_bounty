@@ -1505,6 +1505,25 @@ fi
 mapfile -d '' dependency_archives < <(
   find "$WORK/dependencies" -type f -name '*.a' -print0 2>/dev/null
 )
+shared_libraries=()
+shared_link_flags=()
+if (( ${#archives[@]} == 0 && __ALLOW_SHARED_CMAKE__ == 1 )); then
+  mapfile -d '' shared_libraries < <(
+    find "$WORK/build" \\( -type f -o -type l \\) -name '*.so' -print0
+  )
+  if (( ${#shared_libraries[@]} == 0 )); then
+    mapfile -d '' shared_libraries < <(
+      find "$WORK/build" -type f -name '*.so.*' -print0
+    )
+  fi
+  if (( ${#shared_libraries[@]} > 32 )); then
+    echo 'generic integration found too many shared libraries' >&2
+    exit 1
+  fi
+  for library in "${shared_libraries[@]}"; do
+    shared_link_flags+=("-Wl,-rpath-link,${library%/*}")
+  done
+fi
 include_flags=("-I$SRC/project"__HARNESS_INCLUDE__)
 if [[ -f "$WORK/build/build.ninja" ]]; then
   while IFS= read -r flag; do
@@ -1539,8 +1558,9 @@ if (( ${#include_flags[@]} == 1 )); then
   )
 fi
 include_flags+=("-I$WORK/build")
-if (( ${#archives[@]} == 0 && __REQUIRE_STATIC_ARCHIVES__ == 1 )); then
-  echo 'generic integration found no static libraries' >&2
+if (( ${#archives[@]} == 0 && ${#shared_libraries[@]} == 0 &&
+      __REQUIRE_STATIC_ARCHIVES__ == 1 )); then
+  echo 'generic integration found no linkable libraries' >&2
   exit 1
 fi
 support_objects=()
@@ -1549,8 +1569,35 @@ __SUPPORT_COMPILE__
   -c "$SRC/generic_harness.cc" -o "$WORK/generic_harness.o"
 "$CXX" $CXXFLAGS "$WORK/generic_harness.o" "${support_objects[@]}" \\
   -Wl,--start-group "${archives[@]}" "${dependency_archives[@]}" -Wl,--end-group \\
+  "${shared_libraries[@]}" "${shared_link_flags[@]}" -Wl,-rpath,'$ORIGIN' \\
   __EXTERNAL_LIBS__ $LIB_FUZZING_ENGINE ${LIBS:-} -o "$OUT/generic_fuzzer"
+if (( ${#shared_libraries[@]} > 0 )); then
+  copied=0
+  while IFS= read -r -d '' library; do
+    resolved=$(readlink -f -- "$library")
+    [[ "$resolved" == "$WORK/build/"* && -f "$resolved" ]] || continue
+    name=${library##*/}
+    if [[ -e "$OUT/$name" ]]; then
+      if ! cmp -s -- "$resolved" "$OUT/$name"; then
+        echo "generic integration has ambiguous shared library: $name" >&2
+        exit 1
+      fi
+      continue
+    fi
+    cp -- "$resolved" "$OUT/$name"
+    copied=$((copied + 1))
+    if (( copied > 64 )); then
+      echo 'generic integration found too many shared library files' >&2
+      exit 1
+    fi
+  done < <(
+    find "$WORK/build" \\( -type f -o -type l \\) -name '*.so*' -print0
+  )
+fi
 """
+    link = link.replace(
+        "__ALLOW_SHARED_CMAKE__", "1" if build_system == "cmake" else "0",
+    )
     link = link.replace(
         "__REQUIRE_STATIC_ARCHIVES__",
         "0" if build_system == "cmake" and allow_header_only_cmake else "1",
