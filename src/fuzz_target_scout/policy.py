@@ -141,7 +141,11 @@ class PolicyVerifier:
         program_url: str,
         verified_on: date | None = None,
     ) -> int:
-        observed = (verified_on or date.today()).isoformat()
+        observed_day = verified_on or date.today()
+        # Keep tier evidence, but do not promote product targets to verified
+        # after the OSS VRP stopped accepting new product reports.
+        product_paused = observed_day >= GOOGLE_OSS_VRP_PRODUCT_PAUSE_DATE
+        observed = observed_day.isoformat()
         merged = 0
         for match in re.finditer(r"repository\s*\{(.*?)\}", text, re.DOTALL):
             body = match.group(1)
@@ -161,12 +165,16 @@ class PolicyVerifier:
             tier = tier_match.group(1).removeprefix("TIER_")
             self.entries[full_name.casefold()] = {
                 "full_name": full_name,
-                "status": "verified",
+                "status": "rejected" if product_paused else "verified",
                 "access": "public",
                 "security_url": f"https://github.com/{full_name}/security/policy",
                 "program_url": program_url,
                 "scope_note": (
-                    "Google's current official OSS VRP repository tier feed lists "
+                    "Google OSS VRP stopped accepting new product vulnerability "
+                    "reports on 2026-10-01; supply-chain findings remain "
+                    "separately eligible."
+                    if product_paused else
+                    "Google OSS VRP repository tier feed lists "
                     f"this repository as {tier} and SCOPE_OSS_VRP."
                 ),
                 "last_verified": observed,
@@ -338,11 +346,11 @@ class PolicyVerifier:
             )
 
         status = entry.get("status", "needs_review")
-        if status not in {"verified", "conditional"}:
+        if status not in {"verified", "conditional", "rejected"}:
             status = "needs_review"
         return PolicyAssessment(
             status=status,
-            confidence=100 if status == "verified" else 90,
+            confidence=100 if status in {"verified", "rejected"} else 90,
             source="catalog",
             program_url=entry.get("program_url", ""),
             note=entry.get("scope_note", ""),

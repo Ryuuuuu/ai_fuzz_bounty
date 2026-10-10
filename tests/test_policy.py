@@ -383,6 +383,38 @@ repository {
         self.assertEqual(paused.status, "rejected")
         self.assertEqual(paused.source, "google_oss_vrp")
 
+    def test_google_oss_vrp_feed_does_not_reverify_paused_product_targets(self):
+        verifier = PolicyVerifier(self.catalog)
+        feed = (
+            "repository { url: \"https://github.com/google/flatbuffers\" "
+            "tier: TIER_OT1 product_vuln_scope: SCOPE_OSS_VRP }"
+        )
+        program_url = (
+            "https://bughunters.google.com/about/rules/open-source/"
+            "google-open-source-software-vulnerability-reward-program-rules"
+        )
+        self.assertEqual(
+            verifier.merge_google_oss_vrp_feed(
+                feed, program_url, verified_on=date(2026, 9, 30)
+            ),
+            1,
+        )
+        verifier.entries["google/flatbuffers"]["status"] = "rejected"
+        self.assertEqual(
+            verifier.merge_google_oss_vrp_feed(
+                feed, program_url, verified_on=date(2026, 10, 1)
+            ),
+            1,
+        )
+        self.assertEqual(verifier.entries["google/flatbuffers"]["status"], "rejected")
+        self.assertEqual(
+            verifier.verify(
+                repo("google/flatbuffers", "Report vulnerabilities through g.co/vulnz."),
+                today=date(2026, 10, 10),
+            ).status,
+            "rejected",
+        )
+
     def test_google_oss_vrp_pause_does_not_block_a_separate_paid_program(self):
         verifier = PolicyVerifier(self.catalog)
         verifier.merge_google_oss_vrp_feed(
