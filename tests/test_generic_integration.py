@@ -22,11 +22,99 @@ from fuzz_target_scout.generic_integration import (
     _select_public_candidate,
     create_generic_project,
     detect_build_system,
+    discover_alternate_public_byte_parser,
     repair_generic_harness,
 )
 
 
 class GenericIntegrationTests(unittest.TestCase):
+    def test_alternate_byte_parser_excludes_current_and_prior_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            source = job / "source"
+            include = source / "include"
+            include.mkdir(parents=True)
+            artifacts = job / "artifacts"
+            artifacts.mkdir()
+            (include / "parser.h").write_text(
+                "int parseAlpha(const uint8_t* data, size_t length);\n"
+                "int parseBeta(const uint8_t* data, size_t length);\n"
+                "int parseGamma(const uint8_t* data, size_t length);\n"
+                "int parseStream(InputStream* input);\n"
+                "void release();\n",
+                encoding="utf-8",
+            )
+            current = _select_public_candidate(source)
+            prior = _select_public_candidate(source, {current["id"]})
+            (artifacts / "generic-integration-selection.json").write_text(
+                json.dumps({"candidate": current}), encoding="utf-8"
+            )
+            (artifacts / "harness-generation.json").write_text(
+                json.dumps({"candidate": prior}), encoding="utf-8"
+            )
+
+            alternate = discover_alternate_public_byte_parser(job, source)
+
+            self.assertIsNotNone(alternate)
+            self.assertIn("parseGamma", alternate["signature"])
+            self.assertEqual(alternate["candidate_kind"], "public_byte_parser")
+            self.assertTrue(alternate["direct_byte_input"])
+            self.assertEqual(alternate["file"], "include/parser.h")
+
+    def test_alternate_byte_parser_skips_private_secret_and_local_symbols(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            source = job / "source"
+            source.mkdir()
+            artifacts = job / "artifacts"
+            artifacts.mkdir()
+            (source / "api.h").write_text(
+                "int public_deserialize(const uint8_t* data, size_t length);\n"
+                "int private_deserialize(const uint8_t* data, size_t length);\n"
+                "int secret_parse(const uint8_t* data, size_t length);\n"
+                "int local_decode(const uint8_t* data, size_t length);\n"
+                "int privkey_deserialize(const uint8_t* data, size_t length);\n"
+                "int secretkey_parse(const uint8_t* data, size_t length);\n"
+                "int public_key_deserialize(const uint8_t* data, size_t length);\n",
+                encoding="utf-8",
+            )
+            current = _select_public_candidate(source)
+            (artifacts / "generic-integration-selection.json").write_text(
+                json.dumps({"candidate": current}), encoding="utf-8"
+            )
+
+            alternate = discover_alternate_public_byte_parser(job, source)
+
+            self.assertIsNotNone(alternate)
+            self.assertIn("public_key_deserialize", alternate["signature"])
+            self.assertEqual(alternate["local_symbol_line"], 7)
+
+    def test_alternate_byte_parser_rejects_duplicate_signature_and_stream_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            source = job / "source" / "include"
+            source.mkdir(parents=True)
+            artifacts = job / "artifacts"
+            artifacts.mkdir()
+            (source / "a.h").write_text(
+                "int parseBytes(const uint8_t* data, size_t length);\n",
+                encoding="utf-8",
+            )
+            (source / "b.h").write_text(
+                "int parseBytes(const uint8_t* data, size_t length);\n"
+                "int parseStream(InputStream* input);\n"
+                "int encodeBytes(const uint8_t* data, size_t length);\n",
+                encoding="utf-8",
+            )
+            current = _select_public_candidate(job / "source")
+            (artifacts / "generic-integration.json").write_text(
+                json.dumps({"candidate": current}), encoding="utf-8"
+            )
+
+            alternate = discover_alternate_public_byte_parser(job, job / "source")
+
+            self.assertIsNone(alternate)
+
     def test_multiline_stream_reader_factory_beats_teardown_and_stream_write(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

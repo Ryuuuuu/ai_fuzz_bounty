@@ -319,6 +319,540 @@ class PipelineRunnerTests(unittest.TestCase):
         self.assertEqual(saved_state["campaign_yield_reason"], "shallow_reach")
         self.assertEqual(decision["decision"], "rotate_target")
 
+    def test_native_low_yield_waits_for_first_adaptive_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 22, "coverage_features": 35})
+            )
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "low_yield_min_seconds": 7200,
+                "coverage_stall_seconds": 14400,
+            }
+            runner.config = {
+                "agent": {
+                    "auto_improve": True,
+                    "adaptive_strategy_evaluation_seconds": 3600,
+                }
+            }
+            job = {
+                "route": {"name": "native_generated"},
+                "source": {"repository": "org/parser"},
+                "budgets": {"fuzz_seconds": 86400},
+            }
+            progress = {
+                "completed_seconds": 7200,
+                "sessions": [
+                    {
+                        "accounted_seconds": 7200,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    }
+                ],
+            }
+            result = {"fuzz_target": "generic_fuzzer", "crash_files": []}
+
+            self.assertIsNone(
+                runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 7200
+                )
+            )
+            progress["completed_seconds"] = 14400
+            progress["coverage_stalled"] = True
+            self.assertIsNone(
+                runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 14400
+                )
+            )
+            progress["stagnation_dictionary_applied"] = True
+            progress["stagnation_dictionary_completed_seconds"] = 14400
+            progress["completed_seconds"] = 18000
+            self.assertIsNone(
+                runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 18000
+                )
+            )
+            strategy_path = artifacts / "adaptive-strategy.json"
+            strategy = {
+                "id": "first",
+                "strategy": "enable_value_profile",
+                "status": "active",
+            }
+            strategy_path.write_text(
+                json.dumps({"current_id": "first", "history": [strategy]})
+            )
+            self.assertIsNone(
+                runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 18000
+                )
+            )
+            strategy["status"] = "ineffective"
+            strategy_path.write_text(
+                json.dumps({"current_id": "first", "history": [strategy]})
+            )
+            finished = runner._finish_low_yield_campaign(
+                job_dir, job, state_path, state, progress, result, 18000
+            )
+
+            self.assertIsNotNone(finished)
+            self.assertEqual(json.loads(state_path.read_text())["stage"], "triage")
+            self.assertEqual(
+                json.loads((artifacts / "campaign-yield.json").read_text())[
+                    "reason"
+                ],
+                "shallow_reach",
+            )
+
+    def test_native_low_yield_has_absolute_cap_and_respects_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 22, "coverage_features": 35})
+            )
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "low_yield_min_seconds": 7200,
+                "coverage_stall_seconds": 14400,
+            }
+            runner.config = {
+                "agent": {
+                    "auto_improve": True,
+                    "adaptive_strategy_evaluation_seconds": 3600,
+                }
+            }
+            progress = {
+                "completed_seconds": 25200,
+                "stagnation_dictionary_empty": True,
+                "sessions": [
+                    {
+                        "accounted_seconds": 25200,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    }
+                ],
+            }
+            result = {"fuzz_target": "generic_fuzzer", "crash_files": []}
+            job = {
+                "route": {"name": "native_generated"},
+                "budgets": {"fuzz_seconds": 86400},
+            }
+            self.assertIsNotNone(
+                runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 25200
+                )
+            )
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            (artifacts / "campaign-yield.json").unlink()
+            progress["completed_seconds"] = 7200
+            progress["stagnation_dictionary_empty"] = False
+            progress["sessions"][0]["accounted_seconds"] = 7200
+            job["budgets"]["fuzz_seconds"] = 7200
+            self.assertIsNotNone(
+                runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 7200
+                )
+            )
+
+    def test_native_low_yield_replay_starts_next_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_id = "org-parser-" + "a" * 12
+            job_dir = root / job_id
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            job = {
+                "route": {"name": "native_generated"},
+                "budgets": {"fuzz_seconds": 86400},
+            }
+            (job_dir / "job.json").write_text(json.dumps(job))
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 22, "coverage_features": 35})
+            )
+            (artifacts / "quartet-review.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"review": {"execution_ready": True}})
+            )
+            progress_path = artifacts / "fuzz-progress.json"
+            progress = {
+                "completed_seconds": 3600,
+                "last_coverage_edges": 22,
+                "last_coverage_features": 35,
+                "last_corpus_files": 15,
+                "stalled_seconds": 3600,
+                "sessions": [
+                    {
+                        "accounted_seconds": 3600,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    }
+                ],
+            }
+            progress_path.write_text(json.dumps(progress))
+            runner = object.__new__(PipelineRunner)
+            runner.runs_root = root
+            runner.pipeline = {
+                "fuzz_checkpoint_seconds": 3600,
+                "low_yield_min_seconds": 7200,
+                "coverage_stall_seconds": 14400,
+            }
+            runner.config = {
+                "agent": {
+                    "auto_improve": True,
+                    "adaptive_strategy_evaluation_seconds": 3600,
+                }
+            }
+            runner.progress = lambda _message: None
+            second = {
+                "session_id": "second",
+                "requested_seconds": 3600,
+                "fuzz_target": "generic_fuzzer",
+                "crash_files": [],
+                "corpus_files": 15,
+                "coverage_edges": 22,
+                "coverage_features": 35,
+            }
+            result = runner._apply_fuzz_result(
+                job_dir, job, state_path, state, progress_path, progress, second
+            )
+            self.assertEqual(result["state"]["stage"], "fuzzing")
+            self.assertFalse((artifacts / "campaign-yield.json").exists())
+            (artifacts / "fuzz-run.json").write_text(json.dumps(second))
+            replay_state = json.loads(state_path.read_text())
+            replay_state["active_fuzz_session_id"] = "interrupted"
+            replay_state["active_fuzz_container"] = "fts-interrupted-abc"
+            state_path.write_text(json.dumps(replay_state))
+            allocation = ResourceAllocation(
+                parallel_jobs=1,
+                workers_per_job=1,
+                container_memory_mb=1024,
+                fuzzer_rss_limit_mb=512,
+                cpu_reserve=0,
+                memory_reserve_mb=0,
+                detected=ResourceSnapshot(2, 2048, 2048, ()),
+            )
+            with (
+                patch.object(runner, "_recheck_policy"),
+                patch.object(runner, "_remove_container") as remove_container,
+                patch.object(runner, "_record_resource_allocation"),
+                patch.object(
+                    runner,
+                    "_fuzz_session",
+                    return_value={
+                        "fuzz_target": "generic_fuzzer",
+                        "crash_files": [],
+                        "corpus_files": 15,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    },
+                ) as fuzz_session,
+            ):
+                resumed = runner.fuzz(job_id, allocation)
+
+            remove_container.assert_called_once_with("fts-interrupted-abc")
+            fuzz_session.assert_called_once()
+            self.assertEqual(resumed["state"]["stage"], "fuzzing")
+            self.assertEqual(resumed["state"]["fuzz_completed_seconds"], 10800)
+            self.assertFalse((artifacts / "campaign-yield.json").exists())
+
+    def test_native_dictionary_stall_remains_eligible_for_central_ai(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 22, "coverage_features": 35})
+            )
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            progress_path = artifacts / "fuzz-progress.json"
+            progress = {
+                "completed_seconds": 10800,
+                "stalled_seconds": 10800,
+                "last_corpus_files": 15,
+                "last_coverage_edges": 22,
+                "last_coverage_features": 35,
+                "sessions": [
+                    {
+                        "accounted_seconds": 10800,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    }
+                ],
+            }
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "low_yield_min_seconds": 7200,
+                "coverage_stall_seconds": 14400,
+            }
+            runner.config = {
+                "agent": {
+                    "auto_improve": True,
+                    "adaptive_strategy_evaluation_seconds": 3600,
+                }
+            }
+            job = {
+                "route": {"name": "native_generated"},
+                "budgets": {"fuzz_seconds": 86400},
+            }
+            result = {
+                "session_id": "fourth",
+                "requested_seconds": 3600,
+                "fuzz_target": "generic_fuzzer",
+                "crash_files": [],
+                "corpus_files": 15,
+                "coverage_edges": 22,
+                "coverage_features": 35,
+            }
+            with patch(
+                "fuzz_target_scout.pipeline_runner.generate_dictionary",
+                return_value={"token_count": 3},
+            ):
+                completed = runner._apply_fuzz_result(
+                    job_dir, job, state_path, state, progress_path, progress, result
+                )
+
+            saved_progress = json.loads(progress_path.read_text())
+            self.assertEqual(completed["state"]["stage"], "fuzzing")
+            self.assertTrue(saved_progress["coverage_stalled"])
+            self.assertTrue(saved_progress["stagnation_dictionary_applied"])
+            self.assertEqual(
+                saved_progress["stagnation_dictionary_completed_seconds"], 14400
+            )
+            (job_dir / "job.json").write_text(json.dumps(job))
+            agent = object.__new__(CentralAgent)
+            agent.runs_root = job_dir.parent
+            agent.agent = {
+                "auto_improve": True,
+                "adaptive_strategy_evaluation_seconds": 3600,
+            }
+            adaptive = agent._adaptive_strategy_evidence(
+                job_dir.name, {"coverage_stalled": True}
+            )
+            self.assertTrue(adaptive["eligible"])
+            self.assertIn(
+                "enable_value_profile",
+                [item["strategy"] for item in adaptive["options"]],
+            )
+
+    def test_native_stagnation_falls_back_to_public_byte_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            (job_dir / "source").mkdir(parents=True)
+            runner = object.__new__(PipelineRunner)
+            candidate = {"id": "alternate", "candidate_kind": "public_byte_parser"}
+            with patch(
+                "fuzz_target_scout.pipeline_runner.discover_alternate_public_byte_parser",
+                return_value=candidate,
+            ) as discover:
+                result = runner._native_stagnation_candidate(
+                    job_dir,
+                    {"execution_mode": "native_container", "source_harnesses": []},
+                )
+            self.assertEqual(result, candidate)
+            discover.assert_called_once_with(job_dir, (job_dir / "source").resolve())
+
+    def test_native_ineffective_strategy_schedules_one_alternate_harness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 22, "coverage_features": 35})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps(
+                    {
+                        "evidence": {
+                            "execution_mode": "native_container",
+                            "gap_candidates": [],
+                        },
+                        "review": {
+                            "decision": "baseline_existing",
+                            "execution_ready": True,
+                            "selected_fuzz_target": "generic_fuzzer",
+                        },
+                    }
+                )
+            )
+            (artifacts / "adaptive-strategy.json").write_text(
+                json.dumps(
+                    {
+                        "current_id": "first",
+                        "history": [
+                            {
+                                "id": "first",
+                                "strategy": "enable_value_profile",
+                                "status": "ineffective",
+                            }
+                        ],
+                    }
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "low_yield_min_seconds": 7200,
+                "coverage_stall_seconds": 14400,
+                "max_generation_cycles": 2,
+            }
+            runner.config = {
+                "agent": {
+                    "auto_improve": True,
+                    "adaptive_strategy_evaluation_seconds": 3600,
+                }
+            }
+            job = {
+                "route": {"name": "native_generated"},
+                "budgets": {"fuzz_seconds": 86400},
+            }
+            progress = {
+                "completed_seconds": 18000,
+                "coverage_stalled": True,
+                "stagnation_dictionary_applied": True,
+                "sessions": [
+                    {
+                        "accounted_seconds": 18000,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    }
+                ],
+            }
+            result = {"fuzz_target": "generic_fuzzer", "crash_files": []}
+            candidate = {
+                "id": "alternate-public-parser",
+                "file": "include/parser.h",
+                "signature": "int decodeBytes(const uint8_t*, size_t)",
+                "direct_byte_input": True,
+            }
+            with patch.object(
+                runner, "_native_stagnation_candidate", return_value=candidate
+            ) as fallback:
+                scheduled = runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 18000
+                )
+
+            self.assertIsNotNone(scheduled)
+            fallback.assert_called_once()
+            self.assertEqual(scheduled["state"]["status"], "harness_work_pending")
+            self.assertEqual(
+                json.loads(state_path.read_text())["attempts"][
+                    "stagnation_followup"
+                ],
+                1,
+            )
+            self.assertTrue(
+                json.loads((artifacts / "fuzz-progress.json").read_text())[
+                    "stagnation_harness_scheduled"
+                ]
+            )
+            plan = json.loads((artifacts / "coverage-plan.json").read_text())
+            self.assertEqual(plan["review"]["decision"], "generate_new_harness")
+            self.assertEqual(
+                plan["review"]["candidate_ids"], ["alternate-public-parser"]
+            )
+            self.assertFalse((artifacts / "campaign-yield.json").exists())
+            replayed = runner._finish_low_yield_campaign(
+                job_dir, job, state_path, state, progress, result, 18000
+            )
+            self.assertEqual(replayed["state"]["status"], "harness_work_pending")
+
+    def test_native_ineffective_strategy_rotates_when_alternate_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "org-parser-aaaaaaaaaaaa"
+            artifacts = job_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            state_path = job_dir / "state.json"
+            state = {"stage": "fuzzing", "status": "ready", "attempts": {}}
+            state_path.write_text(json.dumps(state))
+            (artifacts / "probe-run.json").write_text(
+                json.dumps({"coverage_edges": 22, "coverage_features": 35})
+            )
+            (artifacts / "coverage-plan.json").write_text(
+                json.dumps({"evidence": {"execution_mode": "native_container"}})
+            )
+            (artifacts / "adaptive-strategy.json").write_text(
+                json.dumps(
+                    {
+                        "current_id": "first",
+                        "history": [
+                            {
+                                "id": "first",
+                                "strategy": "enable_value_profile",
+                                "status": "ineffective",
+                            }
+                        ],
+                    }
+                )
+            )
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {
+                "low_yield_min_seconds": 7200,
+                "coverage_stall_seconds": 14400,
+                "max_generation_cycles": 2,
+            }
+            runner.config = {
+                "agent": {
+                    "auto_improve": True,
+                    "adaptive_strategy_evaluation_seconds": 3600,
+                }
+            }
+            job = {
+                "route": {"name": "native_generated"},
+                "budgets": {"fuzz_seconds": 86400},
+            }
+            progress = {
+                "completed_seconds": 18000,
+                "coverage_stalled": True,
+                "stagnation_dictionary_empty": True,
+                "sessions": [
+                    {
+                        "accounted_seconds": 18000,
+                        "coverage_edges": 22,
+                        "coverage_features": 35,
+                    }
+                ],
+            }
+            result = {"fuzz_target": "generic_fuzzer", "crash_files": []}
+            with patch.object(
+                runner, "_native_stagnation_candidate", return_value=None
+            ):
+                finished = runner._finish_low_yield_campaign(
+                    job_dir, job, state_path, state, progress, result, 18000
+                )
+            self.assertEqual(finished["state"]["stage"], "triage")
+            self.assertTrue((artifacts / "campaign-yield.json").exists())
+            self.assertFalse(
+                json.loads((artifacts / "coverage-plan.json").read_text()).get(
+                    "review"
+                )
+            )
+            state["stage"] = "fuzzing"
+            state["status"] = "ready"
+            state["attempts"]["harness_generation"] = 2
+            state_path.write_text(json.dumps(state))
+            (artifacts / "campaign-yield.json").unlink()
+            self.assertFalse(runner._schedule_stagnation_harness(job_dir))
+
     def test_offline_dependency_classifier_requires_download_and_network_failure(self):
         self.assertTrue(
             _offline_external_dependency_failure(

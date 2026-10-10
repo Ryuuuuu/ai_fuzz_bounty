@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -555,9 +556,18 @@ def _find_existing_harness(
 
 
 def _select_public_candidate(
-    source: Path, excluded_candidate_ids: set[str] | None = None,
+    source: Path,
+    excluded_candidate_ids: set[str] | None = None,
+    *,
+    excluded_signatures: set[str] | None = None,
+    excluded_symbol_words: set[str] | None = None,
+    max_scanned_files: int | None = None,
 ) -> dict[str, Any]:
     excluded_candidate_ids = excluded_candidate_ids or set()
+    excluded_signatures = excluded_signatures or set()
+    excluded_symbol_words = excluded_symbol_words or set()
+    if max_scanned_files is not None and max_scanned_files < 1:
+        raise ValueError("max_scanned_files must be positive")
     prototype = re.compile(
         r'^\s*(?:extern\s+"C"\s+)?'
         r'(?P<result>[A-Za-z_][\w:<>,*&\s]*)\s+'
@@ -576,9 +586,12 @@ def _select_public_candidate(
         "sizeof",
         "while",
     }
+    paths = source.rglob("*")
+    if max_scanned_files is not None:
+        paths = itertools.islice(paths, max_scanned_files)
     headers = (
         path
-        for path in source.rglob("*")
+        for path in paths
         if not path.is_symlink()
         and path.is_file()
         and path.suffix.casefold() in HEADER_SUFFIXES
@@ -608,6 +621,7 @@ def _select_public_candidate(
                 not match
                 or match.group("name").split("::")[-1] in rejected
                 or _is_lifetime_api(match.group("name"))
+                or bool(set(_symbol_words(match.group("name"))) & excluded_symbol_words)
                 or not _is_declaration_result(match.group("result"))
             ):
                 continue
@@ -617,7 +631,10 @@ def _select_public_candidate(
                 "local_symbol_line": number,
                 "signature": signature[:1000],
             }
-            if candidate["id"] in excluded_candidate_ids:
+            if (
+                candidate["id"] in excluded_candidate_ids
+                or _signature_key(candidate["signature"]) in excluded_signatures
+            ):
                 continue
             input_rank = _candidate_input_rank(candidate["signature"], match.group("name"))
             if input_rank == 4:
@@ -653,6 +670,88 @@ def _select_public_candidate(
     if macro_candidates:
         return min(macro_candidates, key=lambda item: item[0])[1]
     raise PipelineError("no existing harness or public function or macro API was found")
+
+
+def _signature_key(signature: str) -> str:
+    return re.sub(r"\s+", " ", signature).strip()
+
+
+def discover_alternate_public_byte_parser(
+    job_dir: Path, source: Path,
+) -> dict[str, Any] | None:
+    """Find a different byte parser in the pinned checkout for a stalled native job.
+
+    Existing/previously attempted target APIs are excluded before ranking.
+    The scan inspects at most 20,000 paths and reads only bounded public headers.
+    A stream-only, state-only, macro, or destructor API is not a fallback.
+    """
+    if not source.is_dir() or source.is_symlink():
+        return None
+    artifacts = job_dir / "artifacts"
+    excluded_ids: set[str] = set()
+    excluded_signatures: set[str] = set()
+    for name in (
+        "generic-integration-selection.json",
+        "generic-integration.json",
+        "harness-generation.json",
+    ):
+        candidate = _read_optional_json(artifacts / name).get("candidate")
+        if not isinstance(candidate, dict):
+            continue
+        candidate_id = candidate.get("id")
+        if isinstance(candidate_id, str) and candidate_id:
+            excluded_ids.add(candidate_id)
+        signature = candidate.get("signature")
+        if isinstance(signature, str) and signature:
+            excluded_signatures.add(_signature_key(signature))
+        relative = candidate.get("file")
+        line = candidate.get("local_symbol_line")
+        if isinstance(relative, str) and isinstance(line, int) and line > 0:
+            path = source / relative
+            try:
+                if path.resolve().is_relative_to(source.resolve()):
+                    excluded_ids.add(
+                        hashlib.sha256(f"{path}:{line}".encode()).hexdigest()[:16]
+                    )
+            except (OSError, RuntimeError):
+                continue
+    exclusions = _read_optional_json(artifacts / "harness-exclusions.json")
+    excluded_ids.update(
+        value for value in exclusions.get("candidate_ids") or []
+        if isinstance(value, str) and value
+    )
+    try:
+        candidate = _select_public_candidate(
+            source,
+            excluded_ids,
+            excluded_signatures=excluded_signatures,
+            excluded_symbol_words={
+                "debug", "internal", "local", "priv", "private", "privatekey",
+                "privkey", "seckey", "secret", "secretkey", "test",
+            },
+            max_scanned_files=20_000,
+        )
+    except PipelineError:
+        return None
+    signature = str(candidate["signature"])
+    match = re.search(r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*\(", signature)
+    if (
+        candidate.get("candidate_kind") == "macro"
+        or not match
+        or _candidate_input_rank(signature, match.group(1)) != 0
+    ):
+        return None
+    return {
+        **candidate,
+        "reported_line": candidate["local_symbol_line"],
+        "complexity": 0,
+        "runtime_coverage_percent": 0.0,
+        "reached_by_fuzzers": [],
+        "oracles": ["local_public_byte_parser_fallback"],
+        "rank_score": 0,
+        "direct_byte_input": True,
+        "candidate_kind": "public_byte_parser",
+    }
 
 
 def _is_declaration_result(result: str) -> bool:

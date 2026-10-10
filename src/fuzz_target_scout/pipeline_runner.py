@@ -13,6 +13,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .adaptive_strategy import (
+    RUNTIME_STRATEGIES,
     activate_runtime_strategy,
     complete_harness_strategy,
     current_strategy,
@@ -31,7 +32,11 @@ from .coverage_analysis import (
     refresh_evidence_hash,
 )
 from .github import GitHubClient, GitHubError
-from .generic_integration import create_generic_project, repair_generic_harness
+from .generic_integration import (
+    create_generic_project,
+    discover_alternate_public_byte_parser,
+    repair_generic_harness,
+)
 from .harness_generation import (
     extract_harness_code,
     generation_prompt,
@@ -1235,10 +1240,20 @@ class PipelineRunner:
                 target = str(result.get("fuzz_target") or "")
                 dictionary = generate_dictionary(job_dir, target)
                 progress["stagnation_dictionary"] = dictionary
+                progress["stagnation_dictionary_completed_seconds"] = round(
+                    completed_seconds, 3
+                )
                 if int(dictionary["token_count"]) > 0:
                     progress["stagnation_dictionary_applied"] = True
-                    progress["stalled_seconds"] = 0
-                    progress["coverage_stalled"] = False
+                    # Keep the stall visible to the central agent so it can
+                    # queue and evaluate one adaptive strategy immediately.
+                    if not bool(
+                        (getattr(self, "config", {}).get("agent") or {}).get(
+                            "auto_improve", False
+                        )
+                    ):
+                        progress["stalled_seconds"] = 0
+                        progress["coverage_stalled"] = False
                 else:
                     progress["stagnation_dictionary_empty"] = True
                 self._write_json(progress_path, progress)
@@ -1306,6 +1321,21 @@ class PipelineRunner:
         )
         if decision is None:
             return None
+        if (
+            str((job.get("route") or {}).get("name") or "") == "native_generated"
+            and state.get("status") == "harness_work_pending"
+            and int((state.get("attempts") or {}).get("stagnation_followup", 0)) > 0
+        ):
+            result["state"] = state
+            return result
+        if self._schedule_native_low_yield_followup(
+            job_dir, job, state_path, state, progress, result, completed_seconds
+        ):
+            return result
+        if self._defer_native_low_yield_campaign(
+            job_dir, job, progress, completed_seconds
+        ):
+            return None
         decision["job_id"] = job_dir.name
         decision["repository"] = str((job.get("source") or {}).get("repository") or "")
         decision["fuzz_target"] = str(result.get("fuzz_target") or "")
@@ -1315,6 +1345,111 @@ class PipelineRunner:
         state["coverage_stalled"] = True
         result["campaign_yield"] = decision
         return self._finish_fuzz_state(state_path, state, result, completed_seconds)
+
+    def _schedule_native_low_yield_followup(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        state_path: Path,
+        state: dict[str, Any],
+        progress: dict[str, Any],
+        result: dict[str, Any],
+        completed_seconds: float,
+    ) -> bool:
+        if str((job.get("route") or {}).get("name") or "") != "native_generated":
+            return False
+        pipeline = getattr(self, "pipeline", {})
+        agent = (getattr(self, "config", {}).get("agent") or {})
+        evaluation_seconds = max(
+            300, int(agent.get("adaptive_strategy_evaluation_seconds", 3600))
+        )
+        first_stall_at = max(
+            int(pipeline.get("low_yield_min_seconds", 7200)),
+            int(pipeline.get("coverage_stall_seconds", 14400)),
+        )
+        budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
+        if completed_seconds >= min(
+            budget, first_stall_at + 3 * evaluation_seconds
+        ):
+            return False
+        attempts = state.setdefault("attempts", {})
+        if int(attempts.get("stagnation_followup", 0)) >= 1:
+            return False
+        if not bool(progress.get("coverage_stalled")) or not (
+            bool(progress.get("stagnation_dictionary_applied"))
+            or bool(progress.get("stagnation_dictionary_empty"))
+        ):
+            return False
+        strategy = current_strategy(load_strategy_record(job_dir))
+        if (
+            not strategy
+            or strategy.get("strategy") not in RUNTIME_STRATEGIES
+            or strategy.get("status") not in {"ineffective", "failed"}
+        ):
+            return False
+        if not self._schedule_stagnation_harness(job_dir):
+            return False
+        progress["stagnation_harness_scheduled"] = True
+        self._write_json(
+            job_dir / "artifacts" / "fuzz-progress.json", progress
+        )
+        attempts["stagnation_followup"] = 1
+        state["status"] = "harness_work_pending"
+        state["last_error"] = None
+        state["coverage_stalled"] = bool(progress.get("coverage_stalled"))
+        state["fuzz_completed_seconds"] = round(completed_seconds, 3)
+        state["updated_at"] = utc_now()
+        self._write_json(state_path, state)
+        result["state"] = state
+        return True
+
+    def _defer_native_low_yield_campaign(
+        self,
+        job_dir: Path,
+        job: dict[str, Any],
+        progress: dict[str, Any],
+        completed_seconds: float,
+    ) -> bool:
+        if str((job.get("route") or {}).get("name") or "") != "native_generated":
+            return False
+        budget = int((job.get("budgets") or {}).get("fuzz_seconds") or 0)
+        if completed_seconds >= budget:
+            return False
+        pipeline = getattr(self, "pipeline", {})
+        agent = (getattr(self, "config", {}).get("agent") or {})
+        evaluation_seconds = max(
+            300, int(agent.get("adaptive_strategy_evaluation_seconds", 3600))
+        )
+        first_stall_at = max(
+            int(pipeline.get("low_yield_min_seconds", 7200)),
+            int(pipeline.get("coverage_stall_seconds", 14400)),
+        )
+        # This absolute cap covers a stall checkpoint, central-agent scheduling,
+        # and evaluation even when monitoring or Codex becomes unavailable.
+        if completed_seconds >= first_stall_at + 3 * evaluation_seconds:
+            return False
+        strategy = current_strategy(load_strategy_record(job_dir))
+        if strategy:
+            status = str(strategy.get("status") or "")
+            if status in {"pending", "active", "scheduled", "succeeded"}:
+                return True
+            if status in {"ineffective", "failed"}:
+                return False
+        dictionary_at = float(
+            progress.get("stagnation_dictionary_completed_seconds")
+            or first_stall_at
+        )
+        if bool(progress.get("stagnation_dictionary_applied")):
+            if bool(agent.get("auto_improve", False)):
+                return True
+            return completed_seconds < dictionary_at + evaluation_seconds
+        if bool(progress.get("stagnation_dictionary_empty")):
+            return bool(agent.get("auto_improve", False))
+        # Let the existing stall handler run once before any shallow-reach
+        # rotation, including when the previous checkpoint is replayed.
+        return completed_seconds < first_stall_at or bool(
+            progress.get("coverage_stalled")
+        )
 
     @staticmethod
     def _clear_active_fuzz_session(state: dict[str, Any]) -> None:
@@ -1482,6 +1617,13 @@ class PipelineRunner:
         return result
 
     def _schedule_stagnation_harness(self, job_dir: Path) -> bool:
+        state_path = job_dir / "state.json"
+        if state_path.is_file():
+            attempts = self._read_json(state_path).get("attempts") or {}
+            if int(attempts.get("harness_generation", 0)) >= int(
+                getattr(self, "pipeline", {}).get("max_generation_cycles", 2)
+            ):
+                return False
         plan_path = job_dir / "artifacts" / "coverage-plan.json"
         if not plan_path.is_file():
             return False
@@ -1569,7 +1711,7 @@ class PipelineRunner:
                 "direct_byte_input": True,
                 "candidate_kind": "alternate_upstream_harness",
             }
-        return None
+        return discover_alternate_public_byte_parser(job_dir, source_root)
 
     def _run_afl_cmplog(
         self,
