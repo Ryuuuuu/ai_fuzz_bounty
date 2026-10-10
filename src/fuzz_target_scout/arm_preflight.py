@@ -20,7 +20,7 @@ from .models import RepoSnapshot
 
 
 DOCKERFILE = """FROM ubuntu:24.04
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev zlib1g-dev default-jdk-headless && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev zlib1g-dev uuid-dev default-jdk-headless && rm -rf /var/lib/apt/lists/*
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 """
 
