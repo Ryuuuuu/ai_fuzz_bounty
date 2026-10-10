@@ -103,6 +103,13 @@ class ScoutEngine:
                 self.progress(f"[{index}/{len(repos)}] policy {repo.full_name}")
                 try:
                     with_policy = self.github.load_security_policy(repo)
+                    external_url = self.policy.external_security_url_for(
+                        repo.full_name
+                    )
+                    if external_url:
+                        with_policy = self.github.load_curated_security_policy(
+                            with_policy, external_url
+                        )
                     policy = self.policy.verify(with_policy)
                     if policy.status in {"verified", "conditional"}:
                         self.progress(f"[{index}/{len(repos)}] code evidence {repo.full_name}")
@@ -305,7 +312,9 @@ class ScoutEngine:
                     max_pages=max_pages,
                 )
                 for repo in results:
-                    if repo.full_name.casefold() in excluded:
+                    if repo.full_name.casefold() in excluded or not _language_is_enabled(
+                        repo.language, enabled_languages
+                    ):
                         continue
                     unique.setdefault(repo.full_name.casefold(), repo)
                     if limit and len(unique) >= limit:
@@ -369,36 +378,65 @@ class ScoutEngine:
         )
         retry_hours = max(0, int(architecture.get("arm_preflight_failure_retry_hours", 24)))
         transient_retry_seconds = min(retry_hours * 3600, 15 * 60)
-        pending: list[tuple[bool, Candidate, str]] = []
+        pending: list[tuple[bool, bool, Candidate, str]] = []
         passed = 0
         for candidate in candidates:
             assessment = candidate.architecture
-            version = self._arm_preflight_version(candidate)
             if (
                 candidate.policy.status != "verified"
-                or not candidate.policy.program_url
-                or not candidate.repo.security_url
                 or candidate.repo.language.casefold() not in {"c", "c++"}
-                or candidate.final_score < minimum_score
-                or not assessment
-                or assessment.compatible
-                or assessment.blockers not in (
-                    ["no_explicit_native_support_evidence:aarch64"],
-                    ["native_build_probe_required:aarch64"],
+                or assessment is None
+                or not (
+                    assessment.compatible
+                    or assessment.blockers in (
+                        ["no_explicit_native_support_evidence:aarch64"],
+                        ["native_build_probe_required:aarch64"],
+                    )
                 )
-                or not 0 < candidate.repo.size_kb <= maximum_kb
+            ):
+                continue
+            # Architecture labels alone do not prove the native C/C++ builder
+            # can compile a pinned checkout. Require this current-commit probe.
+            assessment.compatible = False
+            # Replace the temporary lack-of-documentation blocker so this same
+            # candidate can be retried once its cooldown has elapsed.
+            assessment.blockers = [
+                blocker for blocker in assessment.blockers
+                if blocker != "no_explicit_native_support_evidence:aarch64"
+            ]
+            probe_blocker = "native_build_probe_required:aarch64"
+            if probe_blocker not in assessment.blockers:
+                assessment.blockers.append(probe_blocker)
+            if probe_blocker not in candidate.static.blockers:
+                candidate.static.blockers.append(probe_blocker)
+            version = self._arm_preflight_version(candidate)
+            if (
+                not candidate.policy.program_url
+                or not candidate.repo.security_url
+                or candidate.final_score < minimum_score
                 or version is None
             ):
                 continue
+            build_system = "cmake" if version == PREFLIGHT_VERSION else "meson"
+            smoke = "ctest" if build_system == "cmake" else "meson_test"
+            expected_evidence = (
+                f"native_arm_preflight:{version}:{build_system}_build_{smoke}:"
+                f"{candidate.repo.head_sha.casefold()}"
+            )
             cached = self.store.get_arm_preflight(
                 candidate.repo.full_name, candidate.repo.head_sha,
                 "aarch64", version,
             )
-            if cached and cached["passed"] and str(cached["evidence"]).startswith(
-                f"native_arm_preflight:{version}:"
-            ):
-                self._accept_arm_preflight(candidate, str(cached["evidence"]))
+            if cached and cached["passed"] and cached["evidence"] == expected_evidence:
+                self._accept_arm_preflight(candidate, expected_evidence)
                 passed += 1
+                continue
+            repository_kb = (
+                candidate.repo.source_tree_kb
+                if candidate.repo.source_tree_kb is not None
+                else candidate.repo.size_kb
+            )
+            if not 0 < repository_kb <= maximum_kb:
                 continue
             if cached and not cached["passed"]:
                 try:
@@ -443,6 +481,9 @@ class ScoutEngine:
                     candidate.repo.full_name, candidate.repo.head_sha,
                     "aarch64", version,
                 ),
+                self.store.has_prior_failed_arm_preflight(
+                    candidate.repo.full_name, "aarch64"
+                ),
                 candidate,
                 version,
             ))
@@ -452,9 +493,15 @@ class ScoutEngine:
         pending.sort(
             key=lambda item: (
                 not item[0],
-                -item[1].final_score,
-                item[1].repo.size_kb,
-                item[1].repo.full_name.casefold(),
+                item[1],
+                item[2].policy.source != "catalog",
+                (
+                    item[2].repo.source_tree_kb
+                    if item[2].repo.source_tree_kb is not None
+                    else item[2].repo.size_kb
+                ),
+                -item[2].final_score,
+                item[2].repo.full_name.casefold(),
             )
         )
         configured_maximum = max(0, int(architecture.get("arm_preflight_max_per_scan", 2)))
@@ -464,7 +511,7 @@ class ScoutEngine:
             if budget_seconds is not None else None
         )
         attempted = 0
-        for _prior_success, candidate, version in pending[:maximum]:
+        for _prior_success, _prior_failure, candidate, version in pending[:maximum]:
             remaining = None if deadline is None else int(deadline - time.monotonic())
             if remaining is not None and remaining < 60:
                 self.progress("ARM preflight deferred: discovery time budget exhausted")
@@ -485,7 +532,11 @@ class ScoutEngine:
                 "aarch64", version,
                 passed=result.passed, reason=result.reason, evidence=result.evidence,
             )
-            if result.passed:
+            if result.passed and result.evidence == (
+                f"native_arm_preflight:{version}:"
+                f"{'cmake_build_ctest' if version == PREFLIGHT_VERSION else 'meson_build_meson_test'}:"
+                f"{candidate.repo.head_sha.casefold()}"
+            ):
                 self._accept_arm_preflight(candidate, result.evidence)
                 passed += 1
                 self.progress(f"ARM preflight passed: {candidate.repo.full_name}")

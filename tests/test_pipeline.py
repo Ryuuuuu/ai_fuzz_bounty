@@ -6,10 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fuzz_target_scout.arm_preflight import PREFLIGHT_VERSION
 from fuzz_target_scout.pipeline import (
     PipelineError,
     job_status,
     load_oss_fuzz_support_index,
+    make_work_order,
     prepare_jobs,
     quarantine_previously_selected_jobs,
     quarantine_repository_cooldown_jobs,
@@ -718,6 +720,16 @@ class PipelineTests(unittest.TestCase):
                 "evidence": ["ci: linux/arm64"],
                 "blockers": [],
             }
+            job, reason = make_work_order(
+                value, arm_config, LOCK,
+                {"org/parser": {"project": "parser", "language": "c++"}},
+            )
+            self.assertIsNone(job)
+            self.assertEqual(reason, "native_arm_preflight_required")
+            value["architecture"]["evidence"].append(
+                f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:"
+                + "b" * 40
+            )
             summary = prepare_jobs(
                 [value],
                 directory,
@@ -734,6 +746,33 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(job["execution"]["emulation_allowed"])
             required = {item["name"] for item in job["route"]["required_tools"]}
             self.assertEqual(required, {"oss-fuzz-gen", "quartetfuzz"})
+
+    def test_arm_native_route_rejects_probe_for_another_commit_and_unsupported_build(self):
+        arm_config = {
+            **CONFIG,
+            "architecture": {
+                "mode": "native_only",
+                "host_arch": "aarch64",
+            },
+        }
+        value = candidate()
+        value["architecture"] = {
+            "host_arch": "aarch64",
+            "compatible": True,
+            "evidence": [
+                f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:"
+                + "c" * 40
+            ],
+        }
+        self.assertEqual(
+            make_work_order(value, arm_config, LOCK)[1],
+            "native_arm_preflight_required",
+        )
+        value["assessment"]["signals"] = ["standard_build:configure.ac"]
+        self.assertEqual(
+            make_work_order(value, arm_config, LOCK)[1],
+            "no_supported_native_build_signal",
+        )
 
     def test_native_mode_rejects_candidate_for_another_architecture(self):
         with tempfile.TemporaryDirectory() as directory:

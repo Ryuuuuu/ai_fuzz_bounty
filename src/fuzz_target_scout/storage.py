@@ -258,13 +258,28 @@ class Store:
               FROM arm_preflight_cache
              WHERE full_name=? AND head_sha<>? AND host_arch=? AND version=?
                AND passed=1
-               AND evidence=? || head_sha
+               AND evidence IN (? || head_sha, ? || head_sha)
              LIMIT 1
             """,
             (
                 full_name.casefold(), head_sha.casefold(), host_arch, version,
                 f"native_arm_preflight:{version}:cmake_build_ctest:",
+                f"native_arm_preflight:{version}:meson_build_meson_test:",
             ),
+        ).fetchone()
+        return row is not None
+
+    def has_prior_failed_arm_preflight(
+        self, full_name: str, host_arch: str
+    ) -> bool:
+        """Deprioritize previously failing repositories when new candidates exist."""
+        row = self.connection.execute(
+            """
+            SELECT 1 FROM arm_preflight_cache
+             WHERE full_name=? AND host_arch=? AND passed=0
+             LIMIT 1
+            """,
+            (full_name.casefold(), host_arch),
         ).fetchone()
         return row is not None
 
@@ -396,7 +411,9 @@ class Store:
                     continue
                 if not row["program_url"] or not row["security_url"]:
                     continue
-                size_kb = details.get("size_kb")
+                size_kb = details.get("source_tree_kb")
+                if size_kb is None:
+                    size_kb = details.get("size_kb")
                 if type(size_kb) is not int or not 0 < size_kb <= 100_000:
                     continue
                 signals = details.get("signals")
@@ -410,7 +427,9 @@ class Store:
                     for signal in signals
                 ):
                     continue
-            size_kb = details.get("size_kb")
+            size_kb = details.get("source_tree_kb")
+            if size_kb is None:
+                size_kb = details.get("size_kb")
             size_hint = size_kb if type(size_kb) is int and size_kb > 0 else 2**63 - 1
             shortlist.append((str(row["last_seen_at"]), -int(row["final_score"]), size_hint, name))
         shortlist.sort(key=lambda item: (item[0], item[1], item[2], item[3].casefold()))
@@ -501,6 +520,7 @@ def _candidate_details(candidate: Candidate) -> dict[str, Any]:
     return {
         "description": candidate.repo.description,
         "size_kb": candidate.repo.size_kb,
+        "source_tree_kb": getattr(candidate.repo, "source_tree_kb", None),
         "license": candidate.repo.license_name,
         "topics": candidate.repo.topics,
         "pushed_at": candidate.repo.pushed_at,

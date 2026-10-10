@@ -198,6 +198,42 @@
       "program_url": "https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules",
       "scope_note": "Google's official OSS VRP repository tier feed lists tensorflow/tflite-micro as OT1 and SCOPE_OSS_VRP.",
       "last_verified": "2026-09-15"
+    },
+    {
+      "full_name": "firoorg/firo",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://firo.org/guide/bounty-program.html",
+      "program_url": "https://firo.org/guide/bounty-program.html",
+      "scope_note": "Firo's ongoing paid vulnerability program covers reproducible issues in firoorg/firo master only. A working project-specific PoC and exact commit are required; known issues and third-party-only bugs are excluded. Disclose all AI assistance in any report; payouts are in FIRO.",
+      "last_verified": "2026-10-10"
+    },
+    {
+      "full_name": "monero-project/monero",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/monero-project/meta/blob/master/VULNERABILITY_RESPONSE_PROCESS.md",
+      "program_url": "https://hackerone.com/monero",
+      "scope_note": "Monero's published vulnerability response process offers XMR bounties for its repository code on master and release branches. Live networks and websites are excluded; reports require a working PoC and must disclose every use of AI or the bounty is forfeited.",
+      "last_verified": "2026-10-10"
+    },
+    {
+      "full_name": "fireblocks/mpc-lib",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/fireblocks/mpc-lib/blob/main/SECURITY.md",
+      "program_url": "https://bugcrowd.com/engagements/fireblocks-mbb-og2",
+      "scope_note": "Repository SECURITY.md explicitly routes mpc-lib findings to the paid Fireblocks MPC Bugcrowd program. SECURITY-MODEL.md limits eligible findings to exploitable library-internal failures affecting an honest MPC participant; integrator storage, transport, authorization, invalid caller inputs, and test-only issues are excluded. For sanitizer findings, a working PoC showing unwanted behavior on x86_64 or aarch64 is required; sanitizer output alone is insufficient. Review the AI-assisted researcher notes before reporting.",
+      "last_verified": "2026-10-10"
+    },
+    {
+      "full_name": "ValveSoftware/GameNetworkingSockets",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/ValveSoftware/GameNetworkingSockets/blob/master/SECURITY.md",
+      "program_url": "https://hackerone.com/valve",
+      "scope_note": "Repository SECURITY.md explicitly places this C++ library in Valve HackerOne report scope, but bounty eligibility is limited to vulnerabilities in code actually used by Steam players. Demonstrate impact in Steamworks SDK or Valve games; stand-alone-library-only and third-party bundled-code findings may not qualify. Report privately through Valve HackerOne.",
+      "last_verified": "2026-10-10"
     }
   ]
 }

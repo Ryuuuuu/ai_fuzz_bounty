@@ -102,6 +102,112 @@ class GitHubRepositoryFileTests(unittest.TestCase):
         )
         self.assertTrue(any("facebook/.github" in path for path in requested))
 
+    def test_curated_external_security_text_is_bounded_and_exact(self):
+        client = GitHubClient({
+            "api_url": "https://api.github.com",
+            "timeout_seconds": 10,
+            "max_tree_paths": 100,
+        })
+        target = client._snapshot({
+            "full_name": "firoorg/firo", "default_branch": "main",
+        })
+        target.security_text = "repository-owned policy"
+        target.repository_security_text = target.security_text
+        policy_url = "https://firo.org/guide/bounty-program.html"
+        requests = []
+
+        def fetch(url, *, accepted_types):
+            requests.append((url, accepted_types))
+            return (
+                b"<html><body><h1>Vulnerability Bounty Program</h1>"
+                b"<p>firoorg/firo: All bounties are paid in FIRO.</p>"
+                b"<script>fake text</script></body></html>"
+            )
+
+        client._fetch_exact_policy_bytes = fetch
+        result = client.load_curated_security_policy(target, policy_url)
+        self.assertEqual(result.security_url, policy_url)
+        self.assertIn("All bounties are paid in FIRO", result.security_text)
+        self.assertNotIn("fake text", result.security_text)
+        self.assertEqual(result.repository_security_text, "repository-owned policy")
+        self.assertEqual(requests, [(policy_url, ("text/html",))])
+        requests.clear()
+        wrong = client.load_curated_security_policy(
+            target, "https://firo.org/guide/other.html"
+        )
+        self.assertEqual(wrong.security_text, "")
+        self.assertEqual(requests, [])
+
+    def test_monero_meta_markdown_is_loaded_from_exact_github_api_file(self):
+        client = GitHubClient({
+            "api_url": "https://api.github.com",
+            "timeout_seconds": 10,
+            "max_tree_paths": 100,
+        })
+        target = client._snapshot({
+            "full_name": "monero-project/monero", "default_branch": "master",
+        })
+        markdown = b"Monero Project GitHub repositories. Bounty reward. Bounty distribution in XMR."
+        requested = []
+        def fetch(url, *, accepted_types):
+            requested.append(url)
+            return json.dumps({
+                "type": "file",
+                "encoding": "base64",
+                "content": base64.b64encode(markdown).decode(),
+            }).encode()
+        client._fetch_exact_policy_bytes = fetch
+        result = client.load_curated_security_policy(
+            target,
+            "https://github.com/monero-project/meta/blob/master/"
+            "VULNERABILITY_RESPONSE_PROCESS.md",
+        )
+        self.assertEqual(result.security_text, markdown.decode())
+        self.assertEqual(requested, [
+            "https://api.github.com/repos/monero-project/meta/contents/"
+            "VULNERABILITY_RESPONSE_PROCESS.md?ref=master"
+        ])
+
+    def test_external_policy_fetch_rejects_changed_final_url_and_oversize(self):
+        client = GitHubClient({
+            "api_url": "https://api.github.com",
+            "timeout_seconds": 10,
+            "max_tree_paths": 100,
+        })
+
+        class Response:
+            def __init__(self, url, content):
+                self.url = url
+                self.content = content
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return self.url
+
+            def read(self, amount):
+                return self.content[:amount]
+
+        url = "https://firo.org/guide/bounty-program.html"
+        with patch("fuzz_target_scout.github.urllib.request.build_opener") as opener:
+            opener.return_value.open.return_value = Response(
+                "https://elsewhere.example/bounty", b"paid"
+            )
+            self.assertIsNone(client._fetch_exact_policy_bytes(
+                url, accepted_types=("text/html",)
+            ))
+            opener.return_value.open.return_value = Response(
+                url, b"x" * (128 * 1024 + 1)
+            )
+            self.assertIsNone(client._fetch_exact_policy_bytes(
+                url, accepted_types=("text/html",)
+            ))
+
     def test_repository_search_can_start_from_a_rotating_page(self):
         client = GitHubClient(
             {
@@ -172,6 +278,37 @@ class GitHubCodeEvidenceTests(unittest.TestCase):
         self.assertTrue(any(path.endswith(f"/git/trees/{tree_sha}?recursive=1") for path in requested))
         self.assertTrue(any(path.endswith(f"/readme?ref={commit_sha}") for path in requested))
         self.assertEqual(sum("/commits/" in path for path in requested), 1)
+
+    def test_complete_tree_blob_size_uses_full_tree_before_path_limit(self):
+        client, repo = self._client_and_repo()
+        client.max_tree_paths = 1
+        commit_sha, tree_sha = "a" * 40, "b" * 40
+        blobs = [
+            {"path": "CMakeLists.txt", "type": "blob", "sha": "c" * 40, "size": 1024},
+            {"path": "src/main.cpp", "type": "blob", "sha": "d" * 40, "size": 2049},
+        ]
+
+        def request(path):
+            if "/commits/" in path:
+                return {"sha": commit_sha, "commit": {"tree": {"sha": tree_sha}}}
+            if "/git/trees/" in path:
+                return {"sha": tree_sha, "truncated": False, "tree": blobs}
+            return None
+
+        client._request = request
+        result = client.hydrate_code_evidence(repo)
+        self.assertEqual(result.paths, ["CMakeLists.txt"])
+        self.assertEqual(result.source_tree_kb, 4)
+        def truncated(path):
+            value = request(path)
+            if isinstance(value, dict) and "tree" in value:
+                value["truncated"] = True
+            return value
+        client._request = truncated
+        self.assertIsNone(client.hydrate_code_evidence(repo).source_tree_kb)
+        blobs[1].pop("size")
+        client._request = request
+        self.assertIsNone(client.hydrate_code_evidence(repo).source_tree_kb)
 
     def test_missing_or_invalid_commit_fails_closed_without_using_prior_sha(self):
         client, repo = self._client_and_repo()

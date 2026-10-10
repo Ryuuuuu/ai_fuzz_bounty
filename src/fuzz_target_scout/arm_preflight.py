@@ -6,6 +6,7 @@ import platform
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -19,7 +20,8 @@ from .models import RepoSnapshot
 
 
 DOCKERFILE = """FROM ubuntu:24.04
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libboost-dev libcli11-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev zlib1g-dev default-jdk-headless && rm -rf /var/lib/apt/lists/*
+ENV JAVA_HOME=/usr/lib/jvm/default-java
 """
 
 # These scripts run inside the networkless container. The CMake File API ties
@@ -693,6 +695,27 @@ def _failure_evidence(output: str, returncode: int) -> str:
     return evidence
 
 
+def _working_tree_within_limit(source: Path, maximum_bytes: int) -> bool:
+    """Measure checked-out files without visiting Git metadata or link targets."""
+    total = 0
+    pending = [source]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                if entry.name == ".git":
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(entry.path))
+                elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                    total += info.st_size
+                    if total > maximum_bytes:
+                        return False
+                else:
+                    return False
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class ArmPreflightResult:
     passed: bool
@@ -738,7 +761,13 @@ class ArmPreflight:
         maximum_kb = min(
             100000, max(1, int(self.config.get("arm_preflight_max_repository_kb", 50000)))
         )
-        if not 0 < repo.size_kb <= maximum_kb:
+        source_tree_kb = getattr(repo, "source_tree_kb", None)
+        estimated_kb = repo.size_kb if source_tree_kb is None else source_tree_kb
+        if (
+            not isinstance(estimated_kb, int)
+            or isinstance(estimated_kb, bool)
+            or not 0 < estimated_kb <= maximum_kb
+        ):
             return ArmPreflightResult(False, "repository_size_out_of_bounds")
         deadline = time.monotonic() + min(
             1800, max(60, int(self.config.get("arm_preflight_timeout_seconds", 900)))
@@ -783,6 +812,8 @@ class ArmPreflight:
                 ).stdout.strip()
                 if actual.casefold() != repo.head_sha.casefold():
                     raise _StepFailure("checkout_mismatch")
+                if not _working_tree_within_limit(checkout, maximum_kb * 1024):
+                    raise _StepFailure("repository_size_out_of_bounds")
                 cmake_file = checkout / "CMakeLists.txt"
                 meson_file = checkout / "meson.build"
                 if cmake_file.is_file() and not cmake_file.is_symlink():

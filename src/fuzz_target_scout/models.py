@@ -15,6 +15,7 @@ class RepoSnapshot:
     stars: int = 0
     forks: int = 0
     size_kb: int = 0
+    source_tree_kb: int | None = None
     archived: bool = False
     disabled: bool = False
     pushed_at: str = ""
@@ -23,6 +24,7 @@ class RepoSnapshot:
     paths: list[str] = field(default_factory=list)
     security_url: str = ""
     security_text: str = ""
+    repository_security_text: str = ""
     readme_excerpt: str = ""
     architecture_files: dict[str, str] = field(default_factory=dict)
 

@@ -73,6 +73,34 @@ GOOGLE_OSS_VRP_RULES_PATH = (
 
 URL_RE = re.compile(r"https://[^\s)>\"']+", re.IGNORECASE)
 
+# Only these official, paid, repository-scoped external policies are accepted.
+CURATED_EXTERNAL_POLICY_URLS = {
+    "firoorg/firo": "https://firo.org/guide/bounty-program.html",
+    "monero-project/monero": (
+        "https://github.com/monero-project/meta/blob/master/"
+        "VULNERABILITY_RESPONSE_PROCESS.md"
+    ),
+}
+
+
+def _external_policy_proves_paid_scope(full_name: str, text: str) -> bool:
+    compact = " ".join(text.casefold().split())
+    if full_name.casefold() == "firoorg/firo":
+        return (
+            "ongoing vulnerability bounty program" in compact
+            and "master branch of" in compact
+            and "firoorg/firo" in compact
+            and "bounties are paid in firo" in compact
+        )
+    if full_name.casefold() == "monero-project/monero":
+        return (
+            "monero project github repositories" in compact
+            and "bounty reward" in compact
+            and "bounty distribution" in compact
+            and "xmr" in compact
+        )
+    return False
+
 
 class PolicyVerifier:
     def __init__(
@@ -100,6 +128,12 @@ class PolicyVerifier:
     @property
     def catalog_names(self) -> list[str]:
         return [entry["full_name"] for entry in self.entries.values()]
+
+    def external_security_url_for(self, full_name: str) -> str:
+        name = full_name.casefold()
+        expected = CURATED_EXTERNAL_POLICY_URLS.get(name, "")
+        entry = self.entries.get(name) or {}
+        return expected if entry.get("security_url") == expected else ""
 
     def merge_google_oss_vrp_feed(
         self,
@@ -205,7 +239,12 @@ class PolicyVerifier:
     @staticmethod
     def _readme_excludes_inherited_bounty(repo: RepoSnapshot) -> bool:
         owner = repo.full_name.split("/", 1)[0].casefold()
-        inherited = f"github.com/{owner}/.github/" in repo.security_url.casefold()
+        inherited = (
+            f"github.com/{owner}/.github/" in repo.security_url.casefold()
+            or repo.security_url == CURATED_EXTERNAL_POLICY_URLS.get(
+                repo.full_name.casefold()
+            )
+        )
         readme = " ".join(repo.readme_excerpt.split())
         return inherited and any(
             pattern.search(readme)
@@ -216,6 +255,15 @@ class PolicyVerifier:
         self, repo: RepoSnapshot, entry: dict[str, Any], today: date
     ) -> PolicyAssessment:
         current_text = repo.security_text
+        own_text = repo.repository_security_text
+        if own_text and any(pattern.search(own_text) for pattern in NEGATIVE_PATTERNS):
+            if not any(pattern.search(own_text) for pattern in STRONG_BOUNTY_PATTERNS):
+                return PolicyAssessment(
+                    status="rejected",
+                    confidence=100,
+                    source="security.md",
+                    note="The repository's own policy explicitly rejects paid reports.",
+                )
         has_strong_current_claim = any(
             pattern.search(current_text) for pattern in STRONG_BOUNTY_PATTERNS
         )
@@ -234,6 +282,36 @@ class PolicyVerifier:
             age = (today - verified_on).days
         except (KeyError, TypeError, ValueError):
             age = self.max_age_days + 1
+
+        expected_external = CURATED_EXTERNAL_POLICY_URLS.get(
+            repo.full_name.casefold()
+        )
+        if expected_external:
+            if (
+                entry.get("security_url") != expected_external
+                or repo.security_url != expected_external
+                or not current_text.strip()
+            ):
+                return PolicyAssessment(
+                    status="rejected",
+                    confidence=100,
+                    source="catalog",
+                    note="The exact curated external security policy is unavailable.",
+                )
+            if age < 0 or age > self.max_age_days:
+                return PolicyAssessment(
+                    status="rejected",
+                    confidence=100,
+                    source="catalog",
+                    note=f"External policy catalog verification is stale ({age} days old).",
+                )
+            if not _external_policy_proves_paid_scope(repo.full_name, current_text):
+                return PolicyAssessment(
+                    status="rejected",
+                    confidence=100,
+                    source="catalog",
+                    note="The live external policy does not prove paid repository scope.",
+                )
 
         if not repo.security_text.strip():
             return PolicyAssessment(

@@ -10,13 +10,44 @@ import urllib.parse
 import urllib.request
 import time
 from dataclasses import replace
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 from .models import RepoSnapshot
+from .policy import CURATED_EXTERNAL_POLICY_URLS
 
 
 _GIT_SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
+_MAX_POLICY_BYTES = 128 * 1024
+
+
+class _RejectPolicyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+class _PolicyHTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript"}:
+            self._skip += 1
+        elif not self._skip and tag == "a":
+            href = dict(attrs).get("href") or ""
+            if href.startswith("https://github.com/"):
+                self.parts.append(href)
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript"} and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.parts.append(data)
 
 
 class GitHubError(RuntimeError):
@@ -171,10 +202,12 @@ class GitHubClient:
                     html_url = content.get("html_url") or html_url
                     break
         if content:
+            own_text = self._decode_content(content)
             return replace(
                 repo,
                 security_url=html_url,
-                security_text=self._decode_content(content),
+                security_text=own_text,
+                repository_security_text=own_text,
             )
         inherited = self._load_owner_security_policy(repo.full_name.split("/", 1)[0])
         if inherited is None:
@@ -185,6 +218,88 @@ class GitHubClient:
             security_url=inherited_url,
             security_text=inherited_text,
         )
+
+    def load_curated_security_policy(
+        self, repo: RepoSnapshot, security_url: str
+    ) -> RepoSnapshot:
+        """Read only the two explicitly curated external policy locations."""
+        expected = CURATED_EXTERNAL_POLICY_URLS.get(repo.full_name.casefold())
+        original_text = repo.repository_security_text
+        text = ""
+        if expected and security_url == expected:
+            if repo.full_name.casefold() == "firoorg/firo":
+                raw = self._fetch_exact_policy_bytes(
+                    expected, accepted_types=("text/html",)
+                )
+                if raw is not None:
+                    parser = _PolicyHTMLText()
+                    try:
+                        parser.feed(raw.decode("utf-8"))
+                        text = " ".join(parser.parts)
+                    except (UnicodeDecodeError, ValueError):
+                        text = ""
+            elif repo.full_name.casefold() == "monero-project/monero":
+                url = (
+                    "https://api.github.com/repos/monero-project/meta/contents/"
+                    "VULNERABILITY_RESPONSE_PROCESS.md?ref=master"
+                )
+                raw = self._fetch_exact_policy_bytes(
+                    url,
+                    accepted_types=(
+                        "application/json", "application/vnd.github+json",
+                    ),
+                )
+                if raw is not None:
+                    try:
+                        payload = json.loads(raw)
+                        encoded = "".join(str(payload["content"]).split())
+                        if (
+                            payload.get("type") == "file"
+                            and payload.get("encoding") == "base64"
+                        ):
+                            decoded = base64.b64decode(encoded, validate=True)
+                            if len(decoded) <= _MAX_POLICY_BYTES:
+                                text = decoded.decode("utf-8")
+                    except (
+                        KeyError, TypeError, ValueError, UnicodeDecodeError,
+                        json.JSONDecodeError,
+                    ):
+                        text = ""
+        return replace(
+            repo,
+            security_url=security_url,
+            security_text=text[:_MAX_POLICY_BYTES],
+            repository_security_text=original_text,
+        )
+
+    def _fetch_exact_policy_bytes(
+        self, url: str, *, accepted_types: tuple[str, ...]
+    ) -> bytes | None:
+        headers = {"User-Agent": "fuzz-target-scout/0.1"}
+        if url.startswith("https://api.github.com/"):
+            headers["Accept"] = "application/vnd.github+json"
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(url, headers=headers)
+        opener = urllib.request.build_opener(_RejectPolicyRedirect())
+        try:
+            with opener.open(request, timeout=min(self.timeout, 15)) as response:
+                if response.geturl() != url:
+                    return None
+                content_type = str(
+                    response.headers.get("Content-Type") or ""
+                ).split(";", 1)[0].casefold()
+                if content_type not in accepted_types:
+                    return None
+                data = response.read(_MAX_POLICY_BYTES + 1)
+                return data if len(data) <= _MAX_POLICY_BYTES else None
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            http.client.HTTPException,
+            OSError,
+        ):
+            return None
 
     def _load_owner_security_policy(self, owner: str) -> tuple[str, str] | None:
         cache_key = owner.casefold()
@@ -222,11 +337,31 @@ class GitHubClient:
             or not isinstance(tree.get("tree"), list)
         ):
             raise GitHubError(f"GitHub returned an inconsistent tree for {repo.full_name}")
-        blobs = [
-            item
-            for item in (tree.get("tree") or [])
-            if item.get("type") == "blob" and isinstance(item.get("path"), str)
-        ][: self.max_tree_paths]
+        tree_items = tree["tree"]
+        all_blobs = [
+            item for item in tree_items
+            if isinstance(item, dict) and item.get("type") == "blob"
+        ]
+        source_tree_kb = None
+        if (
+            tree.get("truncated") is False
+            and all(isinstance(item, dict) for item in tree_items)
+            and all_blobs
+            and all(
+                isinstance(item.get("path"), str)
+                and type(item.get("size")) is int
+                and item["size"] >= 0
+                for item in all_blobs
+            )
+        ):
+            source_tree_kb = max(
+                1, (sum(item["size"] for item in all_blobs) + 1023) // 1024
+            )
+        all_blobs = [
+            item for item in all_blobs
+            if isinstance(item.get("path"), str)
+        ]
+        blobs = all_blobs[: self.max_tree_paths]
         paths = [str(item["path"]) for item in blobs]
         readme = self._request(f"/repos/{encoded}/readme?ref={commit_sha}")
         architecture_files: dict[str, str] = {}
@@ -238,6 +373,7 @@ class GitHubClient:
         return replace(
             repo,
             head_sha=commit_sha,
+            source_tree_kb=source_tree_kb,
             language=_infer_fuzzable_language(paths, repo.language),
             paths=paths,
             readme_excerpt=self._compact_readme(self._decode_content(readme)),

@@ -28,6 +28,7 @@ from fuzz_target_scout.arm_preflight import (
     VERIFY_NATIVE_TEST,
     _StepFailure,
     _failure_evidence,
+    _working_tree_within_limit,
 )
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
@@ -164,6 +165,73 @@ class ArmPreflightTests(unittest.TestCase):
         self.assertEqual(observed, {"source_mode": 0o755, "parent_mode": 0o700})
         self.assertIn("libboost-dev", DOCKERFILE)
         self.assertIn("libcli11-dev", DOCKERFILE)
+
+    def test_complete_tree_size_precedes_history_size_with_unknown_fallback(self):
+        checker = ArmPreflight({
+            "host_arch": "aarch64", "arm_preflight_max_repository_kb": 1,
+        })
+        with patch("fuzz_target_scout.arm_preflight.platform.machine", return_value="aarch64"), patch.object(
+            checker, "_run", side_effect=_StepFailure("checkout_failed")
+        ) as runner:
+            accepted = checker.check(replace(
+                repository(), size_kb=50000, source_tree_kb=1,
+            ))
+            self.assertEqual(accepted.reason, "checkout_failed")
+            runner.assert_called_once()
+
+            runner.reset_mock()
+            too_large = checker.check(replace(
+                repository(), size_kb=1, source_tree_kb=2,
+            ))
+            self.assertEqual(too_large.reason, "repository_size_out_of_bounds")
+            runner.assert_not_called()
+
+            unknown = checker.check(replace(
+                repository(), size_kb=2, source_tree_kb=None,
+            ))
+            self.assertEqual(unknown.reason, "repository_size_out_of_bounds")
+            runner.assert_not_called()
+
+    def test_working_tree_limit_skips_git_metadata_and_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            metadata = source / ".git"
+            metadata.mkdir()
+            (metadata / "pack").write_bytes(b"x" * 4096)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "huge").write_bytes(b"x" * 4096)
+            os.symlink(outside, source / "linked_directory", target_is_directory=True)
+            nested = source / "nested"
+            nested.mkdir()
+            (nested / "unit.cpp").write_bytes(b"x" * 512)
+            self.assertTrue(_working_tree_within_limit(source, 1024))
+            (nested / "more.cpp").write_bytes(b"x" * 512)
+            self.assertFalse(_working_tree_within_limit(source, 1024))
+
+    def test_actual_checkout_over_limit_never_reaches_builder(self):
+        checker = ArmPreflight({
+            "host_arch": "aarch64", "arm_preflight_max_repository_kb": 1,
+        })
+
+        def fake_run(command, _deadline, _environment, _failure):
+            if command[0] == "git" and "checkout" in command:
+                source = Path(command[2])
+                (source / "CMakeLists.txt").write_text("project(parser)\n")
+                (source / "large.cpp").write_bytes(b"x" * 1024)
+            if command[0] == "git" and "rev-parse" in command:
+                return subprocess.CompletedProcess(command, 0, SHA + "\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch("fuzz_target_scout.arm_preflight.platform.machine", return_value="aarch64"), patch.object(
+            checker, "_run", side_effect=fake_run
+        ), patch.object(checker, "_ensure_builder") as builder:
+            result = checker.check(replace(repository(), size_kb=1))
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "repository_size_out_of_bounds")
+        builder.assert_not_called()
 
     def test_child_process_files_use_readable_umask_under_strict_service_umask(self):
         checker = ArmPreflight({"host_arch": "aarch64"})
@@ -850,7 +918,7 @@ class ArmPreflightTests(unittest.TestCase):
             finally:
                 engine.close()
 
-    def test_preflight_prefers_score_then_smaller_source(self):
+    def test_preflight_prefers_smaller_source_then_score(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")
             config["architecture"]["host_arch"] = "aarch64"
@@ -876,7 +944,7 @@ class ArmPreflightTests(unittest.TestCase):
                         call.args[0].full_name
                         for call in runner.return_value.check.call_args_list
                     ]
-                self.assertEqual(names, ["org/b-high", "org/z-small"])
+                self.assertEqual(names, ["org/z-small", "org/a-large"])
             finally:
                 engine.close()
 

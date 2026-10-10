@@ -50,7 +50,7 @@ from .pipeline import (
     UnsupportedIntegrationError,
     utc_now,
 )
-from .policy import PolicyVerifier
+from .policy import CURATED_EXTERNAL_POLICY_URLS, PolicyVerifier
 from .quartet_gate import (
     CodexQuartetReviewer,
     build_quartet_evidence,
@@ -1941,6 +1941,16 @@ class PipelineRunner:
             raise PipelineError(f"repository is no longer available: {repository}")
         repo = self.github.load_security_policy(repo)
         policy = self.policy
+        curated_url = CURATED_EXTERNAL_POLICY_URLS.get(repository.casefold())
+        if curated_url:
+            if (
+                expected.get("security_url") != curated_url
+                or policy.external_security_url_for(repository) != curated_url
+            ):
+                raise PipelineError(
+                    "curated security policy URL changed; a new scout review is required"
+                )
+            repo = self.github.load_curated_security_policy(repo, curated_url)
         expected_program = str(expected.get("program_url") or "").rstrip("/")
         policy_config = self.config["policy"]
         google_program = str(

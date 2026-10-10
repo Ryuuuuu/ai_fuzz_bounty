@@ -2,13 +2,16 @@ import copy
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fuzz_target_scout.arm_preflight import PREFLIGHT_VERSION
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
 from fuzz_target_scout.github import GitHubError
+from fuzz_target_scout.policy import CURATED_EXTERNAL_POLICY_URLS
 from fuzz_target_scout.models import (
     AIAssessment, ArchitectureAssessment, Candidate, PolicyAssessment,
     RepoSnapshot, StaticAssessment,
@@ -39,7 +42,14 @@ class _SearchGitHub:
                 default_branch="main",
                 head_sha="a" * 40,
                 language="C++",
-            )
+            ),
+            RepoSnapshot(
+                full_name=f"org/go-tool-{start_page}",
+                html_url=f"https://github.com/org/go-tool-{start_page}",
+                default_branch="main",
+                head_sha="b" * 40,
+                language="Go",
+            ),
         ]
 
 
@@ -80,7 +90,7 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                 with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
                     runner.return_value.check.return_value = SimpleNamespace(
                         passed=True, reason="native_test_passed",
-                        evidence="native_arm_preflight:test:cmake_build_ctest:" + "a" * 40,
+                        evidence=f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:" + "a" * 40,
                     )
                     attempted, passed = engine._preflight_arm_candidates(
                         [first, second], max_attempts=4,
@@ -90,6 +100,120 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                 runner.return_value.check.assert_called_once()
                 self.assertTrue(first.architecture.compatible)
                 self.assertFalse(second.architecture.compatible)
+            finally:
+                engine.close()
+
+    def test_architecture_label_requires_current_commit_native_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+            target = Candidate(
+                repo=RepoSnapshot(
+                    full_name="org/label-only",
+                    html_url="https://github.com/org/label-only",
+                    default_branch="main",
+                    head_sha="c" * 40,
+                    language="C++",
+                    size_kb=80_000,
+                    source_tree_kb=100,
+                    security_url="https://github.com/org/label-only/security/policy",
+                ),
+                static=StaticAssessment(
+                    fuzz_score=80, reproduce_difficulty=1,
+                    signals=["standard_build:cmakelists.txt"],
+                    blockers=[], suggested_entry_kind="library_api",
+                ),
+                policy=PolicyAssessment(
+                    status="verified", confidence=95, source="security.md",
+                    program_url="https://hackerone.com/example",
+                ),
+                final_score=80,
+                architecture=ArchitectureAssessment(
+                    host_arch="aarch64", compatible=True, confidence=90,
+                    evidence=["ci: linux/arm64"],
+                ),
+            )
+            evidence = (
+                f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:"
+                + "c" * 40
+            )
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = SimpleNamespace(
+                        passed=False, reason="native_build_or_smoke_failed",
+                        evidence="native_arm_failure:stage=build;kind=missing_dependency;exit=1",
+                    )
+                    self.assertEqual(engine._preflight_arm_candidates([target]), (1, 0))
+                self.assertFalse(target.architecture.compatible)
+                self.assertIn(
+                    "native_build_probe_required:aarch64", target.static.blockers
+                )
+                engine.store.put_arm_preflight(
+                    target.repo.full_name, target.repo.head_sha,
+                    "aarch64", PREFLIGHT_VERSION,
+                    passed=True, reason="native_test_passed", evidence=evidence,
+                )
+                self.assertEqual(engine._preflight_arm_candidates([target]), (0, 1))
+                self.assertEqual(target.architecture.evidence, [evidence])
+            finally:
+                engine.close()
+
+    def test_new_catalog_candidate_precedes_old_build_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+
+            def target(name, *, size_kb, source, score):
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=name, html_url=f"https://github.com/{name}",
+                        default_branch="main", head_sha="d" * 40,
+                        language="C++", size_kb=90_000,
+                        source_tree_kb=size_kb,
+                        security_url=f"https://github.com/{name}/security/policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=score, reproduce_difficulty=1,
+                        signals=["standard_build:cmakelists.txt"],
+                        blockers=[], suggested_entry_kind="library_api",
+                    ),
+                    policy=PolicyAssessment(
+                        status="verified", confidence=95, source=source,
+                        program_url="https://hackerone.com/example",
+                    ),
+                    final_score=score,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=True, confidence=90,
+                        evidence=["ci: linux/arm64"],
+                    ),
+                )
+
+            stale = target("org/old-failure", size_kb=10, source="catalog", score=99)
+            fresh = target("firoorg/firo", size_kb=100, source="catalog", score=80)
+            direct = target("org/new-direct", size_kb=1, source="security.md", score=95)
+            try:
+                engine.store.put_arm_preflight(
+                    stale.repo.full_name, stale.repo.head_sha, "aarch64",
+                    "older-builder-version", passed=False,
+                    reason="native_build_or_smoke_failed",
+                )
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = SimpleNamespace(
+                        passed=False, reason="native_build_or_smoke_failed",
+                        evidence="native_arm_failure:stage=build;kind=missing_dependency;exit=1",
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates(
+                            [stale, direct, fresh], max_attempts=1
+                        ),
+                        (1, 0),
+                    )
+                    self.assertEqual(
+                        runner.return_value.check.call_args.args[0].full_name,
+                        "firoorg/firo",
+                    )
             finally:
                 engine.close()
 
@@ -197,6 +321,70 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                     list(engine.store.export_rows(55, False, scan_id=summary.scan_id)),
                     [],
                 )
+            finally:
+                engine.close()
+
+    def test_catalog_seed_fetches_curated_paid_policy_before_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["github"]["seed_policy_catalog"] = False
+            config["pipeline"]["languages"] = ["C++"]
+            engine = ScoutEngine(config)
+            name = "firoorg/firo"
+            url = CURATED_EXTERNAL_POLICY_URLS[name]
+            engine.policy.entries = {name: {
+                "full_name": name,
+                "status": "verified",
+                "security_url": url,
+                "program_url": url,
+                "last_verified": date.today().isoformat(),
+            }}
+            engine._refresh_policy_sources = lambda: None
+            calls = []
+
+            class GitHub:
+                def get_repository(self, repository):
+                    return RepoSnapshot(
+                        full_name=repository,
+                        html_url=f"https://github.com/{repository}",
+                        default_branch="master",
+                        head_sha="a" * 40,
+                        language="C++",
+                        size_kb=100,
+                    )
+
+                def load_security_policy(self, target):
+                    return replace(target, security_text="Report security issues.")
+
+                def load_curated_security_policy(self, target, security_url):
+                    calls.append(security_url)
+                    return replace(
+                        target,
+                        security_url=security_url,
+                        security_text=(
+                            "Firo runs an ongoing vulnerability bounty program. "
+                            "The program covers vulnerabilities reproduced against "
+                            "the master branch of firoorg/firo. "
+                            "All bounties are paid in FIRO."
+                        ),
+                        repository_security_text=target.security_text,
+                    )
+
+                def hydrate_code_evidence(self, target):
+                    return replace(
+                        target, head_sha="a" * 40,
+                        paths=["CMakeLists.txt", "src/main.cpp"],
+                        source_tree_kb=90,
+                    )
+
+            engine.github = GitHub()
+            try:
+                summary = engine.scan(
+                    queries=[], seed_repositories=[name], use_ai=False,
+                    run_arm_preflight=False,
+                )
+                self.assertEqual(summary.verified, 1)
+                self.assertEqual(calls, [url])
             finally:
                 engine.close()
 

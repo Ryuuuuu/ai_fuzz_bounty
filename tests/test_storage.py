@@ -32,6 +32,39 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(store.get_search_page(query, 3), 1)
             store.close()
 
+    def test_preflight_history_distinguishes_failure_and_meson_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "scout.sqlite3")
+            version = "probe-v2"
+            old_sha = "a" * 40
+            new_sha = "b" * 40
+            self.assertFalse(
+                store.has_prior_failed_arm_preflight("org/parser", "aarch64")
+            )
+            store.put_arm_preflight(
+                "org/parser", old_sha, "aarch64", "probe-v1",
+                passed=False, reason="native_build_or_smoke_failed",
+            )
+            self.assertTrue(
+                store.has_prior_failed_arm_preflight("ORG/PARSER", "aarch64")
+            )
+            store.put_arm_preflight(
+                "org/parser", old_sha, "aarch64", version,
+                passed=True, reason="native_arm_build_and_meson_test_passed",
+                evidence=f"native_arm_preflight:{version}:meson_build_meson_test:{old_sha}",
+            )
+            self.assertTrue(
+                store.has_prior_successful_arm_preflight(
+                    "org/parser", new_sha, "aarch64", version
+                )
+            )
+            self.assertFalse(
+                store.has_prior_successful_arm_preflight(
+                    "org/parser", old_sha, "aarch64", version
+                )
+            )
+            store.close()
+
     def test_revalidation_backlog_filters_history_policy_language_score_and_arm(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "scout.sqlite3")
@@ -92,7 +125,7 @@ class StorageTests(unittest.TestCase):
             scan_id = store.start_scan("test")
 
             def add(
-                name, *, score=90, size_kb=1000, compatible=False,
+                name, *, score=90, size_kb=1000, source_tree_kb=None, compatible=False,
                 blockers=None, signals=None, status="verified", language="C++",
                 program_url="https://hackerone.com/example", security_url=None,
             ):
@@ -105,6 +138,7 @@ class StorageTests(unittest.TestCase):
                             head_sha="a" * 40,
                             language=language,
                             size_kb=size_kb,
+                            source_tree_kb=source_tree_kb,
                             security_url=(
                                 f"https://github.com/{name}/security/policy"
                                 if security_url is None else security_url
@@ -195,6 +229,18 @@ class StorageTests(unittest.TestCase):
                     2,
                 ),
                 [],
+            )
+            add(
+                "org/tree-small", size_kb=221_733, source_tree_kb=35_000,
+                blockers=["native_build_probe_required:aarch64"],
+            )
+            self.assertEqual(
+                store.revalidation_backlog_names(
+                    55, ["C++"],
+                    {"org/compatible", "org/probe-small", "org/no-evidence", "org/probe-large", "org/meson"},
+                    1,
+                ),
+                ["org/tree-small"],
             )
             store.close()
 

@@ -7,6 +7,7 @@ import threading
 import tracemalloc
 import unittest
 import zipfile
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from fuzz_target_scout.coverage_analysis import (
 )
 from fuzz_target_scout.github import GitHubError
 from fuzz_target_scout.models import RepoSnapshot
-from fuzz_target_scout.policy import PolicyVerifier
+from fuzz_target_scout.policy import CURATED_EXTERNAL_POLICY_URLS, PolicyVerifier
 from fuzz_target_scout.pipeline import (
     OfflineDependencyError,
     PipelineError,
@@ -89,6 +90,80 @@ class PolicyRecheckTests(unittest.TestCase):
             "authorization": {"program_url": policy_config["google_oss_vrp_program_url"]},
         }
         return runner, job_dir, job, feed_fetch
+
+    @classmethod
+    def _curated_fixture(cls, directory, *, live_text=None, verified_on=None):
+        name = "firoorg/firo"
+        url = CURATED_EXTERNAL_POLICY_URLS[name]
+        runner, job_dir, job, feed_fetch = cls._fixture(
+            directory,
+            repository=name,
+            security_text="Report security issues to the project maintainers.",
+            catalog_entries=[{
+                "full_name": name,
+                "status": "verified",
+                "security_url": url,
+                "program_url": url,
+                "last_verified": verified_on or date.today().isoformat(),
+            }],
+        )
+        job["authorization"] = {"program_url": url, "security_url": url}
+        text = (
+            "Firo runs an ongoing vulnerability bounty program. "
+            "The program covers vulnerabilities reproduced against "
+            "the master branch of firoorg/firo. "
+            "All bounties are paid in FIRO."
+            if live_text is None else live_text
+        )
+        def load(repo, requested):
+            return replace(
+                repo, security_url=requested, security_text=text,
+                repository_security_text=repo.security_text,
+            )
+        runner.github.load_curated_security_policy = Mock(side_effect=load)
+        return runner, job_dir, job, feed_fetch
+
+    def test_curated_policy_recheck_fetches_live_page_and_records_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, feed_fetch = self._curated_fixture(directory)
+            runner._recheck_policy(job_dir, job)
+            record = json.loads(
+                (job_dir / "artifacts" / "authorization-recheck.json").read_text()
+            )
+            self.assertEqual(record["status"], "verified")
+            self.assertEqual(
+                record["security_url"],
+                CURATED_EXTERNAL_POLICY_URLS["firoorg/firo"],
+            )
+            runner.github.load_curated_security_policy.assert_called_once()
+            feed_fetch.assert_not_called()
+
+    def test_curated_policy_recheck_rejects_unavailable_or_stale_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, _ = self._curated_fixture(
+                directory, live_text=""
+            )
+            with self.assertRaisesRegex(PipelineError, "no longer verified"):
+                runner._recheck_policy(job_dir, job)
+            self.assertFalse(
+                (job_dir / "artifacts" / "authorization-recheck.json").exists()
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, _ = self._curated_fixture(
+                directory, verified_on="2025-01-01"
+            )
+            with self.assertRaisesRegex(PipelineError, "no longer verified"):
+                runner._recheck_policy(job_dir, job)
+
+    def test_curated_policy_recheck_requires_exact_work_order_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner, job_dir, job, _ = self._curated_fixture(directory)
+            job["authorization"]["security_url"] = (
+                "https://firo.org/guide/other.html"
+            )
+            with self.assertRaisesRegex(PipelineError, "URL changed"):
+                runner._recheck_policy(job_dir, job)
+            runner.github.load_curated_security_policy.assert_not_called()
 
     def test_google_recheck_rejects_current_feed_entry_after_product_pause(self):
         feed = """

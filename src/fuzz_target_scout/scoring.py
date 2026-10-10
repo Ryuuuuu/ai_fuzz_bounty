@@ -25,6 +25,9 @@ def assess_static(repo: RepoSnapshot) -> StaticAssessment:
     signals: list[str] = []
     blockers: list[str] = []
     score = 0
+    # GitHub repository size includes history; a complete source tree is more useful.
+    source_tree_kb = getattr(repo, "source_tree_kb", None)
+    size_kb = source_tree_kb if source_tree_kb is not None else repo.size_kb
 
     source_count = sum(path.endswith(SOURCE_SUFFIXES) for path in paths)
     if repo.language in BINARY_LANGUAGES:
@@ -87,10 +90,10 @@ def assess_static(repo: RepoSnapshot) -> StaticAssessment:
     else:
         blockers.append("not_recently_pushed")
 
-    if 0 < repo.size_kb <= 100_000:
+    if 0 < size_kb <= 100_000:
         score += 8
         signals.append("moderate_repository_size")
-    elif repo.size_kb > 300_000:
+    elif size_kb > 300_000:
         score -= 8
         blockers.append("very_large_repository")
 
@@ -103,9 +106,9 @@ def assess_static(repo: RepoSnapshot) -> StaticAssessment:
     difficulty = 3
     if fuzz_paths:
         difficulty -= 1
-    if build_hits and repo.size_kb <= 100_000:
+    if build_hits and 0 < size_kb <= 100_000:
         difficulty -= 1
-    if repo.size_kb > 300_000:
+    if size_kb > 300_000:
         difficulty += 1
     if any(
         token in text

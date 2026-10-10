@@ -32,6 +32,24 @@ class ScoringTests(unittest.TestCase):
         self.assertLessEqual(result.reproduce_difficulty, 2)
         self.assertEqual(result.suggested_entry_kind, "existing_harness")
 
+    def test_complete_source_tree_size_overrides_historical_repository_size(self):
+        candidate = RepoSnapshot(
+            full_name="org/parser",
+            html_url="https://github.com/org/parser",
+            default_branch="main",
+            head_sha="abc",
+            language="C++",
+            size_kb=500_000,
+            source_tree_kb=30_000,
+            pushed_at=datetime.now(timezone.utc).isoformat(),
+            paths=["CMakeLists.txt", "src/parser.cpp", "tests/parser.cpp"],
+            readme_excerpt="A Linux parser library.",
+        )
+        result = assess_static(candidate)
+        self.assertIn("moderate_repository_size", result.signals)
+        self.assertNotIn("very_large_repository", result.blockers)
+        self.assertEqual(result.reproduce_difficulty, 2)
+
     def test_service_monorepo_is_harder(self):
         candidate = RepoSnapshot(
             full_name="org/cloud",

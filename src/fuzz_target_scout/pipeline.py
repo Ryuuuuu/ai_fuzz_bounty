@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .architecture import resolve_host_architecture
+from .arm_preflight import MESON_PREFLIGHT_VERSION, PREFLIGHT_VERSION
 
 
 COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -514,9 +515,13 @@ def make_work_order(
     if language.casefold() in CPP_LANGUAGES:
         oss_fuzz_native = architecture_config is None or host_arch == "x86_64"
         if not oss_fuzz_native:
-            generic_build_signal = _generic_build_signal(assessment)
+            generic_build_signal = _native_build_signal(assessment)
             if generic_build_signal is None:
                 return None, "no_supported_native_build_signal"
+            if not _native_preflight_verified(
+                architecture, commit, generic_build_signal
+            ):
+                return None, "native_arm_preflight_required"
             route = "native_generated"
             route_reason = (
                 f"generate and build a native {host_arch} libFuzzer harness"
@@ -1046,6 +1051,34 @@ def _tool_records(
             }
         )
     return records
+
+
+def _native_build_signal(assessment: dict[str, Any]) -> str | None:
+    markers: set[str] = set()
+    for value in assessment.get("signals") or []:
+        text = str(value).casefold()
+        if text.startswith("standard_build:"):
+            markers.update(text.removeprefix("standard_build:").split(","))
+    if "cmakelists.txt" in markers:
+        return "cmake"
+    if "meson.build" in markers:
+        return "meson"
+    return None
+
+
+def _native_preflight_verified(
+    architecture: dict[str, Any], commit: str, build_system: str
+) -> bool:
+    version = (
+        PREFLIGHT_VERSION if build_system == "cmake"
+        else MESON_PREFLIGHT_VERSION
+    )
+    smoke = "ctest" if build_system == "cmake" else "meson_test"
+    expected = (
+        f"native_arm_preflight:{version}:{build_system}_build_{smoke}:"
+        f"{commit.casefold()}"
+    )
+    return expected in (architecture.get("evidence") or [])
 
 
 def _generic_build_signal(assessment: dict[str, Any]) -> str | None:

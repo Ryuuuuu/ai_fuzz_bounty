@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from fuzz_target_scout.models import RepoSnapshot
-from fuzz_target_scout.policy import PolicyVerifier
+from fuzz_target_scout.policy import CURATED_EXTERNAL_POLICY_URLS, PolicyVerifier
 
 
 def repo(name: str, security_text: str) -> RepoSnapshot:
@@ -27,6 +27,111 @@ class PolicyVerifierTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def _external_catalog(self, name: str, *, verified_on: str = "2026-10-10"):
+        url = CURATED_EXTERNAL_POLICY_URLS[name]
+        self.catalog.write_text(
+            json.dumps({"entries": [{
+                "full_name": name,
+                "status": "verified",
+                "security_url": url,
+                "program_url": url,
+                "last_verified": verified_on,
+            }]}),
+            encoding="utf-8",
+        )
+        return url
+
+    def test_curated_external_policy_requires_live_paid_repository_scope(self):
+        cases = [
+            (
+                "firoorg/firo",
+                "Firo runs an ongoing vulnerability bounty program. "
+                "The program covers vulnerabilities reproduced against "
+                "the master branch of firoorg/firo. "
+                "All bounties are paid in FIRO.",
+            ),
+            (
+                "monero-project/monero",
+                "Monero Project GitHub repositories are covered by a "
+                "bounty reward. Bounty distribution is paid in XMR.",
+            ),
+        ]
+        for name, live_text in cases:
+            with self.subTest(name=name):
+                url = self._external_catalog(name)
+                target = repo(name, live_text)
+                target.security_url = url
+                verifier = PolicyVerifier(self.catalog)
+                self.assertEqual(
+                    verifier.verify(target, today=date(2026, 10, 10)).status,
+                    "verified",
+                )
+                if name == "firoorg/firo":
+                    target.security_text = live_text.replace("ongoing ", "")
+                    self.assertEqual(
+                        verifier.verify(
+                            target, today=date(2026, 10, 10)
+                        ).status,
+                        "rejected",
+                    )
+                target.security_text = ""
+                self.assertEqual(
+                    verifier.verify(target, today=date(2026, 10, 10)).status,
+                    "rejected",
+                )
+                target.security_text = (
+                    "Vulnerability reports can be sent to project maintainers."
+                )
+                self.assertEqual(
+                    verifier.verify(target, today=date(2026, 10, 10)).status,
+                    "rejected",
+                )
+
+    def test_curated_external_policy_rejects_stale_or_changed_url(self):
+        name = "firoorg/firo"
+        url = self._external_catalog(name, verified_on="2026-01-01")
+        target = repo(
+            name,
+            "Firo runs an ongoing vulnerability bounty program. "
+            "The program covers vulnerabilities reproduced against "
+            "the master branch of firoorg/firo. "
+            "All bounties are paid in FIRO.",
+        )
+        target.security_url = url
+        self.assertEqual(
+            PolicyVerifier(self.catalog).verify(
+                target, today=date(2026, 10, 10)
+            ).status,
+            "rejected",
+        )
+        self._external_catalog(name)
+        target.security_url = "https://firo.org/guide/other.html"
+        self.assertEqual(
+            PolicyVerifier(self.catalog).verify(
+                target, today=date(2026, 10, 10)
+            ).status,
+            "rejected",
+        )
+
+    def test_repository_own_no_bounty_policy_overrides_curated_page(self):
+        name = "firoorg/firo"
+        url = self._external_catalog(name)
+        target = repo(
+            name,
+            "Firo runs an ongoing vulnerability bounty program. "
+            "The program covers vulnerabilities reproduced against "
+            "the master branch of firoorg/firo. "
+            "All bounties are paid in FIRO.",
+        )
+        target.security_url = url
+        target.repository_security_text = "We do not offer monetary bounties."
+        self.assertEqual(
+            PolicyVerifier(self.catalog).verify(
+                target, today=date(2026, 10, 10)
+            ).status,
+            "rejected",
+        )
 
     def test_google_oss_vrp_feed_adds_only_current_oss_scope(self):
         verifier = PolicyVerifier(self.catalog)
