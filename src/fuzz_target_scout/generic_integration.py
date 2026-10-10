@@ -41,6 +41,7 @@ CMAKE_SYSTEM_DEPENDENCIES = {
     "libxml2": ("libxml2-dev",),
     "openssl": ("libssl-dev",),
     "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
+    "uuid": ("uuid-dev",),
     "zlib": ("zlib1g-dev",),
 }
 MESON_SYSTEM_DEPENDENCIES = {
@@ -1078,6 +1079,12 @@ def _infer_system_dependencies_from_build_error(build_error: str) -> set[str]:
         error,
     ):
         dependencies.update(CMAKE_SYSTEM_DEPENDENCIES["gtest"])
+    if re.search(
+        r"\bcould not find uuid\s*\(\s*missing:\s*"
+        r"uuid_library\s+uuid_include_dir\s*\)",
+        error,
+    ):
+        dependencies.update(CMAKE_SYSTEM_DEPENDENCIES["uuid"])
     for tool in REVIEWED_BUILD_TOOL_PACKAGES - {"python3-yaml"}:
         if re.search(
             rf"\berror:\s+program\s+['\"]?{re.escape(tool)}['\"]?\s+not\s+found",

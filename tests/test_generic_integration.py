@@ -559,6 +559,7 @@ class GenericIntegrationTests(unittest.TestCase):
                 "find_package(Boost REQUIRED)\n"
                 "find_package(GTest REQUIRED)\n"
                 "find_package(OpenSSL REQUIRED)\n"
+                "find_package(UUID REQUIRED)\n"
                 "find_package(gflags REQUIRED)\n"
                 "set(CPUINFO_SOURCE_DIR ignored)\n"
                 "set(PTHREADPOOL_SOURCE_DIR ignored)\n"
@@ -570,11 +571,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 "cmake", "ubuntu:24.04", dependencies, source_dependencies
             )
 
-        self.assertEqual(dependencies, ["libboost-dev", "libgflags-dev", "libgtest-dev", "libssl-dev"])
+        self.assertEqual(dependencies, ["libboost-dev", "libgflags-dev", "libgtest-dev", "libssl-dev", "uuid-dev"])
         self.assertEqual(
             source_dependencies, ["absl", "cpuinfo", "fxdiv", "pthreadpool"]
         )
-        self.assertIn("libboost-dev libgflags-dev libgtest-dev libssl-dev git", dockerfile)
+        self.assertIn("libboost-dev libgflags-dev libgtest-dev libssl-dev uuid-dev git", dockerfile)
         self.assertIn("https://github.com/abseil/abseil-cpp.git", dockerfile)
         self.assertIn("d38452e1ee03523a208362186fd42248ff2609f6", dockerfile)
         self.assertIn("https://github.com/pytorch/cpuinfo.git", dockerfile)
@@ -654,6 +655,21 @@ class GenericIntegrationTests(unittest.TestCase):
         )
         self.assertIn("python3-yaml ragel", dockerfile)
         self.assertNotIn("unapproved-tool", dockerfile)
+
+    def test_exact_cmake_uuid_failure_repairs_builder_without_ai(self):
+        error = (
+            "CMake Error at /usr/share/cmake-3.28/Modules/FindPackageHandleStandardArgs.cmake:230 (message):\n"
+            "  Could NOT find UUID (missing: UUID_LIBRARY UUID_INCLUDE_DIR)\n"
+        )
+        self.assertEqual(
+            _infer_system_dependencies_from_build_error(error), {"uuid-dev"}
+        )
+        self.assertEqual(
+            _infer_system_dependencies_from_build_error(
+                "Could NOT find Other (missing: UUID_LIBRARY UUID_INCLUDE_DIR)"
+            ),
+            set(),
+        )
 
     def test_exact_cmake_gtest_failure_repairs_builder_without_touching_harness(self):
         error = (
