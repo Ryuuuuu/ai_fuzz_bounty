@@ -2015,34 +2015,69 @@ class CentralAgent:
                     )
                 finally:
                     backlog_store.close()
-                summary = engine.scan(
-                    catalog_only=False,
-                    limit=limit if limit > 0 else None,
-                    use_ai=True,
-                    exclude_repositories=exclusions,
-                    seed_repositories=backlog,
-                    run_arm_preflight=True,
-                    arm_preflight_max_attempts=(
+                common_scan = {
+                    "catalog_only": False,
+                    "limit": limit if limit > 0 else None,
+                    "use_ai": True,
+                    "exclude_repositories": exclusions,
+                    "run_arm_preflight": True,
+                    "arm_preflight_max_attempts": (
                         int(self.agent.get("idle_arm_preflight_max_attempts", 4))
                         if idle else None
                     ),
-                    arm_preflight_budget_seconds=(
+                    "arm_preflight_budget_seconds": (
                         int(self.agent.get("idle_arm_preflight_budget_seconds", 1800))
                         if idle else None
                     ),
-                    arm_preflight_stop_after_success=idle,
-                    search_pages_per_query=(
-                        int(self.agent.get("idle_search_pages_per_query", 2))
-                        if idle
-                        else 1
-                    ),
-                )
+                    "arm_preflight_stop_after_success": idle,
+                }
+                if idle:
+                    # Evaluate known paid-policy candidates first. A verified
+                    # ARM job should not wait for broad GitHub search hydration.
+                    seed_summary = engine.scan(
+                        **common_scan, queries=[], seed_repositories=backlog,
+                        search_pages_per_query=1,
+                    )
+                    seed_preserved = self._export_verified_candidates(
+                        seed_summary.scan_id, scan_errors=seed_summary.errors
+                    )
+                    self._plan_exported_candidates()
+                    if self._runnable_jobs():
+                        summary = seed_summary
+                        export_preserved = seed_preserved
+                    else:
+                        # Keep broad search in this same cycle if seeds cannot
+                        # produce a runnable job. Avoid re-fetching seed repos.
+                        searched_exclusions = exclusions | {
+                            str(name).casefold()
+                            for name in getattr(seed_summary, "repository_names", ())
+                        }
+                        summary = engine.scan(
+                            **{
+                                **common_scan,
+                                "exclude_repositories": searched_exclusions,
+                            },
+                            seed_repositories=(),
+                            seed_policy_catalog=False,
+                            search_pages_per_query=int(
+                                self.agent.get("idle_search_pages_per_query", 2)
+                            ),
+                        )
+                        export_preserved = self._export_verified_candidates(
+                            summary.scan_id, scan_errors=summary.errors
+                        )
+                        self._plan_exported_candidates()
+                else:
+                    summary = engine.scan(
+                        **common_scan, seed_repositories=backlog,
+                        search_pages_per_query=1,
+                    )
+                    export_preserved = self._export_verified_candidates(
+                        summary.scan_id, scan_errors=summary.errors
+                    )
+                    self._plan_exported_candidates()
             finally:
                 engine.close()
-            export_preserved = self._export_verified_candidates(
-                summary.scan_id, scan_errors=summary.errors
-            )
-            self._plan_exported_candidates()
             self.state["last_discovery_at"] = utc_now()
             self.state.pop("last_discovery_error", None)
             self.state.pop("last_discovery_error_at", None)

@@ -44,6 +44,7 @@ class ScanSummary:
     architecture_rejected: int = 0
     arm_preflight_attempted: int = 0
     arm_preflight_passed: int = 0
+    repository_names: tuple[str, ...] = ()
 
 
 class ScoutEngine:
@@ -75,6 +76,7 @@ class ScoutEngine:
         search_pages_per_query: int = 1,
         run_arm_preflight: bool = False,
         seed_repositories: Iterable[str] | None = None,
+        seed_policy_catalog: bool | None = None,
         arm_preflight_max_attempts: int | None = None,
         arm_preflight_budget_seconds: int | None = None,
         arm_preflight_stop_after_success: bool = False,
@@ -96,6 +98,7 @@ class ScoutEngine:
             repos = self._discover(
                 catalog_only, limit, queries, excluded, search_pages_per_query,
                 seed_repositories=seed_repositories, lookup_errors=lookup_errors,
+                seed_policy_catalog=seed_policy_catalog,
             )
             errors += len(lookup_errors)
             self.progress(f"discovered {len(repos)} unique repositories")
@@ -186,6 +189,7 @@ class ScoutEngine:
                 ),
                 arm_preflight_attempted=arm_attempted,
                 arm_preflight_passed=arm_passed,
+                repository_names=tuple(repo.full_name for repo in repos),
             )
         except Exception as exc:
             self.store.finish_scan(
@@ -227,6 +231,7 @@ class ScoutEngine:
         search_pages_per_query: int = 1,
         seed_repositories: Iterable[str] | None = None,
         lookup_errors: list[str] | None = None,
+        seed_policy_catalog: bool | None = None,
     ) -> list[RepoSnapshot]:
         excluded = excluded or set()
         unique: dict[str, RepoSnapshot] = {}
@@ -268,7 +273,11 @@ class ScoutEngine:
                 if limit and len(unique) >= limit:
                     return list(unique.values())
 
-        if bool(self.config["github"].get("seed_policy_catalog", True)):
+        include_catalog = (
+            bool(self.config["github"].get("seed_policy_catalog", True))
+            if seed_policy_catalog is None else seed_policy_catalog
+        )
+        if include_catalog:
             for name in self.policy.catalog_names:
                 if name.casefold() in excluded or name.casefold() in unique:
                     continue

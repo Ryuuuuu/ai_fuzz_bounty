@@ -502,6 +502,47 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
         self.assertEqual(engine.github.pages, [1, 2, 3])
         self.assertEqual(engine.store.page, 4)
 
+    def test_search_fallback_can_skip_repeated_catalog_seed_lookups(self):
+        engine = object.__new__(ScoutEngine)
+        engine.config = {
+            "github": {
+                "seed_policy_catalog": True,
+                "queries": ["org:example language:C++"],
+                "additional_queries": [],
+                "per_query": 20,
+                "max_search_pages": 5,
+            },
+            "pipeline": {"languages": ["C++"]},
+        }
+        engine.policy = SimpleNamespace(catalog_names=["org/catalog"])
+        engine.store = _SearchStore()
+        github = _SearchGitHub()
+        lookups = []
+
+        def get_repository(name):
+            lookups.append(name)
+            return RepoSnapshot(
+                full_name=name, html_url=f"https://github.com/{name}",
+                default_branch="main", head_sha="c" * 40,
+                language="C++",
+            )
+
+        github.get_repository = get_repository
+        engine.github = github
+        engine.progress = lambda _message: None
+
+        repositories = engine._discover(
+            False, None, None, excluded={"org/old"},
+            seed_policy_catalog=False,
+        )
+
+        self.assertEqual(lookups, [])
+        self.assertEqual(
+            [repo.full_name for repo in repositories], ["org/parser-1"]
+        )
+        self.assertEqual(github.pages, [1])
+
+
 
 class EngineCandidateReviewTests(unittest.TestCase):
     def test_arm_ai_review_uses_planner_native_build_signal(self):
