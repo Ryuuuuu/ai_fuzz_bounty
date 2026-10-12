@@ -51,7 +51,7 @@ def candidate_targets(targets):
     # Choose a small set of buildable test-like C/C++ executables.
     ranked = []
     seen = set()
-    for _artifact, name in targets:
+    for _artifact, name, *_framework in targets:
         # Each name becomes one quoted cmake --build argument in the shell.
         if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*", name) or name in seen:
             continue
@@ -109,10 +109,21 @@ def select_native_test(
                     target_sources.add(resolved(build, raw))
             if not target_sources.intersection(compiled):
                 continue
+            # The CMake codemodel records target compile definitions. A
+            # standalone doctest executable must not be probed with GTest
+            # flags, which can accidentally run its entire suite.
+            framework = (
+                "doctest" if any(
+                    str(define.get("define", "")).startswith("DOCTEST_CONFIG_")
+                    for group in target.get("compileGroups", [])
+                    for define in group.get("defines", [])
+                    if isinstance(define, dict)
+                ) else None
+            )
             for artifact in target.get("artifacts", []):
                 path = resolved(build, artifact.get("path", ""))
                 if within(build, path):
-                    targets.append((path, reference["name"]))
+                    targets.append((path, reference["name"], framework))
 
     if candidates:
         return candidate_targets(targets)
@@ -120,13 +131,16 @@ def select_native_test(
     if standalone_target is not None:
         if standalone_target not in candidate_targets(targets):
             raise ValueError("standalone target is not a C/C++ test candidate")
-        for artifact, target_name in targets:
+        for artifact, target_name, framework in targets:
             if target_name == standalone_target and artifact.is_file():
-                return {
+                selection = {
                     "artifact": str(artifact),
                     "target": target_name,
                     "kind": "standalone",
                 }
+                if framework:
+                    selection["framework"] = framework
+                return selection
         raise ValueError("built standalone test executable is missing")
 
     tests = json.loads(tests_path.read_text()).get("tests", [])
@@ -137,7 +151,7 @@ def select_native_test(
         executable = resolved(build, command[0])
         if not within(build, executable):
             continue
-        for artifact, target_name in targets:
+        for artifact, target_name, _framework in targets:
             if artifact == executable:
                 return {
                     "artifact": str(artifact),
@@ -197,16 +211,78 @@ def first_gtest_case(output):
     return None
 
 
-def run_standalone_test(artifact, build):
+def first_doctest_case(output):
+    # Luau and other doctest reporters may list suite/case pairs. Restrict
+    # names before passing them as filters and require a real positive count.
+    found = re.search(r"(?m)^Found ([1-9][0-9]*) tests?\.$", output)
+    if not found:
+        return None
+    for line in output.splitlines():
+        match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_.+-]{0,79})/"
+            r"([A-Za-z_][A-Za-z0-9_.+-]{0,79})", line.strip()
+        )
+        if match and not any(
+            part.startswith("DISABLED_") for part in match.groups()
+        ):
+            return match.groups()
+    return None
+
+
+def run_doctest_case(artifact, workdir):
+    # The prefix-free form is used by Luau; the second form is doctest's
+    # default. Listing and execution are bounded independently.
+    for prefix in ("", "dt-"):
+        listed = subprocess.run(
+            [str(artifact), f"--{prefix}list-test-cases"], cwd=workdir,
+            capture_output=True, text=True, timeout=8, check=False,
+        )
+        selected = first_doctest_case(listed.stdout + listed.stderr)
+        if listed.returncode == 0 and selected:
+            break
+    else:
+        raise ValueError("standalone doctest listing found no runnable case")
+    suite, case = selected
+    result = subprocess.run(
+        [str(artifact), f"--{prefix}test-suite={suite}",
+         f"--{prefix}test-case={case}"],
+        cwd=workdir, capture_output=True, text=True, timeout=30, check=False,
+    )
+    output = result.stdout + result.stderr
+    print(output[-8192:])
+    started = re.findall(r'^Entering test case "([^"]+)"$', output, re.MULTILINE)
+    finished = re.findall(r'^Leaving test case "([^"]+)"$', output, re.MULTILINE)
+    suites_started = re.findall(r'^Entering test suite "([^"]+)"$', output, re.MULTILINE)
+    suites_finished = re.findall(r'^Leaving test suite "([^"]+)"$', output, re.MULTILINE)
+    # A zero exit code alone is insufficient: an ignored filter can run zero
+    # cases. Luau's reporter supplies exact entry and exit markers.
+    one_case = (
+        started == [case] and finished == [case]
+        and suites_started == [suite] and suites_finished == [suite]
+    )
+    summary = re.search(
+        r"(?m)^\[doctest\] test cases:\s+1\s+\|\s+1 passed"
+        r"\s+\|\s+0 failed(?:\s+\||$)", output,
+    )
+    if result.returncode != 0 or not (one_case or summary):
+        raise ValueError("standalone doctest did not pass one test")
+
+
+def run_standalone_test(artifact, workdir, framework=None):
+    if framework == "doctest":
+        run_doctest_case(artifact, workdir)
+        return
+    if framework is not None:
+        raise ValueError("unknown standalone test framework")
     listing = subprocess.run(
-        [str(artifact), "--gtest_list_tests"], cwd=build,
+        [str(artifact), "--gtest_list_tests"], cwd=workdir,
         capture_output=True, text=True, timeout=8, check=False,
     )
     case = first_gtest_case(listing.stdout) if listing.returncode == 0 else None
     if case:
         result = subprocess.run(
             [str(artifact), f"--gtest_filter={case}", "--gtest_color=no"],
-            cwd=build, capture_output=True, text=True, timeout=30, check=False,
+            cwd=workdir, capture_output=True, text=True, timeout=30, check=False,
         )
         output = result.stdout + result.stderr
         print(output[-8192:])
@@ -229,7 +305,7 @@ def run_standalone_test(artifact, build):
     ):
         raise ValueError("standalone GoogleTest has no enabled test")
     result = subprocess.run(
-        [str(artifact)], cwd=build,
+        [str(artifact)], cwd=workdir,
         capture_output=True, text=True, timeout=30, check=False,
     )
     output = result.stdout + result.stderr
@@ -238,7 +314,7 @@ def run_standalone_test(artifact, build):
         raise ValueError("standalone native test did not provide a passing smoke")
 
 
-def verify_native_test(build, selection_path):
+def verify_native_test(build, selection_path, source=None):
     selection = json.loads(selection_path.read_text())
     artifact = Path(selection["artifact"]).resolve(strict=True)
     try:
@@ -255,7 +331,11 @@ def verify_native_test(build, selection_path):
     if endian is None or int.from_bytes(header[18:20], endian) != 183:
         raise ValueError("test executable is not AArch64")
     if selection.get("kind") == "standalone":
-        run_standalone_test(artifact, build)
+        framework = selection.get("framework")
+        # Doctest fixtures can resolve repository files from the source root.
+        # Keep the original build cwd for GTest and other standalone runners.
+        workdir = (source or build) if framework == "doctest" else build
+        run_standalone_test(artifact, workdir, framework)
         return
     if selection.get("kind") not in (None, "ctest"):
         raise ValueError("unknown native test selection kind")
@@ -277,7 +357,7 @@ def verify_native_test(build, selection_path):
 
 if __name__ == "__main__":
     try:
-        verify_native_test(Path(sys.argv[1]), Path(sys.argv[2]))
+        verify_native_test(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))
     except (OSError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
         raise SystemExit(f"native test smoke failed: {exc}")
 """
@@ -385,7 +465,7 @@ cat > /work/verify_native_test.py <<'PY'
 """
     + VERIFY_NATIVE_TEST
     + """PY
-python3 /work/verify_native_test.py /work/build /work/selection.json
+python3 /work/verify_native_test.py /work/build /work/selection.json /work/src
 printf 'FTS_ARM_PREFLIGHT_OK\\n'
 """
 )
@@ -673,7 +753,11 @@ def _failure_evidence(output: str, returncode: int) -> str:
         else:
             kind = "build_failed"
     elif stage == "smoke":
-        if "not aarch64" in normalized:
+        if "standalone doctest listing found no runnable case" in normalized:
+            kind = "doctest_listing_failed"
+        elif "standalone doctest did not pass one test" in normalized:
+            kind = "doctest_case_failed"
+        elif "not aarch64" in normalized:
             kind = "wrong_test_architecture"
         elif "test executable is missing" in normalized:
             kind = "test_executable_missing"

@@ -28,6 +28,8 @@ REPO_COOLDOWN_FAILURE_REASONS = frozenset({
     "native_build_or_smoke_failed", "smoke_marker_missing", "no_root_cmake_build",
 })
 
+DEFAULT_MAX_SEARCH_REPOSITORIES_PER_OWNER = 3
+
 
 @dataclass(slots=True)
 class ScanSummary:
@@ -319,6 +321,14 @@ class ScoutEngine:
         )
         per_query = int(self.config["github"]["per_query"])
         max_pages = max(1, int(self.config["github"].get("max_search_pages", 1)))
+        max_search_per_owner = max(
+            0,
+            int(self.config["github"].get(
+                "max_search_repositories_per_owner",
+                DEFAULT_MAX_SEARCH_REPOSITORIES_PER_OWNER,
+            )),
+        )
+        search_owner_counts: dict[str, int] = {}
         pushed_after = (date.today() - timedelta(days=365)).isoformat()
         for query_template in selected_queries:
             query = query_template.replace("{pushed_after}", pushed_after)
@@ -337,11 +347,18 @@ class ScoutEngine:
                     max_pages=max_pages,
                 )
                 for repo in results:
-                    if repo.full_name.casefold() in excluded or not _language_is_enabled(
+                    name = repo.full_name.casefold()
+                    if name in excluded or not _language_is_enabled(
                         repo.language, enabled_languages
+                    ) or name in unique:
+                        continue
+                    owner = name.split("/", 1)[0]
+                    if max_search_per_owner and (
+                        search_owner_counts.get(owner, 0) >= max_search_per_owner
                     ):
                         continue
-                    unique.setdefault(repo.full_name.casefold(), repo)
+                    unique[name] = repo
+                    search_owner_counts[owner] = search_owner_counts.get(owner, 0) + 1
                     if limit and len(unique) >= limit:
                         return list(unique.values())
                 if not results:

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,6 +29,21 @@ BUILD_SYSTEM_MARKERS = (
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx"}
 HARNESS_SUPPORT_DIRECTORY_NAMES = {"test", "tests", "fuzz", "fuzzer", "fuzzing"}
+TEXT_SEED_SUFFIXES = {
+    ".css", ".csv", ".html", ".ini", ".js", ".json", ".lua", ".luau",
+    ".proto", ".sql", ".svg", ".toml", ".xml", ".yaml", ".yml",
+}
+SEED_SAMPLE_DIRECTORIES = {
+    "conformance", "corpus", "example", "examples", "fixture", "fixtures",
+    "fuzz", "fuzzer", "fuzzing", "sample", "samples", "test", "tests",
+}
+UNTRUSTED_SOURCE_DIRECTORIES = {
+    ".git", "build", "generated", "node_modules", "third_party",
+    "third-party", "vendor",
+}
+MAX_SEED_FILES = 24
+MAX_SEED_FILE_BYTES = 8192
+MAX_SEED_TOTAL_BYTES = 65536
 
 # Only install packages from this reviewed allow-list.  Project-controlled CMake
 # files may name arbitrary packages, so inferred values must never reach apt
@@ -162,6 +178,9 @@ def create_generic_project(
     harness_path = project_dir / "generic_harness.cc"
     harness_path.write_text(harness, encoding="utf-8")
     harness_path.chmod(0o644)
+    seed_count, seed_sources = _write_seed_corpus(
+        source, candidate, project_dir / "generic_fuzzer_seed_corpus.zip"
+    )
     (project_dir / "Dockerfile").write_text(
         _dockerfile(
             build_system,
@@ -210,6 +229,8 @@ def create_generic_project(
         "source_dependencies": source_dependencies,
         "allow_header_only_cmake": allow_header_only_cmake,
         "ai_usage": usage,
+        "seed_corpus_files": seed_count,
+        "seed_fixture_sources": seed_sources,
         "harness_sha256": hashlib.sha256(harness.encode()).hexdigest(),
         "build_script_sha256": hashlib.sha256(build_script.encode()).hexdigest(),
         "repair_attempts": [],
@@ -426,7 +447,7 @@ def _generation_context(source: Path, candidate: dict[str, Any]) -> str:
         signature,
         re.IGNORECASE,
     ):
-        return primary
+        return _with_api_usage_examples(primary, source, candidate)
     target = Path(str(candidate.get("file") or ""))
     target_text = (source / target).read_text(encoding="utf-8", errors="replace")
     target_type = target.stem
@@ -472,7 +493,7 @@ def _generation_context(source: Path, candidate: dict[str, Any]) -> str:
         _public_header_rank(source, item[1])))[:1]]
     selected += sorted(bases, key=lambda path: _public_header_rank(source, path))[:1]
     if not selected:
-        return primary
+        return _with_api_usage_examples(primary, source, candidate)
     related: list[str] = []
     for path in selected:
         try:
@@ -492,7 +513,174 @@ def _generation_context(source: Path, candidate: dict[str, Any]) -> str:
             if visible.strip():
                 snippet.append(f"{number:05d}: {visible}")
         related.append("\n".join(snippet)[:2600])
-    return (primary[:12000] + "\n\n" + "\n\n".join(related))[:18000]
+    context = primary[:12000] + "\n\n" + "\n\n".join(related)
+    return _with_api_usage_examples(context, source, candidate)
+
+
+def _with_api_usage_examples(
+    context: str, source: Path, candidate: dict[str, Any]
+) -> str:
+    """Reserve prompt space for bounded calls to the selected public API."""
+    examples = _public_api_usage_examples(source, candidate)
+    if not examples:
+        return context[:18000]
+    return context[:max(0, 18000 - len(examples) - 2)] + "\n\n" + examples
+
+
+def _public_api_usage_examples(
+    source: Path, candidate: dict[str, Any]
+) -> str:
+    signature = str(candidate.get("signature") or "")
+    symbol_match = re.search(r"([A-Za-z_]\w*)\s*\(", signature)
+    if symbol_match is None or candidate.get("candidate_kind") == "macro":
+        return ""
+    symbol = symbol_match.group(1)
+    if len(symbol) < 4:
+        return ""
+    qualified_match = re.search(
+        r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)+)\s*\(", signature
+    )
+    qualified_name = qualified_match.group(1) if qualified_match else ""
+    target = Path(str(candidate.get("file") or ""))
+    target_name = target.name
+    call = re.compile(r"\b" + re.escape(symbol) + r"\s*\(")
+    ranked: list[tuple[tuple[int, int, str], str]] = []
+    scanned_paths = 0
+    read_files = 0
+    for path in source.rglob("*"):
+        scanned_paths += 1
+        if scanned_paths > 20000 or read_files >= 400:
+            break
+        if path.is_symlink() or not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
+            continue
+        relative = path.relative_to(source)
+        directories = {part.casefold() for part in relative.parts[:-1]}
+        if directories & UNTRUSTED_SOURCE_DIRECTORIES:
+            continue
+        try:
+            if path.stat().st_size > 100000:
+                continue
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        read_files += 1
+        includes_target = any(
+            target_name in line and re.match(r"\s*#\s*include\b", line)
+            for line in lines[:100]
+        )
+        for number, line in enumerate(lines):
+            if (
+                not call.search(line)
+                or re.match(r"\s*#", line)
+                or not (includes_target or qualified_name and qualified_name in line)
+            ):
+                continue
+            start = max(0, number - 3)
+            end = min(len(lines), number + 5)
+            snippet = "\n".join(
+                f"{index + 1:05d}: {lines[index]}"
+                for index in range(start, end)
+            )[:1000]
+            score = (
+                0 if directories & SEED_SAMPLE_DIRECTORIES else 1,
+                0 if includes_target else 1,
+                relative.as_posix().casefold(),
+            )
+            ranked.append((
+                score,
+                f"Public API call example (untrusted source): "
+                f"{relative.as_posix()}\n{snippet}",
+            ))
+            break
+    return "\n\n".join(
+        snippet for _, snippet in sorted(ranked, key=lambda item: item[0])[:3]
+    )[:4000]
+
+
+def _relevant_seed_suffixes(candidate: dict[str, Any]) -> set[str]:
+    """Only copy a fixture when its format matches the selected API."""
+    api = str(candidate.get("file") or "") + " " + str(
+        candidate.get("signature") or ""
+    )
+    words = set(re.findall(r"[a-z0-9]+", api.casefold()))
+    return {
+        suffix
+        for suffix in TEXT_SEED_SUFFIXES
+        if any(
+            word == suffix[1:]
+            or (
+                len(word) > len(suffix) - 1
+                and len(word) <= len(suffix) + 1
+                and word.startswith(suffix[1:])
+            )
+            for word in words
+        )
+    }
+
+
+def _write_seed_corpus(
+    source: Path, candidate: dict[str, Any], destination: Path
+) -> tuple[int, list[str]]:
+    """Create a deterministic, small OSS-Fuzz seed archive from public fixtures."""
+    relevant_suffixes = _relevant_seed_suffixes(candidate)
+    fixtures: list[tuple[str, bytes]] = []
+    paths = sorted(
+        itertools.islice(source.rglob("*"), 20000),
+        key=lambda path: path.relative_to(source).as_posix().casefold(),
+    )
+    for path in paths:
+        if len(fixtures) >= MAX_SEED_FILES:
+            break
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(source)
+        directories = {part.casefold() for part in relative.parts[:-1]}
+        if (
+            path.suffix.casefold() not in relevant_suffixes
+            or not directories & SEED_SAMPLE_DIRECTORIES
+            or directories & UNTRUSTED_SOURCE_DIRECTORIES
+        ):
+            continue
+        try:
+            size = path.stat().st_size
+            if not 0 < size <= MAX_SEED_FILE_BYTES:
+                continue
+            content = path.read_bytes()
+        except OSError:
+            continue
+        if (
+            len(content) != size
+            or b"\x00" in content
+            or any(byte < 32 and byte not in (9, 10, 13) for byte in content)
+        ):
+            continue
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        fixtures.append((relative.as_posix(), content))
+    fixtures.sort(key=lambda item: (len(item[1]), item[0].casefold()))
+    contents: list[bytes] = [b"\n"]
+    sources: list[str] = []
+    seen = {hashlib.sha256(contents[0]).digest()}
+    total = len(contents[0])
+    for relative, content in fixtures:
+        digest = hashlib.sha256(content).digest()
+        if digest in seen or total + len(content) > MAX_SEED_TOTAL_BYTES:
+            continue
+        seen.add(digest)
+        total += len(content)
+        contents.append(content)
+        sources.append(relative)
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as archive:
+        for content in contents:
+            info = zipfile.ZipInfo(
+                hashlib.sha256(content).hexdigest(),
+                date_time=(1980, 1, 1, 0, 0, 0),
+            )
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, content)
+    return len(contents), sources
 
 
 def _find_existing_harness(
@@ -1249,6 +1437,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 {source_checkout}COPY --chmod=0755 build.sh $SRC/build.sh
 COPY --chmod=0644 generic_harness.cc $SRC/generic_harness.cc
+COPY --chmod=0644 generic_fuzzer_seed_corpus.zip $SRC/generic_fuzzer_seed_corpus.zip
 WORKDIR $SRC/project
 """
     if not re.fullmatch(r"[A-Za-z0-9./:_-]{3,200}", native_base_image):
@@ -1271,6 +1460,7 @@ RUN if ! getent group "$FUZZ_GID" >/dev/null; then groupadd --gid "$FUZZ_GID" fu
 RUN mkdir -p /src/project /work /out
 COPY --chmod=0755 build.sh /src/build.sh
 COPY --chmod=0644 generic_harness.cc /src/generic_harness.cc
+COPY --chmod=0644 generic_fuzzer_seed_corpus.zip /src/generic_fuzzer_seed_corpus.zip
 WORKDIR /src/project
 """
 
@@ -1447,6 +1637,9 @@ if [[ "$reuse_build" != "1" ]]; then
   rm -rf "$WORK/build"
 fi
 mkdir -p "$WORK/build" "$OUT"
+if [[ -f "$SRC/generic_fuzzer_seed_corpus.zip" ]]; then
+  cp "$SRC/generic_fuzzer_seed_corpus.zip" "$OUT/generic_fuzzer_seed_corpus.zip"
+fi
 """
     dependency_build = ""
     for name in sorted(

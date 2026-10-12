@@ -587,6 +587,105 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
         self.assertEqual(engine.github.pages, [1, 2, 3])
         self.assertEqual(engine.store.page, 4)
 
+    def test_search_owner_default_cap_spans_pages(self):
+        engine = object.__new__(ScoutEngine)
+        engine.config = {
+            "github": {
+                "seed_policy_catalog": False,
+                "queries": ["language:C++"],
+                "additional_queries": [],
+                "per_query": 20,
+                "max_search_pages": 5,
+            },
+            "pipeline": {"languages": ["C++"]},
+        }
+        engine.policy = SimpleNamespace(catalog_names=[])
+        engine.store = _SearchStore()
+        pages = []
+
+        def search(_query, _limit, *, start_page):
+            pages.append(start_page)
+            names = {
+                1: ["Spam/one", "spam/two", "other/one"],
+                2: ["SPAM/three", "spam/four", "other/two", "third/one"],
+            }[start_page]
+            return [
+                RepoSnapshot(
+                    full_name=name, html_url=f"https://github.com/{name}",
+                    default_branch="main", head_sha="a" * 40, language="C++",
+                )
+                for name in names
+            ]
+
+        engine.github = SimpleNamespace(search_repositories=search)
+        engine.progress = lambda _message: None
+        repositories = engine._discover(False, None, None, search_pages_per_query=2)
+
+        self.assertEqual(
+            [repo.full_name for repo in repositories],
+            ["Spam/one", "spam/two", "other/one", "SPAM/three", "other/two", "third/one"],
+        )
+        self.assertEqual(pages, [1, 2])
+        self.assertEqual(engine.store.page, 3)
+
+    def test_search_owner_configurable_cap_preserves_seeds_catalog_and_filters(self):
+        engine = object.__new__(ScoutEngine)
+        engine.config = {
+            "github": {
+                "seed_policy_catalog": True,
+                "queries": ["language:C++"],
+                "additional_queries": [],
+                "per_query": 20,
+                "max_search_pages": 5,
+                "max_search_repositories_per_owner": 1,
+            },
+            "pipeline": {"languages": ["C++"]},
+        }
+        engine.policy = SimpleNamespace(catalog_names=["SPAM/catalog"])
+        engine.store = _SearchStore()
+        pages = []
+
+        def repo(name, language="C++"):
+            return RepoSnapshot(
+                full_name=name, html_url=f"https://github.com/{name}",
+                default_branch="main", head_sha="a" * 40, language=language,
+            )
+
+        def search(_query, _limit, *, start_page):
+            pages.append(start_page)
+            return {
+                1: [
+                    repo("spam/seed"), repo("spam/first"), repo("Spam/second"),
+                    repo("other/excluded"), repo("other/go", "Go"),
+                    repo("other/first"),
+                ],
+                2: [repo("SPAM/third"), repo("other/second"), repo("third/first")],
+            }[start_page]
+
+        engine.github = SimpleNamespace(get_repository=repo, search_repositories=search)
+        engine.progress = lambda _message: None
+        kwargs = {
+            "search_pages_per_query": 2,
+            "seed_repositories": ["spam/seed"],
+            "excluded": {"other/excluded"},
+        }
+        repositories = engine._discover(False, None, None, **kwargs)
+
+        self.assertEqual(
+            [item.full_name for item in repositories],
+            ["spam/seed", "SPAM/catalog", "spam/first", "other/first", "third/first"],
+        )
+        self.assertEqual(pages, [1, 2])
+        self.assertEqual(engine.store.page, 3)
+
+        engine.store.page = 1
+        limited = engine._discover(False, 4, None, **kwargs)
+        self.assertEqual(
+            [item.full_name for item in limited],
+            ["spam/seed", "SPAM/catalog", "spam/first", "other/first"],
+        )
+        self.assertEqual(pages, [1, 2, 1])
+
     def test_search_fallback_can_skip_repeated_catalog_seed_lookups(self):
         engine = object.__new__(ScoutEngine)
         engine.config = {

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from fuzz_target_scout.generic_integration import (
     _infer_system_dependencies_from_build_error,
     _find_existing_harness,
     _generation_context,
+    _write_seed_corpus,
     _has_root_cmake_interface_library,
     _select_public_candidate,
     create_generic_project,
@@ -28,6 +30,76 @@ from fuzz_target_scout.generic_integration import (
 
 
 class GenericIntegrationTests(unittest.TestCase):
+    def test_generation_context_includes_bounded_public_api_call_examples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            header = source / "include" / "Luau" / "Compiler.h"
+            header.parent.mkdir(parents=True)
+            header.write_text(
+                "namespace Luau { std::string compile(const std::string& source); }\n",
+                encoding="utf-8",
+            )
+            example = source / "tools" / "compiler.cc"
+            example.parent.mkdir()
+            example.write_text(
+                '#include "Luau/Compiler.h"\n'
+                'auto result = Luau::compile(source);\n',
+                encoding="utf-8",
+            )
+            decoy = source / "third_party" / "compiler.cc"
+            decoy.parent.mkdir()
+            decoy.write_text(
+                'auto result = Luau::compile(untrusted);\n', encoding="utf-8"
+            )
+            unrelated = source / "tools" / "other.cc"
+            unrelated.write_text(
+                'auto result = compile(unrelated);\n', encoding="utf-8"
+            )
+            candidate = {
+                "file": "include/Luau/Compiler.h",
+                "local_symbol_line": 1,
+                "signature": "std::string Luau::compile(const std::string& source);",
+            }
+
+            context = _generation_context(source, candidate)
+
+        self.assertIn("Public API call example", context)
+        self.assertIn("Luau::compile(source)", context)
+        self.assertIn("tools/compiler.cc", context)
+        self.assertNotIn("Luau::compile(untrusted)", context)
+        self.assertNotIn("compile(unrelated)", context)
+        self.assertLessEqual(len(context), 18000)
+
+    def test_seed_archive_copies_only_bounded_relevant_text_fixtures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            fixture = source / "tests" / "conformance"
+            fixture.mkdir(parents=True)
+            (fixture / "valid.lua").write_text("return 1\n", encoding="utf-8")
+            (fixture / "wrong.json").write_text('{"unrelated": true}\n', encoding="utf-8")
+            (fixture / "large.lua").write_text("x" * 9000, encoding="utf-8")
+            (fixture / "binary.lua").write_bytes(b"x\x00y")
+            docs = source / "docs"
+            docs.mkdir()
+            (docs / "not-a-fixture.lua").write_text("return 2\n", encoding="utf-8")
+            archive_path = root / "seeds.zip"
+            candidate = {
+                "file": "Compiler/include/Luau/Compiler.h",
+                "signature": "std::string Luau::compile(const std::string& source);",
+            }
+
+            count, sources = _write_seed_corpus(source, candidate, archive_path)
+            repeat = root / "repeat.zip"
+            _write_seed_corpus(source, candidate, repeat)
+            self.assertEqual(archive_path.read_bytes(), repeat.read_bytes())
+            with zipfile.ZipFile(archive_path) as archive:
+                contents = [archive.read(name) for name in archive.namelist()]
+
+        self.assertEqual(count, 2)
+        self.assertEqual(sources, ["tests/conformance/valid.lua"])
+        self.assertCountEqual(contents, [b"\n", b"return 1\n"])
+
     def test_alternate_byte_parser_excludes_current_and_prior_api(self):
         with tempfile.TemporaryDirectory() as directory:
             job = Path(directory)
@@ -1239,8 +1311,20 @@ class GenericIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 (project / "generic_harness.cc").stat().st_mode & 0o777, 0o644
             )
-            for name in ("Dockerfile", "build.sh", "project.yaml", "generic_harness.cc"):
+            for name in (
+                "Dockerfile", "build.sh", "project.yaml", "generic_harness.cc",
+                "generic_fuzzer_seed_corpus.zip",
+            ):
                 self.assertTrue((project / name).is_file())
+            self.assertEqual(result["seed_corpus_files"], 1)
+            self.assertIn(
+                "generic_fuzzer_seed_corpus.zip",
+                (project / "Dockerfile").read_text(),
+            )
+            self.assertIn(
+                'cp "$SRC/generic_fuzzer_seed_corpus.zip" "$OUT/generic_fuzzer_seed_corpus.zip"',
+                (project / "build.sh").read_text(),
+            )
 
     def test_existing_nested_harness_adds_its_header_directory(self):
         with tempfile.TemporaryDirectory() as directory:

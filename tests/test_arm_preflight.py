@@ -379,7 +379,7 @@ class ArmPreflightTests(unittest.TestCase):
         )
         self.assertIn("cmake -S /work/src", BUILD_AND_SMOKE)
         self.assertIn('-DFETCHCONTENT_FULLY_DISCONNECTED=ON "$@"', BUILD_AND_SMOKE)
-        self.assertIn("verify_native_test.py", BUILD_AND_SMOKE)
+        self.assertIn("verify_native_test.py /work/build /work/selection.json /work/src", BUILD_AND_SMOKE)
         self.assertIn("--candidates /work/build /work/src > /work/candidates.txt", BUILD_AND_SMOKE)
         self.assertIn(
             '--standalone /work/build /work/src /work/selection.json "$candidate"',
@@ -521,6 +521,20 @@ class ArmPreflightTests(unittest.TestCase):
                 "target": "unit",
                 "kind": "standalone",
             })
+            # The target's compile definition is stronger evidence than a
+            # guessed executable name for selecting the doctest protocol.
+            (reply / "target.json").write_text(json.dumps({
+                "type": "EXECUTABLE",
+                "compileGroups": [{"language": "CXX", "defines": [
+                    {"define": "DOCTEST_CONFIG_USE_STD_HEADERS"},
+                ]}],
+                "sources": [{"path": str(cpp), "compileGroupIndex": 0}],
+                "artifacts": [{"path": "unit"}],
+            }))
+            doctest = scope["select_native_test"](
+                build, source, None, standalone_target="unit"
+            )
+            self.assertEqual(doctest["framework"], "doctest")
             with self.assertRaisesRegex(ValueError, r"not a C/C\+\+ test candidate"):
                 scope["select_native_test"](
                     build, source, None, standalone_target="other"
@@ -664,6 +678,10 @@ class ArmPreflightTests(unittest.TestCase):
                 "--gtest_color=no",
             ])
             self.assertEqual(run.call_args_list[1].kwargs["timeout"], 30)
+            self.assertEqual(
+                [call.kwargs["cwd"] for call in run.call_args_list],
+                [build, build],
+            )
 
             results[1] = subprocess.CompletedProcess([], 0, "[  PASSED  ] 0 tests.\n", "")
             with patch("subprocess.run", side_effect=results):
@@ -676,6 +694,80 @@ class ArmPreflightTests(unittest.TestCase):
             with patch("subprocess.run", side_effect=results):
                 with self.assertRaisesRegex(ValueError, "did not pass one test"):
                     scope["verify_native_test"](build, selection)
+
+    def test_doctest_standalone_uses_source_cwd_and_proves_one_case(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / "build"
+            source = root / "source"
+            build.mkdir()
+            source.mkdir()
+            artifact = build / "Luau.CLI.Test"
+            header = bytearray(20)
+            header[:4] = b"\x7fELF"
+            header[5] = 1
+            header[18:20] = (183).to_bytes(2, "little")
+            artifact.write_bytes(header)
+            artifact.chmod(0o755)
+            selection = build / "selection.json"
+            selection.write_text(json.dumps({
+                "artifact": str(artifact), "target": "Luau.CLI.Test",
+                "kind": "standalone", "framework": "doctest",
+            }))
+            scope = {"__name__": "smoke_fixture"}
+            exec(VERIFY_NATIVE_TEST, scope)
+            listed = subprocess.CompletedProcess(
+                [], 0, "", "ClassRuntimeErrorTests/RequireClassOverrideInstanceMemberError\n"
+                "Found 1 tests.\n",
+            )
+            passed = subprocess.CompletedProcess(
+                [], 0,
+                'Entering test suite "ClassRuntimeErrorTests"\n'
+                'Entering test case "RequireClassOverrideInstanceMemberError"\n'
+                'Leaving test case "RequireClassOverrideInstanceMemberError"\n'
+                'Leaving test suite "ClassRuntimeErrorTests"\n', "",
+            )
+            with patch("subprocess.run", side_effect=[listed, passed]) as run:
+                scope["verify_native_test"](build, selection, source)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0], [
+                str(artifact), "--list-test-cases",
+            ])
+            self.assertEqual(run.call_args_list[1].args[0], [
+                str(artifact), "--test-suite=ClassRuntimeErrorTests",
+                "--test-case=RequireClassOverrideInstanceMemberError",
+            ])
+            self.assertEqual(
+                [call.kwargs["cwd"] for call in run.call_args_list],
+                [source, source],
+            )
+            self.assertEqual(
+                [call.kwargs["timeout"] for call in run.call_args_list],
+                [8, 30],
+            )
+            with patch("subprocess.run", side_effect=[
+                listed, subprocess.CompletedProcess([], 0, "[doctest] test cases: 0 | 0 passed | 0 failed\n", ""),
+            ]):
+                with self.assertRaisesRegex(ValueError, "did not pass one test"):
+                    scope["verify_native_test"](build, selection, source)
+            with patch("subprocess.run", side_effect=[
+                listed, subprocess.CompletedProcess([], 0,
+                    'Entering test case "DifferentCase"\n'
+                    'Leaving test case "DifferentCase"\n', ""),
+            ]):
+                with self.assertRaisesRegex(ValueError, "did not pass one test"):
+                    scope["verify_native_test"](build, selection, source)
+
+    def test_doctest_smoke_failure_has_safe_category(self):
+        output = (
+            "FTS_ARM_PREFLIGHT_STAGE:smoke\n"
+            "private test data\n"
+            "native test smoke failed: standalone doctest did not pass one test\n"
+            "FTS_ARM_PREFLIGHT_FAILED_STAGE:smoke:1\n"
+        )
+        evidence = _failure_evidence(output, 1)
+        self.assertIn("kind=doctest_case_failed", evidence)
+        self.assertNotIn("private test data", evidence)
 
     def test_standalone_smoke_requires_output_if_not_gtest(self):
         scope = {"__name__": "smoke_fixture"}
