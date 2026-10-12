@@ -21,12 +21,12 @@
     },
     {
       "full_name": "contentauth/c2pa-rs",
-      "status": "verified",
+      "status": "needs_review",
       "access": "public",
       "security_url": "https://github.com/contentauth/c2pa-rs/security/policy",
-      "program_url": "https://hackerone.com/adobe",
-      "scope_note": "Repository SECURITY.md explicitly routes this library to Adobe's public bug bounty; tagged supported releases apply.",
-      "last_verified": "2026-09-09"
+      "program_url": "https://app.intigriti.com/programs/adobe/adobepublic/detail",
+      "scope_note": "Adobe moved new reports to Intigriti on 2026-09-01. The current public program does not explicitly list contentauth/c2pa-rs or the Content Credentials Rust SDK among its approved assets or test plans; paid eligibility requires manual confirmation.",
+      "last_verified": "2026-10-12"
     },
     {
       "full_name": "cli/cli",

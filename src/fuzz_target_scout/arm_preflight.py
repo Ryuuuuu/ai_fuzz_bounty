@@ -212,41 +212,108 @@ def first_gtest_case(output):
 
 
 def first_doctest_case(output):
-    # Luau and other doctest reporters may list suite/case pairs. Restrict
-    # names before passing them as filters and require a real positive count.
-    found = re.search(r"(?m)^Found ([1-9][0-9]*) tests?\.$", output)
-    if not found:
+    # Luau's Boost-like listener reports suite/case pairs. Its suite can be
+    # empty. Doctest's built-in console reporter instead lists case names.
+    # Require a positive listing summary and restrict names before filtering.
+    lines = [line.strip() for line in output.splitlines()]
+    pair = re.compile(
+        r"([A-Za-z_][A-Za-z0-9_.+-]{0,79})/"
+        r"([A-Za-z_][A-Za-z0-9_.+-]{0,79})"
+    )
+    positive_found = any(
+        re.fullmatch(r"Found [1-9][0-9]* tests?\.", line) for line in lines
+    )
+    if positive_found:
+        for line in lines:
+            match = pair.fullmatch(line)
+            if match and not any(
+                part.startswith("DISABLED_") for part in match.groups()
+            ):
+                return match.groups()
+        for line in lines:
+            match = re.fullmatch(
+                r"/([A-Za-z_][A-Za-z0-9_.+-]{0,79})", line
+            )
+            if match and not match[1].startswith("DISABLED_"):
+                return "", match[1]
+    if "[doctest] listing all test case names" not in lines:
         return None
-    for line in output.splitlines():
-        match = re.fullmatch(
-            r"([A-Za-z_][A-Za-z0-9_.+-]{0,79})/"
-            r"([A-Za-z_][A-Za-z0-9_.+-]{0,79})", line.strip()
-        )
-        if match and not any(
-            part.startswith("DISABLED_") for part in match.groups()
-        ):
-            return match.groups()
+    summary = re.compile(
+        r"\[doctest\] unskipped test cases passing the current filters: "
+        r"[1-9][0-9]*"
+    )
+    if not any(summary.fullmatch(line) for line in lines):
+        return None
+    banner = lines.index("[doctest] listing all test case names")
+    for line in lines[banner + 1:]:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.+-]{0,79}", line):
+            if not line.startswith("DISABLED_"):
+                return None, line
     return None
+
+
+def doctest_listing_probe(prefix, result):
+    # Only fixed labels and bounded numeric values may enter preflight evidence.
+    # The test binary and its listing output are untrusted repository content.
+    output = result.stdout + result.stderr
+    pair = re.compile(
+        r"[A-Za-z_][A-Za-z0-9_.+-]{0,79}/"
+        r"[A-Za-z_][A-Za-z0-9_.+-]{0,79}"
+    )
+    empty_suite = re.compile(r"/[A-Za-z_][A-Za-z0-9_.+-]{0,79}")
+    lines = [line.strip() for line in output.splitlines()]
+    numbers = (
+        max(-255, min(255, result.returncode)),
+        int(bool(re.search(r"\bFound\s+[0-9]+\s+tests?\b", output))),
+        min(99, sum(bool(pair.fullmatch(line)) for line in lines)),
+        min(99, sum(bool(empty_suite.fullmatch(line)) for line in lines)),
+        int("[doctest] listing all test case names" in output),
+        min(999, len(result.stdout.splitlines())),
+        min(999, len(result.stderr.splitlines())),
+        min(999999, len(result.stdout)),
+        min(999999, len(result.stderr)),
+    )
+    return ("plain" if not prefix else "dt") + "=" + ",".join(map(str, numbers))
 
 
 def run_doctest_case(artifact, workdir):
     # The prefix-free form is used by Luau; the second form is doctest's
     # default. Listing and execution are bounded independently.
+    probes = []
+    selected = None
     for prefix in ("", "dt-"):
-        listed = subprocess.run(
-            [str(artifact), f"--{prefix}list-test-cases"], cwd=workdir,
-            capture_output=True, text=True, timeout=8, check=False,
-        )
-        selected = first_doctest_case(listed.stdout + listed.stderr)
-        if listed.returncode == 0 and selected:
+        try:
+            listed = subprocess.run(
+                [str(artifact), f"--{prefix}list-test-cases"], cwd=workdir,
+                capture_output=True, text=True, timeout=8, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            probes.append(("plain" if not prefix else "dt") + "=999,0,0,0,0,0,0,0,0")
+            continue
+        probes.append(doctest_listing_probe(prefix, listed))
+        output = listed.stdout + listed.stderr
+        candidate = first_doctest_case(output)
+        if listed.returncode == 0 and candidate:
+            selected = candidate
             break
-    else:
+        # An ignored flag can execute the entire test suite. If the binary
+        # clearly listed tests, an unparsable name must fail closed here.
+        if (
+            "[doctest] listing all test case names" in output
+            or re.search(r"(?m)^Found [0-9]+ tests?\.\r?$", output)
+        ):
+            break
+    if selected is None:
+        print("FTS_ARM_DOCTEST_LISTING:" + "|".join(probes), flush=True)
         raise ValueError("standalone doctest listing found no runnable case")
     suite, case = selected
+    command = [str(artifact)]
+    if suite:
+        command.append(f"--{prefix}test-suite={suite}")
+    command.append(f"--{prefix}test-case={case}")
     result = subprocess.run(
-        [str(artifact), f"--{prefix}test-suite={suite}",
-         f"--{prefix}test-case={case}"],
-        cwd=workdir, capture_output=True, text=True, timeout=30, check=False,
+        command, cwd=workdir, capture_output=True, text=True,
+        timeout=30, check=False,
     )
     output = result.stdout + result.stderr
     print(output[-8192:])
@@ -258,6 +325,7 @@ def run_doctest_case(artifact, workdir):
     # cases. Luau's reporter supplies exact entry and exit markers.
     one_case = (
         started == [case] and finished == [case]
+        and suite is not None
         and suites_started == [suite] and suites_finished == [suite]
     )
     summary = re.search(
@@ -776,6 +844,17 @@ def _failure_evidence(output: str, returncode: int) -> str:
         counts = _CTEST_FAILURE_COUNTS.search(output)
         if counts:
             evidence += f";failed_tests={int(counts[1])}/{int(counts[2])}"
+    if stage == "smoke" and kind == "doctest_listing_failed":
+        # The marker is generated from fixed labels and numeric aggregates.
+        # Reject arbitrary repository output rather than copying it into cache.
+        probe = re.search(
+            r"(?m)^FTS_ARM_DOCTEST_LISTING:"
+            r"(plain=-?[0-9]{1,3}(?:,[0-9]{1,6}){8}"
+            r"(?:\|dt=-?[0-9]{1,3}(?:,[0-9]{1,6}){8})?)\r?$",
+            output,
+        )
+        if probe:
+            evidence += f";listing={probe.group(1)}"
     return evidence
 
 

@@ -301,6 +301,18 @@ class PolicyVerifier:
                     source="catalog",
                     note="The live Luau policy no longer proves the curated paid scope.",
                 )
+        # An explicit hold or rejection must not become verified again when an
+        # older repository SECURITY.md still advertises a retired paid program.
+        held_status = entry.get("status")
+        if held_status in {"needs_review", "rejected"}:
+            return PolicyAssessment(
+                status=held_status,
+                confidence=100 if held_status == "rejected" else 90,
+                source="catalog",
+                program_url=entry.get("program_url", ""),
+                note=entry.get("scope_note", ""),
+            )
+
         try:
             verified_on = date.fromisoformat(entry["last_verified"])
             age = (today - verified_on).days

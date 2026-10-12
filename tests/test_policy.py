@@ -55,6 +55,31 @@ class PolicyVerifierTests(unittest.TestCase):
             "needs_review",
         )
 
+    def test_curated_hold_does_not_reactivate_stale_paid_security_text(self):
+        stale_adobe_policy = (
+            "Adobe accepts reports through its public bug bounty program at "
+            "https://hackerone.com/adobe."
+        )
+        target = repo("contentauth/c2pa-rs", stale_adobe_policy)
+        for status in ("needs_review", "rejected"):
+            with self.subTest(status=status):
+                self.catalog.write_text(
+                    json.dumps({"entries": [{
+                        "full_name": "contentauth/c2pa-rs",
+                        "status": status,
+                        "program_url": (
+                            "https://app.intigriti.com/programs/adobe/"
+                            "adobepublic/detail"
+                        ),
+                        "last_verified": "2026-10-12",
+                        "scope_note": "Current paid scope requires manual confirmation.",
+                    }]}),
+                    encoding="utf-8",
+                )
+                verifier = PolicyVerifier(self.catalog)
+                for today in (date(2026, 10, 12), date(2026, 12, 12)):
+                    self.assertEqual(verifier.verify(target, today=today).status, status)
+
     def _external_catalog(self, name: str, *, verified_on: str = "2026-10-10"):
         url = CURATED_EXTERNAL_POLICY_URLS[name]
         self.catalog.write_text(

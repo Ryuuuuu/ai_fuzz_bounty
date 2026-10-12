@@ -758,6 +758,119 @@ class ArmPreflightTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "did not pass one test"):
                     scope["verify_native_test"](build, selection, source)
 
+    def test_doctest_empty_suite_requires_one_passing_case(self):
+        scope = {"__name__": "smoke_fixture"}
+        exec(VERIFY_NATIVE_TEST, scope)
+        listed = subprocess.CompletedProcess([], 0, "", "/RuntimeCase\nFound 1 tests.\n")
+        passed = subprocess.CompletedProcess(
+            [], 0, "[doctest] test cases: 1 | 1 passed | 0 failed\n", "",
+        )
+        with patch("subprocess.run", side_effect=[listed, passed]) as run:
+            scope["run_doctest_case"](Path("/work/build/test"), Path("/work/src"))
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/work/build/test", "--test-case=RuntimeCase"],
+        )
+        with patch("subprocess.run", side_effect=[
+            listed,
+            subprocess.CompletedProcess([], 0, "[doctest] test cases: 0 | 0 passed | 0 failed\n", ""),
+        ]):
+            with self.assertRaisesRegex(ValueError, "did not pass one test"):
+                scope["run_doctest_case"](Path("/work/build/test"), Path("/work/src"))
+
+    def test_doctest_standard_reporter_listing_requires_positive_summary(self):
+        scope = {"__name__": "smoke_fixture"}
+        exec(VERIFY_NATIVE_TEST, scope)
+        listing = (
+            "[doctest] listing all test case names\n"
+            "====================================================\n"
+            "ParserCase\n"
+            "[doctest] unskipped test cases passing the current filters: 1\n"
+        )
+        self.assertEqual(scope["first_doctest_case"](listing), (None, "ParserCase"))
+        self.assertIsNone(scope["first_doctest_case"](
+            listing.replace("filters: 1", "filters: 0")
+        ))
+        unsupported = listing.replace("ParserCase", "case with spaces")
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+            [], 0, unsupported, "",
+        )) as run:
+            with self.assertRaisesRegex(ValueError, "listing found no runnable case"):
+                scope["run_doctest_case"](Path("/work/build/test"), Path("/work/src"))
+        self.assertEqual(run.call_count, 1)
+        categorized = _failure_evidence(
+            "FTS_ARM_PREFLIGHT_STAGE:smoke\n"
+            "FTS_ARM_DOCTEST_LISTING:plain=0,0,0,0,1,4,0,170,0\n"
+            "native test smoke failed: standalone doctest listing found no runnable case\n"
+            "FTS_ARM_PREFLIGHT_FAILED_STAGE:smoke:1\n",
+            1,
+        )
+        self.assertIn(";listing=plain=0,0,0,0,1,4,0,170,0", categorized)
+        listed = subprocess.CompletedProcess([], 0, listing, "")
+        passed = subprocess.CompletedProcess(
+            [], 0, "[doctest] test cases: 1 | 1 passed | 0 failed\n", "",
+        )
+        with patch("subprocess.run", side_effect=[listed, passed]) as run:
+            scope["run_doctest_case"](Path("/work/build/test"), Path("/work/src"))
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/work/build/test", "--test-case=ParserCase"],
+        )
+
+    def test_doctest_listing_failure_reports_only_bounded_structure(self):
+        import io
+        from contextlib import redirect_stdout
+
+        scope = {"__name__": "smoke_fixture"}
+        exec(VERIFY_NATIVE_TEST, scope)
+        secret = "private-token-example"
+        plain = subprocess.CompletedProcess(
+            [], 0, f"{secret}\n", "/DISABLED_UnsuitableCase\n",
+        )
+        prefixed = subprocess.CompletedProcess(
+            [], 0, "[doctest] listing all test case names\nName\n", "",
+        )
+        captured = io.StringIO()
+        with patch("subprocess.run", side_effect=[plain, prefixed]) as run:
+            with redirect_stdout(captured):
+                with self.assertRaisesRegex(ValueError, "listing found no runnable case"):
+                    scope["run_doctest_case"](Path("/work/build/test"), Path("/work/src"))
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0][1], "--dt-list-test-cases")
+        probe = (
+            f"plain=0,0,0,1,0,1,1,{len(plain.stdout)},{len(plain.stderr)}|"
+            f"dt=0,0,0,0,1,2,0,{len(prefixed.stdout)},0"
+        )
+        marker = "FTS_ARM_DOCTEST_LISTING:" + probe
+        self.assertEqual(captured.getvalue().strip(), marker)
+        output = (
+            "FTS_ARM_PREFLIGHT_STAGE:smoke\n"
+            + captured.getvalue()
+            + f"{secret}\n"
+            + "native test smoke failed: standalone doctest listing found no runnable case\n"
+            + "FTS_ARM_PREFLIGHT_FAILED_STAGE:smoke:1\n"
+        )
+        evidence = _failure_evidence(output, 1)
+        self.assertEqual(
+            evidence,
+            "native_arm_failure:stage=smoke;kind=doctest_listing_failed;exit=1;"
+            + "listing=" + probe,
+        )
+        self.assertNotIn(secret, evidence)
+
+    def test_doctest_listing_timeout_is_bounded_and_categorized(self):
+        import io
+        from contextlib import redirect_stdout
+
+        scope = {"__name__": "smoke_fixture"}
+        exec(VERIFY_NATIVE_TEST, scope)
+        timeout = subprocess.TimeoutExpired(["test"], 8)
+        with patch("subprocess.run", side_effect=[timeout, timeout]):
+            with redirect_stdout(io.StringIO()) as captured:
+                with self.assertRaisesRegex(ValueError, "listing found no runnable case"):
+                    scope["run_doctest_case"](Path("/work/build/test"), Path("/work/src"))
+        self.assertIn("plain=999,0,0,0,0,0,0,0,0|dt=999,0,0,0,0,0,0,0,0", captured.getvalue())
+
     def test_doctest_smoke_failure_has_safe_category(self):
         output = (
             "FTS_ARM_PREFLIGHT_STAGE:smoke\n"
