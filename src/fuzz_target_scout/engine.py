@@ -90,9 +90,25 @@ class ScoutEngine:
             excluded = {
                 str(value).casefold() for value in (exclude_repositories or set())
             }
+            if (
+                run_arm_preflight
+                and resolve_host_architecture(self.config["architecture"]) == "aarch64"
+            ):
+                architecture = self.config["architecture"]
+                failures = self.store.recent_failed_arm_preflight_repositories(
+                    "aarch64",
+                    (PREFLIGHT_VERSION, MESON_PREFLIGHT_VERSION),
+                    int(architecture.get("arm_preflight_failure_retry_hours", 24)),
+                    TRANSIENT_FAILURE_REASONS,
+                )
+                excluded.update(failures)
+                if failures:
+                    self.progress(
+                        f"ARM preflight cooldown excluded {len(failures)} repositories"
+                    )
             if excluded:
                 self.progress(
-                    f"excluded {len(excluded)} previously selected repositories"
+                    f"excluded {len(excluded)} selected or cooling repositories"
                 )
             lookup_errors: list[str] = []
             repos = self._discover(
@@ -349,6 +365,19 @@ class ScoutEngine:
         return None
 
     @staticmethod
+    def _arm_preflight_family(candidate: Candidate) -> str:
+        for path in candidate.repo.paths:
+            parts = str(path).casefold().split("/")
+            if (
+                len(parts) >= 3
+                and parts[0] == "build"
+                and parts[2] in {"cmake", "meson"}
+            ):
+                return f"shared-build:{parts[1]}"
+        program = candidate.policy.program_url.strip().casefold()
+        return program or candidate.repo.full_name.split("/", 1)[0].casefold()
+
+    @staticmethod
     def _accept_arm_preflight(candidate: Candidate, evidence: str) -> None:
         candidate.architecture = ArchitectureAssessment(
             host_arch="aarch64",
@@ -515,12 +544,37 @@ class ScoutEngine:
         )
         configured_maximum = max(0, int(architecture.get("arm_preflight_max_per_scan", 2)))
         maximum = min(8, configured_maximum if max_attempts is None else max(0, max_attempts))
+        if maximum == 0:
+            return 0, passed
+        # Give independent build families a chance before using a second
+        # expensive slot on the same dependencies. Fill the remaining
+        # slots afterward so a narrow candidate pool does not waste capacity.
+        selected: list[tuple[bool, bool, Candidate, str]] = []
+        selected_ids: set[int] = set()
+        seen_programs: set[str] = set()
+        for entry in pending:
+            candidate = entry[2]
+            program = self._arm_preflight_family(candidate)
+            if program in seen_programs:
+                continue
+            selected.append(entry)
+            selected_ids.add(id(candidate))
+            seen_programs.add(program)
+            if len(selected) >= maximum:
+                break
+        if len(selected) < maximum:
+            for entry in pending:
+                if id(entry[2]) in selected_ids:
+                    continue
+                selected.append(entry)
+                if len(selected) >= maximum:
+                    break
         deadline = (
             time.monotonic() + max(60, budget_seconds)
             if budget_seconds is not None else None
         )
         attempted = 0
-        for _prior_success, _prior_failure, candidate, version in pending[:maximum]:
+        for _prior_success, _prior_failure, candidate, version in selected:
             remaining = None if deadline is None else int(deadline - time.monotonic())
             if remaining is not None and remaining < 60:
                 self.progress("ARM preflight deferred: discovery time budget exhausted")

@@ -249,6 +249,63 @@ class Store:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def recent_failed_arm_preflight_repositories(
+        self,
+        host_arch: str,
+        versions: Iterable[str],
+        retry_hours: int,
+        transient_reasons: Iterable[str],
+        *,
+        now: datetime | None = None,
+    ) -> set[str]:
+        """Avoid rehydrating recent build failures during discovery.
+
+        Only results from the current builder versions count. A success on
+        either builder keeps the repository eligible, and every exclusion
+        expires, so a changed repository can be reconsidered later.
+        """
+        current_versions = tuple(sorted({str(value) for value in versions if value}))
+        retry_seconds = max(0, int(retry_hours)) * 3600
+        if not current_versions or not retry_seconds:
+            return set()
+        placeholders = ",".join("?" for _ in current_versions)
+        rows = self.connection.execute(
+            f"""
+            SELECT full_name, version, checked_at, passed, reason
+              FROM arm_preflight_cache
+             WHERE host_arch=? AND version IN ({placeholders})
+             ORDER BY checked_at DESC, rowid DESC
+            """,
+            (host_arch, *current_versions),
+        )
+        latest: dict[tuple[str, str], sqlite3.Row] = {}
+        for row in rows:
+            latest.setdefault((row["full_name"], row["version"]), row)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        transient = set(transient_reasons)
+        blocked: set[str] = set()
+        passed: set[str] = set()
+        for (name, _version), row in latest.items():
+            if row["passed"]:
+                passed.add(name)
+                continue
+            try:
+                checked = datetime.fromisoformat(str(row["checked_at"]))
+            except ValueError:
+                continue
+            if checked.tzinfo is None:
+                checked = checked.replace(tzinfo=timezone.utc)
+            age = (current - checked).total_seconds()
+            interval = (
+                min(retry_seconds, 15 * 60)
+                if row["reason"] in transient else retry_seconds
+            )
+            if 0 <= age < interval:
+                blocked.add(name)
+        return blocked - passed
+
     def has_prior_successful_arm_preflight(
         self, full_name: str, head_sha: str, host_arch: str, version: str
     ) -> bool:

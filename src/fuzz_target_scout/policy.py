@@ -285,6 +285,22 @@ class PolicyVerifier:
                 source="security.md",
                 note="The current repository policy explicitly says reports are not paid.",
             )
+        if repo.full_name.casefold() == "luau-lang/luau":
+            current_scope = " ".join(current_text.casefold().split())
+            if not all(
+                marker in current_scope
+                for marker in (
+                    "memory safety",
+                    "hackerone.com/roblox",
+                    "bounty program",
+                )
+            ):
+                return PolicyAssessment(
+                    status="needs_review",
+                    confidence=40,
+                    source="catalog",
+                    note="The live Luau policy no longer proves the curated paid scope.",
+                )
         try:
             verified_on = date.fromisoformat(entry["last_verified"])
             age = (today - verified_on).days

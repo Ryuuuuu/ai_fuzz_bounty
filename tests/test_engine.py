@@ -54,6 +54,91 @@ class _SearchGitHub:
 
 
 class EngineIdleDiscoveryTests(unittest.TestCase):
+    def test_recent_arm_failure_is_excluded_before_repository_hydration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["github"]["seed_policy_catalog"] = False
+            engine = ScoutEngine(config)
+            try:
+                engine.store.put_arm_preflight(
+                    "org/recent-failure", "a" * 40, "aarch64",
+                    PREFLIGHT_VERSION, passed=False,
+                    reason="native_build_or_smoke_failed",
+                )
+                engine.store.put_arm_preflight(
+                    "org/old-builder", "a" * 40, "aarch64",
+                    "old-builder", passed=False,
+                    reason="native_build_or_smoke_failed",
+                )
+                with patch.object(engine, "_refresh_policy_sources"), patch.object(
+                    engine, "_discover", return_value=[]
+                ) as discover:
+                    engine.scan(
+                        queries=[], seed_repositories=[
+                            "org/recent-failure", "org/old-builder"
+                        ],
+                        use_ai=False, run_arm_preflight=True,
+                    )
+                exclusions = discover.call_args.args[3]
+                self.assertIn("org/recent-failure", exclusions)
+                self.assertNotIn("org/old-builder", exclusions)
+            finally:
+                engine.close()
+
+    def test_arm_preflight_spreads_slots_across_build_families(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+
+            def target(name, size, paths):
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=name, html_url=f"https://github.com/{name}",
+                        default_branch="main", head_sha="a" * 40,
+                        language="C++", size_kb=size, paths=paths,
+                        security_url=f"https://github.com/{name}/security/policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=80, reproduce_difficulty=1,
+                        signals=["standard_build:cmakelists.txt"],
+                        blockers=[], suggested_entry_kind="library_api",
+                    ),
+                    policy=PolicyAssessment(
+                        status="verified", confidence=90, source="security.md",
+                        program_url=f"https://hackerone.com/{name.split('/')[0]}",
+                    ),
+                    final_score=80,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=True, confidence=90,
+                    ),
+                )
+
+            candidates = [
+                target("facebook/first", 100, ["build/fbcode_builder/CMake/Foo.cmake"]),
+                target("facebookincubator/second", 200,
+                       ["build/fbcode_builder/CMake/Bar.cmake"]),
+                target("independent/parser", 300, ["CMakeLists.txt"]),
+            ]
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = SimpleNamespace(
+                        passed=False, reason="native_build_or_smoke_failed",
+                        evidence="native_arm_failure:stage=configure;kind=missing_dependency;exit=1",
+                    )
+                    attempted, passed = engine._preflight_arm_candidates(
+                        candidates, max_attempts=2,
+                    )
+                self.assertEqual((attempted, passed), (2, 0))
+                names = [
+                    call.args[0].full_name
+                    for call in runner.return_value.check.call_args_list
+                ]
+                self.assertEqual(names, ["facebook/first", "independent/parser"])
+            finally:
+                engine.close()
+
     def test_idle_preflight_stops_after_first_native_success(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")

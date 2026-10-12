@@ -227,6 +227,15 @@
       "last_verified": "2026-10-10"
     },
     {
+      "full_name": "luau-lang/luau",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/luau-lang/luau/blob/master/SECURITY.md",
+      "program_url": "https://hackerone.com/roblox",
+      "scope_note": "Luau SECURITY.md identifies source-triggered memory-safety failures during compilation or execution as vulnerabilities and directs reports to the Roblox HackerOne bounty. Roblox limits paid research to its client binaries, game server, and web application: a standalone Luau crash is not enough; validation must demonstrate impact in a Roblox product. Invalid untrusted bytecode and resource exhaustion are outside Luau's stated guarantees.",
+      "last_verified": "2026-10-12"
+    },
+    {
       "full_name": "ValveSoftware/GameNetworkingSockets",
       "status": "verified",
       "access": "public",

@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,49 @@ from fuzz_target_scout.storage import Store
 
 
 class StorageTests(unittest.TestCase):
+    def test_recent_arm_failures_are_filtered_by_version_and_retry_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "scout.sqlite3")
+            try:
+                for name, version, reason, passed in (
+                    ("org/recent", "current", "native_build_or_smoke_failed", False),
+                    ("org/old-builder", "old", "native_build_or_smoke_failed", False),
+                    ("org/transient", "current", "checkout_failed", False),
+                    ("org/success", "current", "native_build_or_smoke_failed", False),
+                    ("org/success", "alternate", "passed", True),
+                ):
+                    store.put_arm_preflight(
+                        name, "a" * 40, "aarch64", version,
+                        passed=passed, reason=reason,
+                    )
+                now = datetime.now(timezone.utc)
+                store.connection.execute(
+                    "UPDATE arm_preflight_cache SET checked_at=? WHERE full_name=?",
+                    ((now - timedelta(minutes=20)).isoformat(), "org/transient"),
+                )
+                store.connection.commit()
+                self.assertEqual(
+                    store.recent_failed_arm_preflight_repositories(
+                        "aarch64", ("current", "alternate"), 24,
+                        {"checkout_failed"}, now=now,
+                    ),
+                    {"org/recent"},
+                )
+                store.connection.execute(
+                    "UPDATE arm_preflight_cache SET checked_at=? WHERE full_name=?",
+                    ((now - timedelta(hours=25)).isoformat(), "org/recent"),
+                )
+                store.connection.commit()
+                self.assertEqual(
+                    store.recent_failed_arm_preflight_repositories(
+                        "aarch64", ("current", "alternate"), 24,
+                        {"checkout_failed"}, now=now,
+                    ),
+                    set(),
+                )
+            finally:
+                store.close()
+
     def test_search_cursor_rotates_and_resets_after_an_empty_page(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "scout.sqlite3")

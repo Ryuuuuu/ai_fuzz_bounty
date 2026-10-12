@@ -28,6 +28,33 @@ class PolicyVerifierTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_curated_luau_requires_live_memory_safety_and_paid_program_scope(self):
+        self.catalog.write_text(
+            json.dumps({"entries": [{
+                "full_name": "luau-lang/luau",
+                "status": "verified",
+                "security_url": "https://github.com/luau-lang/luau/blob/master/SECURITY.md",
+                "program_url": "https://hackerone.com/roblox",
+                "last_verified": "2026-10-12",
+            }]}),
+            encoding="utf-8",
+        )
+        target = repo(
+            "luau-lang/luau",
+            "Source code must not cause memory safety errors. Report through "
+            "https://hackerone.com/roblox and see rules of the bounty program.",
+        )
+        verifier = PolicyVerifier(self.catalog)
+        self.assertEqual(
+            verifier.verify(target, today=date(2026, 10, 12)).status,
+            "verified",
+        )
+        target.security_text = "Report security bugs to the maintainers."
+        self.assertEqual(
+            verifier.verify(target, today=date(2026, 10, 12)).status,
+            "needs_review",
+        )
+
     def _external_catalog(self, name: str, *, verified_on: str = "2026-10-10"):
         url = CURATED_EXTERNAL_POLICY_URLS[name]
         self.catalog.write_text(
