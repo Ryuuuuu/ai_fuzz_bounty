@@ -100,6 +100,52 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertEqual(sources, ["tests/conformance/valid.lua"])
         self.assertCountEqual(contents, [b"\n", b"return 1\n"])
 
+    def test_existing_parser_harness_uses_public_include_to_seed_luau_fixtures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "integration"
+            (root / "artifacts").mkdir()
+            parser = source / "fuzz" / "parser.cpp"
+            parser.parent.mkdir(parents=True)
+            parser.write_text(
+                '#include "Luau/Parser.h"\n'
+                '#include <stddef.h>\n#include <stdint.h>\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const uint8_t* data, size_t size) { return 0; }\n',
+                encoding="utf-8",
+            )
+            public_header = source / "Parser" / "include" / "Luau" / "Parser.h"
+            public_header.parent.mkdir(parents=True)
+            public_header.write_text("#pragma once\n", encoding="utf-8")
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.16)\n", encoding="utf-8"
+            )
+            fixtures = source / "tests" / "conformance"
+            fixtures.mkdir(parents=True)
+            for index in range(30):
+                (fixtures / f"case-{index:02d}.luau").write_text(
+                    f"return {index}\n", encoding="utf-8"
+                )
+            (fixtures / "unrelated.json").write_text("{}", encoding="utf-8")
+
+            record = create_generic_project(
+                job_dir=root, source=source, project_dir=project,
+                project_name="parser", pipeline={}, native=True,
+            )
+            with zipfile.ZipFile(project / "generic_fuzzer_seed_corpus.zip") as archive:
+                contents = [archive.read(name) for name in archive.namelist()]
+
+        self.assertEqual(record["harness_origin"], "existing:fuzz/parser.cpp")
+        self.assertEqual(record["seed_corpus_files"], 25)
+        self.assertEqual(len(record["seed_fixture_sources"]), 24)
+        self.assertTrue(all(
+            name.startswith("tests/conformance/") and name.endswith(".luau")
+            for name in record["seed_fixture_sources"]
+        ))
+        self.assertIn(b"return 0\n", contents)
+        self.assertNotIn(b"{}", contents)
+
     def test_alternate_byte_parser_excludes_current_and_prior_api(self):
         with tempfile.TemporaryDirectory() as directory:
             job = Path(directory)

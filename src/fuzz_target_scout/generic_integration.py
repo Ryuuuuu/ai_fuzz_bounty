@@ -597,12 +597,7 @@ def _public_api_usage_examples(
     )[:4000]
 
 
-def _relevant_seed_suffixes(candidate: dict[str, Any]) -> set[str]:
-    """Only copy a fixture when its format matches the selected API."""
-    api = str(candidate.get("file") or "") + " " + str(
-        candidate.get("signature") or ""
-    )
-    words = set(re.findall(r"[a-z0-9]+", api.casefold()))
+def _seed_suffixes_for_words(words: set[str]) -> set[str]:
     return {
         suffix
         for suffix in TEXT_SEED_SUFFIXES
@@ -618,11 +613,64 @@ def _relevant_seed_suffixes(candidate: dict[str, Any]) -> set[str]:
     }
 
 
+def _relevant_seed_suffixes(
+    source: Path, candidate: dict[str, Any]
+) -> set[str]:
+    """Infer fixture formats from the API, then a bounded existing harness."""
+    api = str(candidate.get("file") or "") + " " + str(
+        candidate.get("signature") or ""
+    )
+    suffixes = _seed_suffixes_for_words(
+        set(re.findall(r"[a-z0-9]+", api.casefold()))
+    )
+    if suffixes:
+        return suffixes
+
+    relative = _safe_relative_source(str(candidate.get("file") or ""))
+    if not relative or Path(relative).suffix.casefold() not in SOURCE_SUFFIXES:
+        return set()
+    harness = source / relative
+    try:
+        if (
+            harness.is_symlink()
+            or not harness.is_file()
+            or not harness.resolve().is_relative_to(source.resolve())
+            or harness.stat().st_size > 100000
+        ):
+            return set()
+        context = "\n".join(
+            harness.read_text(encoding="utf-8", errors="replace").splitlines()[:200]
+        )
+    except (OSError, RuntimeError):
+        return set()
+
+    words: set[str] = set()
+    for include in re.findall(
+        r'(?m)^\s*#\s*include\s*[<"]([A-Za-z0-9_./+-]{1,200})[>"]',
+        context,
+    ):
+        header = Path(include)
+        if (
+            header.is_absolute()
+            or ".." in header.parts
+            or header.suffix.casefold() not in HEADER_SUFFIXES
+        ):
+            continue
+        words.update(re.findall(r"[a-z0-9]+", include.casefold()))
+    words.update(
+        name.casefold()
+        for name in re.findall(
+            r"\b([A-Za-z_]\w*)(?:::[A-Za-z_]\w*)+\s*\(", context
+        )
+    )
+    return _seed_suffixes_for_words(words)
+
+
 def _write_seed_corpus(
     source: Path, candidate: dict[str, Any], destination: Path
 ) -> tuple[int, list[str]]:
     """Create a deterministic, small OSS-Fuzz seed archive from public fixtures."""
-    relevant_suffixes = _relevant_seed_suffixes(candidate)
+    relevant_suffixes = _relevant_seed_suffixes(source, candidate)
     fixtures: list[tuple[str, bytes]] = []
     paths = sorted(
         itertools.islice(source.rglob("*"), 20000),
