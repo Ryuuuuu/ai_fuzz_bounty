@@ -3150,8 +3150,8 @@ class PipelineRunner:
 
     @staticmethod
     def _seed_corpus(out_dir: Path, fuzzer: str, corpus_dir: Path) -> None:
-        if any(corpus_dir.iterdir()):
-            return
+        # Smoke runs can populate the corpus before the first probe. Merge
+        # archive seeds by content hash so they are never silently skipped.
         archive = out_dir / f"{fuzzer}_seed_corpus.zip"
         if archive.is_symlink() or not archive.is_file():
             return
@@ -3249,6 +3249,7 @@ class PipelineRunner:
             out_dir = Path(str(manifest["output_directory"]))
             corpus = job_dir / "corpus" / selected
             corpus.mkdir(parents=True, exist_ok=True)
+            self._seed_corpus(out_dir, selected, corpus)
             self._run(
                 [
                     "docker", "run", "--rm", "--network", "none", "--read-only",

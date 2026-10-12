@@ -1216,6 +1216,69 @@ class PipelineRunnerTests(unittest.TestCase):
             self.assertEqual(files[0].read_bytes(), b"seed")
             self.assertFalse((root / "outside.bin").exists())
 
+    def test_seed_corpus_merges_after_smoke_has_populated_corpus(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out = root / "out"
+            corpus = root / "corpus"
+            out.mkdir()
+            corpus.mkdir()
+            prior_seed = b"prior seed"
+            mutation = b"smoke mutation"
+            new_seed = b"new fixture"
+            (corpus / hashlib.sha256(prior_seed).hexdigest()).write_bytes(prior_seed)
+            (corpus / hashlib.sha256(mutation).hexdigest()).write_bytes(mutation)
+            with zipfile.ZipFile(out / "generic_fuzzer_seed_corpus.zip", "w") as bundle:
+                bundle.writestr("existing", prior_seed)
+                bundle.writestr("new", new_seed)
+
+            PipelineRunner._seed_corpus(out, "generic_fuzzer", corpus)
+            self.assertEqual(len(list(corpus.iterdir())), 3)
+            self.assertEqual(
+                (corpus / hashlib.sha256(new_seed).hexdigest()).read_bytes(),
+                new_seed,
+            )
+            self.assertEqual(
+                (corpus / hashlib.sha256(mutation).hexdigest()).read_bytes(),
+                mutation,
+            )
+
+            PipelineRunner._seed_corpus(out, "generic_fuzzer", corpus)
+            self.assertEqual(len(list(corpus.iterdir())), 3)
+
+    def test_native_smoke_loads_seed_archive_before_running_fuzzer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory) / "job"
+            artifacts = job_dir / "artifacts"
+            out = job_dir / "build-output" / "asan"
+            artifacts.mkdir(parents=True)
+            out.mkdir(parents=True)
+            (artifacts / "build-manifest.json").write_text(
+                json.dumps({
+                    "oss_fuzz_project": "generic",
+                    "fuzz_targets": ["generic_fuzzer"],
+                    "execution_mode": "native_container",
+                    "output_directory": str(out),
+                    "runner_image": "native-test-image",
+                })
+            )
+            (artifacts / "integration-manifest.json").write_text("{}")
+            seed = b"valid source input"
+            with zipfile.ZipFile(out / "generic_fuzzer_seed_corpus.zip", "w") as bundle:
+                bundle.writestr("fixture.luau", seed)
+
+            runner = object.__new__(PipelineRunner)
+            runner.pipeline = {"input_timeout_seconds": 10, "smoke_seconds": 30}
+            runner._run = Mock()
+            runner._smoke_fuzzer(job_dir, {})
+
+            corpus = job_dir / "corpus" / "generic_fuzzer"
+            self.assertEqual(
+                (corpus / hashlib.sha256(seed).hexdigest()).read_bytes(),
+                seed,
+            )
+            runner._run.assert_called_once()
+
     def test_fuzz_session_rejects_missing_job_build_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
