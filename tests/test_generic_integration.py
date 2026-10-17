@@ -1147,6 +1147,43 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertNotIn("-DVECTOR_ENABLE_CPU=OFF", args)
         self.assertNotIn("-DBENCHMARK_ENABLE_INSTALL=OFF", args)
 
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("bash") and shutil.which("cmake"),
+        "requires Bash and CMake",
+    )
+    def test_cmake_cpu_only_flags_allow_native_configure(self):
+        script = _build_script("cmake")
+        start = script.index("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)")
+        end = script.index("cmake_build_type=RelWithDebInfo", start)
+        option_discovery = script[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "CMakeLists.txt").write_text(
+                'cmake_minimum_required(VERSION 3.16)\n'
+                'project(VectorCore LANGUAGES CXX)\n'
+                'option(VECTOR_ENABLE_GPU "GPU" ON)\n'
+                'option(VECTOR_ENABLE_PYTHON "Python" ON)\n'
+                'option(VECTOR_ENABLE_CPU "CPU" ON)\n'
+                'if(VECTOR_ENABLE_GPU OR VECTOR_ENABLE_PYTHON OR BUILD_TESTING)\n'
+                '  message(FATAL_ERROR "optional feature was not disabled")\n'
+                'endif()\n'
+                'if(NOT VECTOR_ENABLE_CPU)\n'
+                '  message(FATAL_ERROR "core CPU feature was disabled")\n'
+                'endif()\n'
+                'add_library(vector_core STATIC vector_core.cpp)\n',
+                encoding="utf-8",
+            )
+            (source / "vector_core.cpp").write_text("int vector_core() { return 1; }\n")
+            result = subprocess.run(
+                ["bash", "-c", option_discovery + 'cmake -S . -B build "${cmake_shared_args[@]}"\n'],
+                cwd=source, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            cache = (source / "build" / "CMakeCache.txt").read_text()
+            self.assertIn("VECTOR_ENABLE_GPU:BOOL=OFF", cache)
+            self.assertIn("VECTOR_ENABLE_PYTHON:BOOL=OFF", cache)
+            self.assertIn("VECTOR_ENABLE_CPU:BOOL=ON", cache)
+
     def test_existing_cmake_job_repairs_stale_cpu_build_without_model_call(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
