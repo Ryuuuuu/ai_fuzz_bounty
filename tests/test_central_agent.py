@@ -1805,7 +1805,7 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual([call["seed_repositories"] for call in calls],
                          [["org/fresh"], (), (), ["org/fresh"]])
         self.assertEqual(backlog_requests[0],
-                         (55, ["C", "C++"], {"org/old", "org/failed"}, 6))
+                         (45, ["C", "C++"], {"org/old", "org/failed"}, 6))
         self.assertEqual(len(cooldown_requests), 2)
         self.assertEqual(calls[0]["queries"], [])
         self.assertFalse(calls[1]["seed_policy_catalog"])

@@ -2029,8 +2029,17 @@ class CentralAgent:
                                 TRANSIENT_FAILURE_REASONS,
                             )
                         )
+                    backlog_score = int(
+                        self.config["scoring"]["minimum_handoff_score"]
+                    )
+                    if bool(self.config["ai"].get("enabled")):
+                        backlog_score -= max(
+                            0, int(self.config["scoring"].get(
+                                "arm_preflight_score_margin", 10
+                            ))
+                        )
                     backlog = backlog_store.revalidation_backlog_names(
-                        int(self.config["scoring"]["minimum_handoff_score"]),
+                        backlog_score,
                         self.pipeline.get("languages") or [],
                         backlog_exclusions,
                         min(8, max(0, int(self.agent.get("revalidation_backlog_per_scan", 6)))),

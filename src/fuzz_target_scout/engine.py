@@ -421,7 +421,7 @@ class ScoutEngine:
         max_attempts: int | None = None,
         budget_seconds: int | None = None,
         stop_after_success: bool = False,
-        allow_ai_review: bool = True,
+        allow_ai_review: bool = False,
     ) -> tuple[int, int]:
         architecture = self.config["architecture"]
         if (
@@ -434,6 +434,7 @@ class ScoutEngine:
             0, int(self.config["scoring"].get("arm_preflight_score_margin", 10))
         )
         ai_config = self.config.get("ai") or {}
+        ai_may_change_score = allow_ai_review and bool(ai_config.get("enabled"))
         maximum_kb = min(
             100000, max(1, int(architecture.get("arm_preflight_max_repository_kb", 50000)))
         )
@@ -473,8 +474,7 @@ class ScoutEngine:
                 candidate.static.blockers.append(probe_blocker)
             version = self._arm_preflight_version(candidate)
             near_threshold_for_ai = (
-                allow_ai_review
-                and bool(ai_config.get("enabled"))
+                ai_may_change_score
                 and candidate.static.fuzz_score
                 >= int(ai_config.get("minimum_static_score", 50))
                 and candidate.final_score >= minimum_score - score_margin
@@ -561,7 +561,9 @@ class ScoutEngine:
                 version,
             ))
 
-        if stop_after_success and handoff_ready_passed:
+        # The AI review happens after native preflight. A static score above
+        # the threshold is not a handoff guarantee when AI can lower it.
+        if stop_after_success and not ai_may_change_score and handoff_ready_passed:
             return 0, passed
         pending.sort(
             key=lambda item: (
@@ -638,9 +640,11 @@ class ScoutEngine:
                 self._accept_arm_preflight(candidate, result.evidence)
                 passed += 1
                 self.progress(f"ARM preflight passed: {candidate.repo.full_name}")
-                # A near-threshold candidate still needs the later AI review
-                # to reach the handoff score. Keep probing other candidates.
-                if stop_after_success and candidate.final_score >= minimum_score:
+                # Only the no-AI path has a final score at this point.
+                if (
+                    stop_after_success and not ai_may_change_score
+                    and candidate.final_score >= minimum_score
+                ):
                     break
             else:
                 detail = (

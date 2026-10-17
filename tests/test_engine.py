@@ -54,6 +54,103 @@ class _SearchGitHub:
 
 
 class EngineIdleDiscoveryTests(unittest.TestCase):
+    def test_ai_downgrade_does_not_stop_after_cached_or_live_arm_pass(self):
+        for first_pass_cached in (False, True):
+            with self.subTest(first_pass_cached=first_pass_cached), tempfile.TemporaryDirectory() as directory:
+                config, _ = load_config(Path(directory) / "missing.toml")
+                config["architecture"]["host_arch"] = "aarch64"
+                config["pipeline"]["architecture"]["host_arch"] = "aarch64"
+                config["pipeline"]["runs_path"] = str(Path(directory) / "runs")
+                engine = ScoutEngine(config)
+                sha = "a" * 40
+
+                def target(name, size_kb):
+                    return Candidate(
+                        repo=RepoSnapshot(
+                            full_name=f"org/{name}",
+                            html_url=f"https://github.com/org/{name}",
+                            default_branch="main", head_sha=sha,
+                            language="C++", size_kb=size_kb,
+                            paths=["CMakeLists.txt", "src/parser.cpp"],
+                            security_url=f"https://github.com/org/{name}/security/policy",
+                        ),
+                        static=StaticAssessment(
+                            fuzz_score=80, reproduce_difficulty=1,
+                            signals=["standard_build:cmakelists.txt"],
+                            blockers=["native_build_probe_required:aarch64"],
+                            suggested_entry_kind="library_api",
+                        ),
+                        policy=PolicyAssessment(
+                            status="verified", confidence=95, source="security.md",
+                            program_url=f"https://example.com/{name}-paid-bounty",
+                        ),
+                        final_score=80,
+                        architecture=ArchitectureAssessment(
+                            host_arch="aarch64", compatible=False, confidence=40,
+                            blockers=["native_build_probe_required:aarch64"],
+                        ),
+                    )
+
+                downgraded = target("downgraded", 100)
+                viable = target("viable", 200)
+                evidence = f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:{sha}"
+                if first_pass_cached:
+                    engine.store.put_arm_preflight(
+                        downgraded.repo.full_name, sha, "aarch64",
+                        PREFLIGHT_VERSION, passed=True, reason="native pass",
+                        evidence=evidence,
+                    )
+
+                def assess_batch(_items):
+                    return {
+                        downgraded.repo.full_name: AIAssessment(
+                            fuzz_score=0, reproduce_difficulty=5,
+                            suggested_entry_kind="library_api",
+                            rationale="too difficult", blockers=[],
+                        ),
+                        viable.repo.full_name: AIAssessment(
+                            fuzz_score=80, reproduce_difficulty=1,
+                            suggested_entry_kind="library_api",
+                            rationale="viable", blockers=[],
+                        ),
+                    }, {"input_tokens": 2, "cached_tokens": 0, "output_tokens": 2}
+
+                reviewer = SimpleNamespace(
+                    available=True, model="test-model", prompt_version="test-v1",
+                    assess_batch=assess_batch,
+                )
+                try:
+                    with patch("fuzz_target_scout.engine.ArmPreflight") as probe, patch(
+                        "fuzz_target_scout.engine.CodexReviewer", return_value=reviewer,
+                    ):
+                        probe.return_value.check.return_value = ArmPreflightResult(
+                            True, "native_arm_build_and_ctest_passed", evidence,
+                        )
+                        attempted, passed = engine._preflight_arm_candidates(
+                            [downgraded, viable], max_attempts=2,
+                            stop_after_success=True, allow_ai_review=True,
+                        )
+                        self.assertEqual((attempted, passed),
+                                         (1 if first_pass_cached else 2, 2))
+                        self.assertTrue(viable.architecture.compatible)
+                        self.assertEqual(
+                            engine._apply_ai([downgraded, viable], True),
+                            (1, 0, 0),
+                        )
+                    self.assertLess(downgraded.final_score, 55)
+                    self.assertGreaterEqual(viable.final_score, 55)
+                    scan_id = engine.store.start_scan("test")
+                    for item in (downgraded, viable):
+                        engine.store.upsert_candidate(item, scan_id)
+                    rows = list(engine.store.export_rows(
+                        55, False, ["C++"], scan_id=scan_id,
+                    ))
+                    self.assertEqual(
+                        [row["repository"] for row in rows], ["org/viable"],
+                    )
+                finally:
+                    engine.close()
+
     def test_near_threshold_arm_probe_can_unlock_ai_handoff(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")
@@ -110,7 +207,9 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                         True, "native_arm_build_and_ctest_passed", evidence,
                     )
                     self.assertEqual(
-                        engine._preflight_arm_candidates([target]), (1, 1)
+                        engine._preflight_arm_candidates(
+                            [target], allow_ai_review=True,
+                        ), (1, 1)
                     )
                     self.assertEqual(engine._apply_ai([target], True), (1, 0, 0))
                 engine.store.upsert_candidate(target, scan_id)
@@ -174,7 +273,7 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                     )
                     attempted, passed = engine._preflight_arm_candidates(
                         [near, high, *rejected], max_attempts=8,
-                        stop_after_success=True,
+                        stop_after_success=True, allow_ai_review=True,
                     )
                     self.assertEqual((attempted, passed), (2, 2))
                     self.assertEqual(
@@ -187,13 +286,17 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                     config["scoring"]["arm_preflight_score_margin"] = 1
                     config["ai"]["enabled"] = False
                     self.assertEqual(
-                        engine._preflight_arm_candidates([candidate("disabled")]),
+                        engine._preflight_arm_candidates(
+                            [candidate("disabled")], allow_ai_review=True,
+                        ),
                         (0, 0),
                     )
                     probe.return_value.check.reset_mock()
                     config["ai"]["enabled"] = True
                     self.assertEqual(
-                        engine._preflight_arm_candidates([candidate("narrow")]),
+                        engine._preflight_arm_candidates(
+                            [candidate("narrow")], allow_ai_review=True,
+                        ),
                         (0, 0),
                     )
                     config["scoring"]["arm_preflight_score_margin"] = 10
