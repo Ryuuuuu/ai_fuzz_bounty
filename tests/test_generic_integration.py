@@ -815,6 +815,23 @@ class GenericIntegrationTests(unittest.TestCase):
         for dependency in dependencies:
             self.assertIn(dependency, dockerfile)
 
+    def test_cmake_links_reviewed_cpu_libraries_after_project_archives(self):
+        script = _build_script(
+            "cmake",
+            system_dependencies=[
+                "libomp-dev", "libopenblas-dev", "liblapack-dev",
+                "$(untrusted-link-flag)",
+            ],
+        )
+        link_start = script.index('"$CXX" $CXXFLAGS "$WORK/generic_harness.o"')
+        link = script[link_start:script.index('if (( ${#shared_libraries[@]} > 0 ));', link_start)]
+        self.assertLess(link.index("-Wl,--end-group"), link.index("-fopenmp"))
+        self.assertLess(link.index("-fopenmp"), link.index("-lopenblas"))
+        self.assertLess(link.index("-lopenblas"), link.index("-llapack"))
+        self.assertLess(link.index("-llapack"), link.index("$LIB_FUZZING_ENGINE"))
+        self.assertNotIn("untrusted-link-flag", link)
+        self.assertNotIn("-llapack", _build_script("cmake"))
+
     def test_cmake_enables_only_selected_first_party_c_api(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
@@ -1360,6 +1377,65 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertTrue(repair["requires_clean_build"])
         self.assertIn('cmake_shared_args+=("-DVECTOR_ENABLE_C_API=ON")', updated)
         self.assertEqual(saved["cmake_feature_options"], ["VECTOR_ENABLE_C_API"])
+
+    def test_existing_cmake_job_repairs_declared_cpu_link_symbols(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            artifacts = root / "artifacts"
+            for path in (source, project, artifacts, source / "c_api"):
+                path.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                'option(VECTOR_ENABLE_C_API "C API" OFF)\n'
+                'if(VECTOR_ENABLE_C_API)\n'
+                '  add_subdirectory(c_api)\n'
+                'endif()\n'
+                "find_package(OpenMP REQUIRED)\n"
+                "find_package(BLAS REQUIRED)\n"
+                "find_package(LAPACK REQUIRED)\n"
+            )
+            (source / "c_api" / "Index_c.h").write_text("void vector_index(void);\n")
+            stale = _build_script(
+                "cmake", cmake_feature_options=["VECTOR_ENABLE_C_API"]
+            )
+            (project / "build.sh").write_text(stale)
+            (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+            record = {
+                "project": "fts-test", "build_system": "cmake",
+                "execution_mode": "native_container", "base_image": "ubuntu:24.04",
+                "candidate": {"file": "c_api/Index_c.h"},
+                "harness_origin": "codex_oss_fuzz_gen_adapter",
+                "harness_language": "c++", "support_sources": [],
+                "support_include_dirs": [],
+                "system_dependencies": [
+                    "libomp-dev", "libopenblas-dev", "liblapack-dev"
+                ],
+                "source_dependencies": [], "repair_attempts": [],
+                "cmake_feature_options": ["VECTOR_ENABLE_C_API"],
+                "build_script_sha256": __import__("hashlib").sha256(
+                    stale.encode()
+                ).hexdigest(),
+            }
+            (artifacts / "generic-integration.json").write_text(json.dumps(record))
+            with patch(
+                "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter"
+            ) as regenerate:
+                repair = repair_generic_harness(
+                    job_dir=root, source=source, project_dir=project,
+                    pipeline={}, build_error=(
+                        "undefined reference to __kmpc_fork_call\n"
+                        "undefined reference to dgemm_\n"
+                        "undefined reference to dgetrf_\n"
+                    ), attempt=1,
+                )
+                regenerate.assert_not_called()
+            updated = (project / "build.sh").read_text()
+
+        self.assertEqual(repair["repair_kind"], "deterministic_cmake_system_link")
+        self.assertFalse(repair["requires_clean_build"])
+        self.assertIn("-fopenmp -lopenblas -llapack", updated)
+        self.assertIn('cmake_shared_args+=("-DVECTOR_ENABLE_C_API=ON")', updated)
 
     def test_stale_cmake_repair_preserves_unrecorded_or_modified_build_script(self):
         with tempfile.TemporaryDirectory() as directory:

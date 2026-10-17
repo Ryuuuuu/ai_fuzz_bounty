@@ -65,6 +65,14 @@ CMAKE_SYSTEM_DEPENDENCIES = {
     "uuid": ("uuid-dev",),
     "zlib": ("zlib1g-dev",),
 }
+# Link flags are fixed here, never copied from repository text or a build log.
+# These exact Clang flags are used only for dependencies installed from the
+# reviewed package map. They follow the project archive group.
+CMAKE_SYSTEM_LINK_FLAGS = (
+    ("libomp-dev", "-fopenmp"),
+    ("libopenblas-dev", "-lopenblas"),
+    ("liblapack-dev", "-llapack"),
+)
 MESON_SYSTEM_DEPENDENCIES = {
     "boost": (
         "libboost-context-dev",
@@ -260,6 +268,7 @@ def create_generic_project(
         source_dependencies,
         allow_header_only_cmake=allow_header_only_cmake,
         cmake_feature_options=cmake_feature_options,
+        system_dependencies=system_dependencies,
     )
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
@@ -380,6 +389,7 @@ def repair_generic_harness(
             cmake_feature_options=_candidate_cmake_feature_options(
                 source, candidate
             ),
+            system_dependencies=tuple(record.get("system_dependencies") or ()),
         )
         build_path = project_dir / "build.sh"
         build_path.write_text(build_script, encoding="utf-8")
@@ -449,7 +459,7 @@ def _repair_stale_cmake_integration(
     build_error: str,
     attempt: int,
 ) -> dict[str, Any] | None:
-    """Upgrade a generated CMake integration after a configure failure.
+    """Upgrade a generated CMake integration after a build/link failure.
 
     A recovered job keeps its generated files, so deploying a safer template
     alone cannot fix it. Re-render only if the current file still has the hash
@@ -459,17 +469,30 @@ def _repair_stale_cmake_integration(
         return None
     candidate = record.get("candidate") or {}
     feature_options = _candidate_cmake_feature_options(source, candidate)
+    current_packages = set(record.get("system_dependencies") or ())
+    detected_packages = set(_detect_system_dependencies(source, "cmake"))
+    available_packages = current_packages | detected_packages
     configure_issue = re.search(
         r"\bcmake error\b|\bfailed to find nvcc\b|\bcuda toolkit\b",
         build_error,
         re.IGNORECASE,
     )
-    missing_selected_feature = bool(
-        feature_options
-        and "undefined reference" in build_error.casefold()
+    undefined_symbols = "undefined reference" in build_error.casefold()
+    missing_declared_system_link = undefined_symbols and (
+        bool(
+            "libomp-dev" in available_packages
+            and re.search(r"\b(?:__kmpc_|omp_)[A-Za-z0-9_]+\b", build_error)
+        )
+        or bool(
+            {"libopenblas-dev", "liblapack-dev"} & available_packages
+            and re.search(
+                r"\b[sdcz](?:gemm|gemv|ger|axpy|scal|dot|trsm|potrf|"
+                r"getrf|getri|syev|gesv|orgqr|sytrf)_\b",
+                build_error,
+                re.IGNORECASE,
+            )
+        )
     )
-    if not configure_issue and not missing_selected_feature:
-        return None
     build_path = project_dir / "build.sh"
     if not build_path.is_file() or build_path.is_symlink():
         return None
@@ -477,6 +500,18 @@ def _repair_stale_cmake_integration(
     previous_sha = hashlib.sha256(previous).hexdigest()
     recorded_sha = str(record.get("build_script_sha256") or "")
     if not recorded_sha or previous_sha != recorded_sha:
+        return None
+    recorded_features = set(record.get("cmake_feature_options") or ())
+    previous_text = previous.decode("utf-8", errors="replace")
+    missing_selected_feature = bool(
+        undefined_symbols
+        and any(
+            option not in recorded_features
+            or f"-D{option}=ON" not in previous_text
+            for option in feature_options
+        )
+    )
+    if not configure_issue and not missing_selected_feature and not missing_declared_system_link:
         return None
     harness_origin = str(record.get("harness_origin") or "")
     new_script = _build_script(
@@ -490,9 +525,8 @@ def _repair_stale_cmake_integration(
         tuple(record.get("source_dependencies") or ()),
         allow_header_only_cmake=_has_root_cmake_interface_library(source),
         cmake_feature_options=feature_options,
+        system_dependencies=sorted(available_packages),
     )
-    current_packages = set(record.get("system_dependencies") or ())
-    detected_packages = set(_detect_system_dependencies(source, "cmake"))
     added_packages = sorted(detected_packages - current_packages)
     if new_script.encode() == previous and not added_packages:
         return None
@@ -513,9 +547,16 @@ def _repair_stale_cmake_integration(
         "attempt": attempt,
         "created_at": utc_now(),
         "ai_usage": {},
-        "repair_kind": "deterministic_cmake_cpu_build",
+        "repair_kind": (
+            "deterministic_cmake_system_link"
+            if missing_declared_system_link and not configure_issue
+            and not missing_selected_feature
+            else "deterministic_cmake_cpu_build"
+        ),
         "added_system_dependencies": added_packages,
-        "requires_clean_build": True,
+        "requires_clean_build": bool(
+            configure_issue or missing_selected_feature or added_packages
+        ),
         "build_error_sha256": hashlib.sha256(build_error.encode()).hexdigest(),
     }
     record["system_dependencies"] = sorted(current_packages)
@@ -1834,6 +1875,7 @@ def _build_script(
     *,
     allow_header_only_cmake: bool = False,
     cmake_feature_options: list[str] | tuple[str, ...] = (),
+    system_dependencies: list[str] | tuple[str, ...] = (),
 ) -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
@@ -2003,7 +2045,16 @@ fi
 """
         if build_system == "meson" else ""
     )
-    external_link_flags = ' "${meson_external_libs[@]}"' if build_system == "meson" else ""
+    if build_system == "meson":
+        external_link_flags = ' "${meson_external_libs[@]}"'
+    elif build_system == "cmake":
+        reviewed_packages = set(system_dependencies) & REVIEWED_SYSTEM_PACKAGES
+        external_link_flags = "".join(
+            f" {flag}" for package, flag in CMAKE_SYSTEM_LINK_FLAGS
+            if package in reviewed_packages
+        )
+    else:
+        external_link_flags = ""
     link = """mapfile -d '' archives < <(find "$WORK/build" -type f -name '*.a' -print0)
 mapfile -d '' dependency_archives < <(
   find "$WORK/dependencies" -type f -name '*.a' -print0 2>/dev/null
