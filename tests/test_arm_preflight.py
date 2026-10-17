@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -396,12 +397,68 @@ class ArmPreflightTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_only_declared_benchmark_and_example_options_are_disabled(self):
+    def test_offline_googlebenchmark_uses_installed_package(self):
+        for package in (
+            "libomp-dev", "libopenblas-dev", "liblapack-dev", "libbenchmark-dev",
+        ):
+            self.assertIn(package, DOCKERFILE)
+        self.assertIn(
+            "find_package(benchmark CONFIG REQUIRED GLOBAL)", BUILD_AND_SMOKE
+        )
+        self.assertIn(
+            "-DFETCHCONTENT_SOURCE_DIR_GOOGLEBENCHMARK=/work/vendor/googlebenchmark",
+            BUILD_AND_SMOKE,
+        )
+        if not shutil.which("cmake"):
+            self.skipTest("CMake is unavailable")
+        wrapper_marker = "cat > /work/vendor/googlebenchmark/CMakeLists.txt <<'CMAKE'\n"
+        wrapper = BUILD_AND_SMOKE.split(wrapper_marker, 1)[1].split("\nCMAKE\n", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vendor = root / "vendor"
+            vendor.mkdir()
+            (vendor / "CMakeLists.txt").write_text(wrapper, encoding="utf-8")
+            package = root / "prefix" / "lib" / "cmake" / "benchmark"
+            package.mkdir(parents=True)
+            (package / "benchmarkConfig.cmake").write_text(
+                "add_library(benchmark::benchmark INTERFACE IMPORTED GLOBAL)\n",
+                encoding="utf-8",
+            )
+            source = root / "source"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.24)\n"
+                "project(offline_benchmark LANGUAGES NONE)\n"
+                "include(FetchContent)\n"
+                "FetchContent_Declare(googlebenchmark "
+                "GIT_REPOSITORY https://invalid.example/never-clone.git)\n"
+                "FetchContent_MakeAvailable(googlebenchmark)\n"
+                "if(NOT TARGET benchmark::benchmark)\n"
+                "  message(FATAL_ERROR \"benchmark target unavailable\")\n"
+                "endif()\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["cmake", "-S", str(source), "-B", str(root / "build"),
+                 "-DFETCHCONTENT_FULLY_DISCONNECTED=ON",
+                 f"-DFETCHCONTENT_SOURCE_DIR_GOOGLEBENCHMARK={vendor}",
+                 f"-DCMAKE_PREFIX_PATH={root / 'prefix'}"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_only_declared_optional_cpu_build_options_are_disabled(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "CMakeLists.txt").write_text(
                 "option(RL_BUILD_BENCHMARKS \"benchmarks\" ON)\n"
                 "option(BUILD_EXAMPLES \"examples\" ON)\n"
                 "option(BUILD_TESTING \"tests\" ON)\n"
+                "option(FAISS_ENABLE_GPU \"GPU\" ON)\n"
+                "option(FAISS_ENABLE_CUDA \"CUDA\" ON)\n"
+                "option(FAISS_ENABLE_PYTHON \"Python\" ON)\n"
+                "option(FAISS_ENABLE_EXTRAS \"extras\" ON)\n"
+                "option(FAISS_OPT_LEVEL \"\" \"generic\")\n"
+                "option(BUILD_GPU_TESTS \"GPU tests\" ON)\n"
                 "# option(FAKE_BUILD_BENCHMARKS \"comment\" ON)\n"
                 "option(UNSAFE_BUILD_BENCHMARKS;echo \"bad\" ON)\n",
                 encoding="utf-8",
@@ -413,7 +470,12 @@ class ArmPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.splitlines(),
-            ["-DBUILD_EXAMPLES=OFF", "-DRL_BUILD_BENCHMARKS=OFF"],
+            [
+                "-DBUILD_EXAMPLES=OFF", "-DFAISS_ENABLE_CUDA=OFF",
+                "-DFAISS_ENABLE_EXTRAS=OFF", "-DFAISS_ENABLE_GPU=OFF",
+                "-DFAISS_ENABLE_PYTHON=OFF", "-DRL_BUILD_BENCHMARKS=OFF",
+                "-DFAISS_OPT_LEVEL=generic",
+            ],
         )
 
     def test_meson_uses_writable_isolated_source_copy(self):

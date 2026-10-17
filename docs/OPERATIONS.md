@@ -56,17 +56,25 @@ corpus의 증거는 삭제하지 않는다. 작업 전체가 `job_disk_limit_mb`
 
 
 ARM 호스트의 중앙 에이전트는 현재 정책이 유상 바운티 `verified`이고 C/C++이며
-점수 기준을 넘지만 명시적인 ARM 근거가 없는 후보 가운데 루트 CMake 빌드가 있는
-저장소를 스캔마다 최대 1개 사전 검증한다. Git 고정 SHA를 별도 디렉터리에 가져온 뒤
-네트워크가 끊긴 비root ARM 컨테이너에서 CMake 파일 API와 컴파일 명령 목록으로 C/C++ CTest 실행 파일을 고르고 해당 타깃만 빌드한다. 생성된 AArch64 ELF를 확인한 뒤 그 테스트 1개를 실행한다. 소스는
-읽기 전용으로 마운트하고 CPU 2개, 메모리 2GB, 프로세스 256개, 실행 시간 15분으로
-제한한다. 빌드와 테스트가 모두 통과해야만 ARM 호환 근거가 기록되고 작업 계획에
-들어간다. 컴파일된 네이티브 CTest 실행 파일이 없거나 빌드·테스트가 실패하면 ARM 미승인 상태를 유지한다. 명시적 ARM 근거가 없는 Meson·Autotools 후보도 현재는 CMake 전용 사전 검사 대상이 아니므로 미승인 상태를 유지한다.
+점수 기준을 넘거나 AI 평가로 기준에 도달할 수 있는 근접 후보를 사전 검증한다.
+근접 범위는 `scoring.arm_preflight_score_margin`으로 제한하고, 최종 작업 생성에는
+기존 최소 점수와 정책·ARM 검증을 그대로 요구한다. Git 고정 SHA를 별도 디렉터리에
+가져온 뒤 네트워크가 끊긴 비root ARM 컨테이너에서 CMake 또는 Meson의 실제 C/C++
+테스트 실행 파일만 빌드·검사한다. 빌드와 테스트가 모두 통과해야 ARM 호환 근거가
+기록된다. 테스트 대상이 없거나 빌드·테스트가 실패하면 미승인 상태를 유지한다.
 결과는 저장소와 고정 SHA, 검증기 버전별로 캐시하며 실패는 기본 24시간 뒤 재시도한다.
 `arm_preflight_enabled`, `arm_preflight_max_per_scan`, `arm_preflight_timeout_seconds`,
 `arm_preflight_max_repository_kb`, `arm_preflight_failure_retry_hours`로 비용을 조절한다.
 기존 `allow_portable_native_probe`는 소스 파일만으로 호환을 확정하지 않고 실제
 사전 검증이 필요한 후보를 표시한다.
+
+새 대상이 없을 때는 검증 카탈로그, 정책 범위 우선 검색, 일반 검색을 순서대로
+시도한다. 최근 ARM 빌드 실패로 재시도 대기 중인 저장소는 백로그 칸을 차지하지
+않는다. `data/central-agent/state.json`의 `last_discovery.phases`에 각 단계의 발견·정책
+검증·ARM 검사 수가 남고, `candidate_supply.status`는 `ready` 또는
+`waiting_for_eligible_target`으로 표시된다. 후보가 고갈되면 Telegram으로 한 번 알리고
+`candidate_supply.next_discovery_at`에 자동 재탐색 시각을 남긴다. 유상 정책, 미선정
+저장소, ARM 빌드 조건에 맞는 후보가 없는 동안은 워커가 0개일 수 있다.
 
 `low_yield_rotation_enabled`가 켜져 있으면 최소 2시간 관찰 뒤 `low_yield_min_coverage_edges`보다 얕으며 edge와 feature 증가가 모두 기준보다 작은 작업을 종료한다. 도달 범위가 충분해도 edge와 feature가 6시간 동안 함께 늘지 않으면 조기 전환한다. 판정 근거는 `artifacts/campaign-yield.json`에 남고 중앙 에이전트가 Telegram으로 알린다. GitHub 연결이 일시적으로 끊기면 요청을 세 번 재시도하며, 후보 갱신 전체가 실패해도 기본 5분 뒤 다시 시도한다.
 

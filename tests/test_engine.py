@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fuzz_target_scout.arm_preflight import PREFLIGHT_VERSION
+from fuzz_target_scout.arm_preflight import ArmPreflightResult, PREFLIGHT_VERSION
 from fuzz_target_scout.config import load_config
 from fuzz_target_scout.engine import ScoutEngine
 from fuzz_target_scout.github import GitHubError
@@ -54,6 +54,159 @@ class _SearchGitHub:
 
 
 class EngineIdleDiscoveryTests(unittest.TestCase):
+    def test_near_threshold_arm_probe_can_unlock_ai_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["pipeline"]["architecture"]["host_arch"] = "aarch64"
+            config["pipeline"]["runs_path"] = str(Path(directory) / "runs")
+            engine = ScoutEngine(config)
+            sha = "a" * 40
+            target = Candidate(
+                repo=RepoSnapshot(
+                    full_name="org/near-threshold", html_url="https://github.com/org/near-threshold",
+                    default_branch="main", head_sha=sha, language="C++",
+                    size_kb=100, paths=["CMakeLists.txt", "src/parser.cpp"],
+                    security_url="https://github.com/org/near-threshold/security/policy",
+                ),
+                static=StaticAssessment(
+                    fuzz_score=50, reproduce_difficulty=3,
+                    signals=["standard_build:cmakelists.txt"],
+                    blockers=["native_build_probe_required:aarch64"],
+                    suggested_entry_kind="library_api",
+                ),
+                policy=PolicyAssessment(
+                    status="verified", confidence=95, source="security.md",
+                    program_url="https://example.com/paid-bounty",
+                ),
+                final_score=53,
+                architecture=ArchitectureAssessment(
+                    host_arch="aarch64", compatible=False, confidence=40,
+                    blockers=["native_build_probe_required:aarch64"],
+                ),
+            )
+            evidence = f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:{sha}"
+            reviewer = SimpleNamespace(
+                available=True, model="test-model", prompt_version="test-v1",
+                assess_batch=lambda _items: ({
+                    target.repo.full_name: AIAssessment(
+                        fuzz_score=90, reproduce_difficulty=1,
+                        suggested_entry_kind="library_api", rationale="native parser",
+                        blockers=[],
+                    )
+                }, {"input_tokens": 1, "cached_tokens": 0, "output_tokens": 1}),
+            )
+            try:
+                scan_id = engine.store.start_scan("test")
+                engine.store.upsert_candidate(target, scan_id)
+                self.assertEqual(
+                    list(engine.store.export_rows(55, False, ["C++"], scan_id=scan_id)),
+                    [],
+                )
+                with patch("fuzz_target_scout.engine.ArmPreflight") as probe, patch(
+                    "fuzz_target_scout.engine.CodexReviewer", return_value=reviewer
+                ):
+                    probe.return_value.check.return_value = ArmPreflightResult(
+                        True, "native_arm_build_and_ctest_passed", evidence,
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([target]), (1, 1)
+                    )
+                    self.assertEqual(engine._apply_ai([target], True), (1, 0, 0))
+                engine.store.upsert_candidate(target, scan_id)
+                exported = list(engine.store.export_rows(
+                    55, False, ["C++"], scan_id=scan_id
+                ))
+                self.assertEqual(len(exported), 1)
+                self.assertEqual(exported[0]["repository"], target.repo.full_name)
+                self.assertTrue(exported[0]["architecture"]["compatible"])
+                self.assertGreaterEqual(exported[0]["assessment"]["final_score"], 55)
+            finally:
+                engine.close()
+
+    def test_near_threshold_probe_still_enforces_ai_policy_score_and_language(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+
+            def candidate(name, *, score=53, static_score=50,
+                          policy="verified", language="C++", build="cmakelists.txt",
+                          size_kb=100):
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=f"org/{name}", html_url=f"https://github.com/org/{name}",
+                        default_branch="main", head_sha="a" * 40,
+                        language=language, size_kb=size_kb,
+                        security_url=f"https://github.com/org/{name}/security/policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=static_score, reproduce_difficulty=3,
+                        signals=[f"standard_build:{build}"],
+                        blockers=["native_build_probe_required:aarch64"],
+                        suggested_entry_kind="library_api",
+                    ),
+                    policy=PolicyAssessment(
+                        status=policy, confidence=95, source="security.md",
+                        program_url=f"https://example.com/{name}-bounty",
+                    ),
+                    final_score=score,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=False, confidence=40,
+                        blockers=["native_build_probe_required:aarch64"],
+                    ),
+                )
+
+            near = candidate("near")
+            high = candidate("high", score=70, static_score=80, size_kb=200)
+            rejected = [
+                candidate("conditional", policy="conditional"),
+                candidate("rust", language="Rust"),
+                candidate("too-low", score=44),
+                candidate("static-too-low", static_score=49),
+                candidate("no-build", build="makefile"),
+            ]
+            try:
+                with patch("fuzz_target_scout.engine.ArmPreflight") as probe:
+                    probe.return_value.check.side_effect = lambda repo: ArmPreflightResult(
+                        True, "native_arm_build_and_ctest_passed",
+                        f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:{repo.head_sha}",
+                    )
+                    attempted, passed = engine._preflight_arm_candidates(
+                        [near, high, *rejected], max_attempts=8,
+                        stop_after_success=True,
+                    )
+                    self.assertEqual((attempted, passed), (2, 2))
+                    self.assertEqual(
+                        [call.args[0].full_name for call in probe.return_value.check.call_args_list],
+                        ["org/near", "org/high"],
+                    )
+                    for item in rejected:
+                        self.assertFalse(item.architecture.compatible)
+
+                    config["scoring"]["arm_preflight_score_margin"] = 1
+                    config["ai"]["enabled"] = False
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([candidate("disabled")]),
+                        (0, 0),
+                    )
+                    probe.return_value.check.reset_mock()
+                    config["ai"]["enabled"] = True
+                    self.assertEqual(
+                        engine._preflight_arm_candidates([candidate("narrow")]),
+                        (0, 0),
+                    )
+                    config["scoring"]["arm_preflight_score_margin"] = 10
+                    self.assertEqual(
+                        engine._preflight_arm_candidates(
+                            [candidate("no-ai-scan")], allow_ai_review=False,
+                        ),
+                        (0, 0),
+                    )
+                    probe.return_value.check.assert_not_called()
+            finally:
+                engine.close()
+
     def test_recent_arm_failure_is_excluded_before_repository_hydration(self):
         with tempfile.TemporaryDirectory() as directory:
             config, _ = load_config(Path(directory) / "missing.toml")

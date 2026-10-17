@@ -28,7 +28,13 @@ DEFAULTS: dict[str, Any] = {
             "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
             "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C",
             "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C++",
+            "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C",
+            "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C++",
             "org:EpicGames archived:false fork:false pushed:>={pushed_after} language:C++",
+        ],
+        "idle_focused_queries": [
+            "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C++",
+            "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C",
         ],
     },
     "policy": {
@@ -59,7 +65,11 @@ DEFAULTS: dict[str, Any] = {
         "arm_preflight_max_repository_kb": 50000,
         "arm_preflight_failure_retry_hours": 24,
     },
-    "scoring": {"minimum_static_score": 35, "minimum_handoff_score": 55},
+    "scoring": {
+        "minimum_static_score": 35,
+        "minimum_handoff_score": 55,
+        "arm_preflight_score_margin": 10,
+    },
     "ai": {
         "enabled": True,
         "provider": "codex_cli",

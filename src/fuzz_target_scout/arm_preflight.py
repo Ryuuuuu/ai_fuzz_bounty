@@ -20,7 +20,7 @@ from .models import RepoSnapshot
 
 
 DOCKERFILE = """FROM ubuntu:24.04
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev zlib1g-dev uuid-dev default-jdk-headless && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev zlib1g-dev uuid-dev default-jdk-headless libomp-dev libopenblas-dev liblapack-dev libbenchmark-dev && rm -rf /var/lib/apt/lists/*
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 """
 
@@ -434,14 +434,15 @@ SELECT_CMAKE_NONTEST_OPTIONS = r"""import re
 import sys
 from pathlib import Path
 
-# Only declared, conventional benchmark/example switches may be changed.
+# Only declared, conventional optional feature switches may be changed.
 # The names are validated before they become individual quoted shell arguments.
 DECLARATION = re.compile(
     r'(?im)^[ \t]*(?:option|cmake_dependent_option)[ \t]*\([ \t]*'
     r'([A-Za-z][A-Za-z0-9_]*)(?=[ \t\r\n)])'
 )
 NONTEST_OPTION = re.compile(
-    r'(?:[A-Z][A-Z0-9]*_)*(?:BUILD|ENABLE|WITH)_(?:BENCHMARKS?|EXAMPLES?)'
+    r'(?:[A-Z][A-Z0-9]*_)*(?:BUILD|ENABLE|WITH)_'
+    r'(?:BENCHMARKS?|EXAMPLES?|GPUS?|CUDA|PYTHON|EXTRAS)'
 )
 
 source = Path(sys.argv[1]) / 'CMakeLists.txt'
@@ -450,6 +451,8 @@ if source.stat().st_size > 2 * 1024 * 1024:
 names = sorted(set(DECLARATION.findall(source.read_text(errors='replace'))))
 for name in [n for n in names if len(n) <= 64 and NONTEST_OPTION.fullmatch(n)][:24]:
     print(f'-D{name}=OFF')
+if 'FAISS_OPT_LEVEL' in names:
+    print('-DFAISS_OPT_LEVEL=generic')
 """
 
 BUILD_AND_SMOKE = (
@@ -466,6 +469,15 @@ cat > /work/select_cmake_nontest_options.py <<'PY'
     + """PY
 python3 /work/select_cmake_nontest_options.py /work/src > /work/nontest-options.txt
 set --
+# An installed benchmark package can satisfy the common offline
+# FetchContent(googlebenchmark) name without downloading repository code.
+# This local wrapper only imports the image's trusted benchmark target.
+mkdir -p /work/vendor/googlebenchmark
+cat > /work/vendor/googlebenchmark/CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.24)
+find_package(benchmark CONFIG REQUIRED GLOBAL)
+CMAKE
+set -- "$@" -DFETCHCONTENT_SOURCE_DIR_GOOGLEBENCHMARK=/work/vendor/googlebenchmark
 # Use the GoogleTest sources supplied by the base image when available.
 # Other CMake projects can ignore this cache entry.
 if [ -f /usr/src/googletest/CMakeLists.txt ] &&

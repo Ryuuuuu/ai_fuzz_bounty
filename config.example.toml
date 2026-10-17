@@ -23,7 +23,15 @@ additional_queries = [
   "org:facebook archived:false fork:false pushed:>={pushed_after} language:C++",
   "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C",
   "org:facebookincubator archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C",
+  "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C++",
   "org:EpicGames archived:false fork:false pushed:>={pushed_after} language:C++",
+]
+# 유휴 시 검증 카탈로그 다음으로 탐색할 정책 검증 우선 소스입니다.
+# 여기서 찾은 저장소도 SECURITY.md, 보상 정책, ARM 빌드를 각각 재검증합니다.
+idle_focused_queries = [
+  "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C",
 ]
 
 [policy]
@@ -59,6 +67,8 @@ native_builder_image = "ubuntu:24.04"
 [scoring]
 minimum_static_score = 35
 minimum_handoff_score = 55
+# ARM 빌드 성공 후 AI 평가로 기준을 넘을 수 있는 근접 후보도 검사합니다.
+arm_preflight_score_margin = 10
 
 [ai]
 enabled = true

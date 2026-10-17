@@ -1730,10 +1730,15 @@ class CentralAgentTests(unittest.TestCase):
             calls = []
             exports = []
             backlog_requests = []
+            cooldown_requests = []
 
             class BacklogStore:
                 def __init__(self, _path):
                     pass
+
+                def recent_failed_arm_preflight_repositories(self, *args):
+                    cooldown_requests.append(args)
+                    return {"org/failed"}
 
                 def revalidation_backlog_names(self, score, languages, excluded, limit):
                     backlog_requests.append((score, languages, excluded, limit))
@@ -1765,40 +1770,55 @@ class CentralAgentTests(unittest.TestCase):
             )
             agent._plan_exported_candidates = lambda: None
             agent._runnable_jobs = lambda: []
+            agent._notify = lambda *_args, **_kwargs: (True, "test")
             with patch("fuzz_target_scout.central_agent.ScoutEngine", FakeEngine), patch(
                 "fuzz_target_scout.central_agent.Store", BacklogStore
 ), patch(
                 "fuzz_target_scout.central_agent.repository_discovery_exclusions",
                 return_value={"org/old"},
+            ), patch(
+                "fuzz_target_scout.central_agent.resolve_host_architecture",
+                return_value="aarch64",
             ):
                 agent._refresh_candidates_if_due()
+                self.assertIn("candidate_supply", agent.state, agent.state)
+                idle_discovery = agent.state["last_discovery"].copy()
+                idle_supply = agent.state["candidate_supply"].copy()
                 agent.state["last_discovery_at"] = "2020-01-01T00:00:00Z"
                 agent._runnable_jobs = lambda: [{"job_id": "ready-job"}]
                 agent._refresh_candidates_if_due()
 
         self.assertEqual(
-            [call["search_pages_per_query"] for call in calls], [1, 3, 1]
+            [call["search_pages_per_query"] for call in calls], [1, 3, 3, 1]
         )
         self.assertEqual(
-            [call["arm_preflight_max_attempts"] for call in calls], [4, 4, None]
+            [call["arm_preflight_max_attempts"] for call in calls], [4, 4, 4, None]
         )
         self.assertEqual(
-            [call["arm_preflight_budget_seconds"] for call in calls], [1800, 1800, None]
+            [call["arm_preflight_budget_seconds"] for call in calls], [1800, 1800, 1800, None]
         )
         self.assertEqual(
             [call["arm_preflight_stop_after_success"] for call in calls],
-            [True, True, False],
+            [True, True, True, False],
         )
-        self.assertEqual(exports, [(1, 2), (2, 0), (3, 0)])
+        self.assertEqual(exports, [(1, 2), (2, 0), (3, 0), (4, 0)])
         self.assertEqual([call["seed_repositories"] for call in calls],
-                         [["org/fresh"], (), ["org/fresh"]])
-        self.assertEqual(backlog_requests[0], (55, ["C", "C++"], {"org/old"}, 6))
+                         [["org/fresh"], (), (), ["org/fresh"]])
+        self.assertEqual(backlog_requests[0],
+                         (55, ["C", "C++"], {"org/old", "org/failed"}, 6))
+        self.assertEqual(len(cooldown_requests), 2)
         self.assertEqual(calls[0]["queries"], [])
         self.assertFalse(calls[1]["seed_policy_catalog"])
+        self.assertEqual(calls[1]["queries"], config["github"]["idle_focused_queries"])
         self.assertEqual(
             calls[1]["exclude_repositories"],
             {"org/old", "org/fresh", "org/catalog"},
         )
+        self.assertEqual([phase["name"] for phase in idle_discovery["phases"]],
+                         ["seed", "focused", "broad"])
+        self.assertEqual(idle_discovery["errors"], 2)
+        self.assertEqual(idle_supply["status"], "waiting_for_eligible_target")
+        self.assertEqual(agent.state["candidate_supply"]["status"], "ready")
 
     def test_idle_discovery_starts_verified_seed_without_broad_search(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1841,6 +1861,7 @@ class CentralAgentTests(unittest.TestCase):
                     (scan_id, scan_errors)
                 ) or False
             )
+            agent._notify = lambda *_args, **_kwargs: (True, "test")
             agent._plan_exported_candidates = lambda: planned.append(True)
             agent._runnable_jobs = lambda: (
                 [{"job_id": "verified-seed"}] if planned else []
@@ -1854,6 +1875,7 @@ class CentralAgentTests(unittest.TestCase):
                 return_value={"org/old"},
             ):
                 agent._refresh_candidates_if_due()
+                self.assertIn("candidate_supply", agent.state, agent.state)
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["queries"], [])
@@ -1863,6 +1885,7 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(exports, [(1, 0)])
         self.assertEqual(len(planned), 1)
         self.assertEqual(agent.state["last_discovery"]["arm_preflight_passed"], 1)
+        self.assertEqual(agent.state["candidate_supply"]["status"], "ready")
 
     def test_partial_empty_scan_retains_only_a_usable_verified_export(self):
         with tempfile.TemporaryDirectory() as directory:

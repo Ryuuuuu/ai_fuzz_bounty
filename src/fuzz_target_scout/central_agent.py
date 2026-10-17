@@ -28,6 +28,12 @@ from .adaptive_strategy import (
     mark_exhausted,
     queue_strategy,
 )
+from .architecture import resolve_host_architecture
+from .arm_preflight import (
+    MESON_PREFLIGHT_VERSION,
+    PREFLIGHT_VERSION,
+    TRANSIENT_FAILURE_REASONS,
+)
 from .engine import ScoutEngine
 from .operations import pipeline_overview
 from .pipeline import (
@@ -2007,10 +2013,26 @@ class CentralAgent:
                 )
                 backlog_store = Store(self.config["storage"]["database_path"])
                 try:
+                    backlog_exclusions = set(exclusions)
+                    if (
+                        bool(self.config["architecture"].get("arm_preflight_enabled"))
+                        and resolve_host_architecture(self.config["architecture"])
+                        == "aarch64"
+                    ):
+                        backlog_exclusions.update(
+                            backlog_store.recent_failed_arm_preflight_repositories(
+                                "aarch64",
+                                (PREFLIGHT_VERSION, MESON_PREFLIGHT_VERSION),
+                                int(self.config["architecture"].get(
+                                    "arm_preflight_failure_retry_hours", 24
+                                )),
+                                TRANSIENT_FAILURE_REASONS,
+                            )
+                        )
                     backlog = backlog_store.revalidation_backlog_names(
                         int(self.config["scoring"]["minimum_handoff_score"]),
                         self.pipeline.get("languages") or [],
-                        exclusions,
+                        backlog_exclusions,
                         min(8, max(0, int(self.agent.get("revalidation_backlog_per_scan", 6)))),
                     )
                 finally:
@@ -2031,6 +2053,7 @@ class CentralAgent:
                     ),
                     "arm_preflight_stop_after_success": idle,
                 }
+                phases: list[tuple[str, Any]] = []
                 if idle:
                     # Evaluate known paid-policy candidates first. A verified
                     # ARM job should not wait for broad GitHub search hydration.
@@ -2038,6 +2061,7 @@ class CentralAgent:
                         **common_scan, queries=[], seed_repositories=backlog,
                         search_pages_per_query=1,
                     )
+                    phases.append(("seed", seed_summary))
                     seed_preserved = self._export_verified_candidates(
                         seed_summary.scan_id, scan_errors=seed_summary.errors
                     )
@@ -2046,32 +2070,66 @@ class CentralAgent:
                         summary = seed_summary
                         export_preserved = seed_preserved
                     else:
-                        # Keep broad search in this same cycle if seeds cannot
-                        # produce a runnable job. Avoid re-fetching seed repos.
+                        # Search an independently advancing, paid-policy-focused
+                        # pool before the generic search. Every result still
+                        # passes the normal policy and native-build gates.
                         searched_exclusions = exclusions | {
                             str(name).casefold()
                             for name in getattr(seed_summary, "repository_names", ())
                         }
-                        summary = engine.scan(
-                            **{
-                                **common_scan,
-                                "exclude_repositories": searched_exclusions,
-                            },
-                            seed_repositories=(),
-                            seed_policy_catalog=False,
-                            search_pages_per_query=int(
-                                self.agent.get("idle_search_pages_per_query", 2)
-                            ),
+                        focused_queries = list(
+                            self.config["github"].get("idle_focused_queries") or []
                         )
-                        export_preserved = self._export_verified_candidates(
-                            summary.scan_id, scan_errors=summary.errors
-                        )
-                        self._plan_exported_candidates()
+                        if focused_queries:
+                            focused_summary = engine.scan(
+                                **{
+                                    **common_scan,
+                                    "exclude_repositories": searched_exclusions,
+                                },
+                                queries=focused_queries,
+                                seed_repositories=(),
+                                seed_policy_catalog=False,
+                                search_pages_per_query=int(
+                                    self.agent.get("idle_search_pages_per_query", 2)
+                                ),
+                            )
+                            phases.append(("focused", focused_summary))
+                            focused_preserved = self._export_verified_candidates(
+                                focused_summary.scan_id,
+                                scan_errors=focused_summary.errors,
+                            )
+                            self._plan_exported_candidates()
+                            summary = focused_summary
+                            export_preserved = focused_preserved
+                            searched_exclusions.update(
+                                str(name).casefold()
+                                for name in getattr(
+                                    focused_summary, "repository_names", ()
+                                )
+                            )
+                        if not self._runnable_jobs():
+                            summary = engine.scan(
+                                **{
+                                    **common_scan,
+                                    "exclude_repositories": searched_exclusions,
+                                },
+                                seed_repositories=(),
+                                seed_policy_catalog=False,
+                                search_pages_per_query=int(
+                                    self.agent.get("idle_search_pages_per_query", 2)
+                                ),
+                            )
+                            phases.append(("broad", summary))
+                            export_preserved = self._export_verified_candidates(
+                                summary.scan_id, scan_errors=summary.errors
+                            )
+                            self._plan_exported_candidates()
                 else:
                     summary = engine.scan(
                         **common_scan, seed_repositories=backlog,
                         search_pages_per_query=1,
                     )
+                    phases.append(("active", summary))
                     export_preserved = self._export_verified_candidates(
                         summary.scan_id, scan_errors=summary.errors
                     )
@@ -2083,14 +2141,61 @@ class CentralAgent:
             self.state.pop("last_discovery_error_at", None)
             self.state["last_discovery"] = {
                 "scan_id": summary.scan_id,
-                "discovered": summary.discovered,
-                "verified": summary.verified,
-                "errors": summary.errors,
-                "arm_preflight_attempted": summary.arm_preflight_attempted,
-                "arm_preflight_passed": summary.arm_preflight_passed,
+                "discovered": sum(item.discovered for _, item in phases),
+                "verified": sum(item.verified for _, item in phases),
+                "errors": sum(item.errors for _, item in phases),
+                "arm_preflight_attempted": sum(
+                    item.arm_preflight_attempted for _, item in phases
+                ),
+                "arm_preflight_passed": sum(
+                    item.arm_preflight_passed for _, item in phases
+                ),
+                "phases": [
+                    {
+                        "name": name,
+                        "scan_id": item.scan_id,
+                        "discovered": item.discovered,
+                        "verified": item.verified,
+                        "errors": item.errors,
+                        "arm_preflight_attempted": item.arm_preflight_attempted,
+                        "arm_preflight_passed": item.arm_preflight_passed,
+                    }
+                    for name, item in phases
+                ],
                 "export_preserved": bool(export_preserved),
             }
+            runnable_now = bool(self._runnable_jobs())
+            old_supply = self.state.get("candidate_supply") or {}
+            supply_status = "ready" if runnable_now else "waiting_for_eligible_target"
+            self.state["candidate_supply"] = {
+                "status": supply_status,
+                "checked_at": self.state["last_discovery_at"],
+                "next_discovery_at": datetime.fromtimestamp(
+                    datetime.now(timezone.utc).timestamp()
+                    + self._discovery_interval_seconds(idle=not runnable_now),
+                    timezone.utc,
+                ).isoformat(),
+                "reason": (
+                    "runnable_job_ready" if runnable_now
+                    else "no_verified_paid_native_unattempted_job"
+                ),
+            }
             self._save_state()
+            if old_supply.get("status") != supply_status:
+                if runnable_now:
+                    self._notify(
+                        "candidate_supply_ready",
+                        "✅ 보상 정책·네이티브 빌드 검증을 통과한 새 퍼징 대상이 준비되었습니다.",
+                        deduplicate=False,
+                    )
+                elif idle:
+                    self._notify(
+                        "candidate_supply_waiting",
+                        "⚠️ 현재 실행 가능한 새 퍼징 대상이 없습니다. "
+                        "보상 정책과 ARM 빌드 조건은 유지하며, "
+                        "검증 카탈로그·정책 우선 검색·전체 검색을 자동 재시도합니다.",
+                        deduplicate=False,
+                    )
         except PipelineInterrupted:
             self.state["last_discovery_interrupted_at"] = utc_now()
             self._save_state()

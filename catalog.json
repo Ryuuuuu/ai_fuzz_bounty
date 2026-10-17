@@ -243,6 +243,15 @@
       "program_url": "https://hackerone.com/valve",
       "scope_note": "Repository SECURITY.md explicitly places this C++ library in Valve HackerOne report scope, but bounty eligibility is limited to vulnerabilities in code actually used by Steam players. Demonstrate impact in Steamworks SDK or Valve games; stand-alone-library-only and third-party bundled-code findings may not qualify. Report privately through Valve HackerOne.",
       "last_verified": "2026-10-10"
+    },
+    {
+      "full_name": "facebookresearch/faiss",
+      "status": "verified",
+      "access": "public",
+      "security_url": "https://github.com/facebookresearch/faiss/security/policy",
+      "program_url": "https://www.facebook.com/whitehat",
+      "scope_note": "Faiss's repository security policy directs security reports to Meta Bug Bounty; Meta decides bounty eligibility during triage. The Faiss index I/O documentation warns that read_index does not validate malicious files, so a parser crash alone does not establish a bounty-eligible vulnerability; demonstrate impact in a realistic trusted-use path.",
+      "last_verified": "2026-10-17"
     }
   ]
 }
