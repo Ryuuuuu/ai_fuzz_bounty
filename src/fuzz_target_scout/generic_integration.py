@@ -155,6 +155,55 @@ def _has_root_cmake_interface_library(source: Path) -> bool:
     ))
 
 
+def _candidate_cmake_feature_options(
+    source: Path, candidate: dict[str, Any]
+) -> list[str]:
+    """Enable an explicitly gated C API only when the harness uses that API.
+
+    A public C API can be disabled by default even though the core library
+    builds successfully. Enable it only if the selected header is in the
+    first-party c_api tree and the root CMake file directly gates that tree
+    behind a declared, off-by-default option.
+    """
+    relative = _safe_relative_source(str(candidate.get("file") or ""))
+    if not relative or Path(relative).parts[0].casefold() not in {"c_api", "capi"}:
+        return []
+    root = source / "CMakeLists.txt"
+    candidate_path = source / relative
+    if source.is_symlink() or root.is_symlink() or not root.is_file():
+        return []
+    if not candidate_path.is_file() or any(
+        (source / Path(*Path(relative).parts[:index])).is_symlink()
+        for index in range(1, len(Path(relative).parts) + 1)
+    ):
+        return []
+    try:
+        if root.stat().st_size > 250_000:
+            return []
+        cmake = root.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    cmake = re.sub(r"#\[(=*)\[.*?\]\1\]", "", cmake, flags=re.DOTALL)
+    cmake = "\n".join(line.split("#", 1)[0] for line in cmake.splitlines())
+    declared = re.findall(
+        r"(?im)^[ \t]*option[ \t]*\([ \t]*"
+        r"([A-Za-z][A-Za-z0-9_]*)[ \t]+[^\n)]*\bOFF[ \t]*\)",
+        cmake,
+    )
+    enabled: list[str] = []
+    for option in declared:
+        if not re.search(r"(?:^|_)(?:BUILD|ENABLE|WITH)_C_?API$", option):
+            continue
+        if re.search(
+            r"(?is)\bif[ \t]*\([ \t]*" + re.escape(option) +
+            r"[ \t]*\)[ \t\r\n]*add_subdirectory[ \t]*\([ \t]*"
+            + re.escape(Path(relative).parts[0]) + r"[ \t]*\)",
+            cmake,
+        ):
+            enabled.append(option)
+    return sorted(set(enabled))[:8]
+
+
 def create_generic_project(
     *,
     job_dir: Path,
@@ -197,6 +246,10 @@ def create_generic_project(
     support_sources, support_include_dirs = _candidate_support_dependencies(
         source, candidate
     )
+    cmake_feature_options = (
+        _candidate_cmake_feature_options(source, candidate)
+        if build_system == "cmake" else []
+    )
     harness_language = _candidate_harness_language(candidate, origin)
     build_script = _build_script(
         build_system,
@@ -206,6 +259,7 @@ def create_generic_project(
         support_include_dirs,
         source_dependencies,
         allow_header_only_cmake=allow_header_only_cmake,
+        cmake_feature_options=cmake_feature_options,
     )
     build_path = project_dir / "build.sh"
     build_path.write_text(build_script, encoding="utf-8")
@@ -232,6 +286,7 @@ def create_generic_project(
         "system_dependencies": system_dependencies,
         "source_dependencies": source_dependencies,
         "allow_header_only_cmake": allow_header_only_cmake,
+        "cmake_feature_options": cmake_feature_options,
         "ai_usage": usage,
         "seed_corpus_files": seed_count,
         "seed_fixture_sources": seed_sources,
@@ -322,6 +377,9 @@ def repair_generic_harness(
             support_include_dirs,
             tuple(record.get("source_dependencies") or ()),
             allow_header_only_cmake=allow_header_only_cmake,
+            cmake_feature_options=_candidate_cmake_feature_options(
+                source, candidate
+            ),
         )
         build_path = project_dir / "build.sh"
         build_path.write_text(build_script, encoding="utf-8")
@@ -397,11 +455,20 @@ def _repair_stale_cmake_integration(
     alone cannot fix it. Re-render only if the current file still has the hash
     recorded when it was generated; hand-edited build scripts remain untouched.
     """
-    if record.get("build_system") != "cmake" or not re.search(
+    if record.get("build_system") != "cmake":
+        return None
+    candidate = record.get("candidate") or {}
+    feature_options = _candidate_cmake_feature_options(source, candidate)
+    configure_issue = re.search(
         r"\bcmake error\b|\bfailed to find nvcc\b|\bcuda toolkit\b",
         build_error,
         re.IGNORECASE,
-    ):
+    )
+    missing_selected_feature = bool(
+        feature_options
+        and "undefined reference" in build_error.casefold()
+    )
+    if not configure_issue and not missing_selected_feature:
         return None
     build_path = project_dir / "build.sh"
     if not build_path.is_file() or build_path.is_symlink():
@@ -411,7 +478,6 @@ def _repair_stale_cmake_integration(
     recorded_sha = str(record.get("build_script_sha256") or "")
     if not recorded_sha or previous_sha != recorded_sha:
         return None
-    candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin") or "")
     new_script = _build_script(
         "cmake",
@@ -423,6 +489,7 @@ def _repair_stale_cmake_integration(
         list(record.get("support_include_dirs") or ()),
         tuple(record.get("source_dependencies") or ()),
         allow_header_only_cmake=_has_root_cmake_interface_library(source),
+        cmake_feature_options=feature_options,
     )
     current_packages = set(record.get("system_dependencies") or ())
     detected_packages = set(_detect_system_dependencies(source, "cmake"))
@@ -452,6 +519,7 @@ def _repair_stale_cmake_integration(
         "build_error_sha256": hashlib.sha256(build_error.encode()).hexdigest(),
     }
     record["system_dependencies"] = sorted(current_packages)
+    record["cmake_feature_options"] = feature_options
     record["build_script_sha256"] = hashlib.sha256(new_script.encode()).hexdigest()
     record["dockerfile_sha256"] = hashlib.sha256(dockerfile.encode()).hexdigest()
     record.setdefault("repair_attempts", []).append(item)
@@ -1765,6 +1833,7 @@ def _build_script(
     source_dependencies: list[str] | tuple[str, ...] = (),
     *,
     allow_header_only_cmake: bool = False,
+    cmake_feature_options: list[str] | tuple[str, ...] = (),
 ) -> str:
     prelude = """#!/usr/bin/env bash
 set -euo pipefail
@@ -1814,6 +1883,11 @@ cmake --install "$WORK/dependency-{name}"
             f'cmake_shared_args+=("-D{variable}='
             f'/opt/fuzz-dependencies/{name}")\n'
         )
+    cmake_feature_args = "".join(
+        f'cmake_shared_args+=("-D{option}=ON")\n'
+        for option in sorted(set(cmake_feature_options))
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", option)
+    )
     builds = {
         "cmake": """cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)
 while IFS= read -r option; do
@@ -2037,11 +2111,11 @@ fi
     link = link.replace("__HARNESS_COMPILER__", harness_compiler)
     link = link.replace("__HARNESS_FLAGS__", harness_flags)
     build = builds[build_system]
-    if build_system == "cmake" and cmake_source_args:
+    if build_system == "cmake" and (cmake_source_args or cmake_feature_args):
         build = build.replace(
             "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)\n",
             "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)\n"
-            + cmake_source_args,
+            + cmake_source_args + cmake_feature_args,
         )
     return prelude + dependency_build + build + external_libraries + link
 

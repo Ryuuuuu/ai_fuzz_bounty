@@ -87,6 +87,7 @@ Requirements:
 - Reject oversized or structurally invalid inputs cheaply.
 - Do not perform network access, spawn processes, call shell commands, or write persistent files.
 - Use public APIs when the supplied evidence identifies them; do not invent unavailable APIs.
+- Include headers only; do not #include implementation .c, .cc, .cpp, or .cxx files.
 - Return only the complete source in one ```c or ```cpp code block.
 
 Existing binary name: {fuzz_target}
@@ -206,10 +207,31 @@ def extract_harness_code(response: str) -> str:
     blocks = re.findall(r"```(?:c|cc|cpp|c\+\+)?\s*\n(.*?)```", response, re.DOTALL)
     for block in blocks:
         if "LLVMFuzzerTestOneInput" in block:
-            return block.strip() + "\n"
+            code = block.strip() + "\n"
+            _reject_implementation_includes(code)
+            return code
     if "LLVMFuzzerTestOneInput" in response and "```" not in response:
-        return response.strip() + "\n"
+        code = response.strip() + "\n"
+        _reject_implementation_includes(code)
+        return code
     raise PipelineError("OSS-Fuzz-Gen response contained no fuzz harness")
+
+
+def _reject_implementation_includes(code: str) -> None:
+    # Only AI-produced code passes through extract_harness_code. Existing project
+    # harnesses may deliberately include source files and are validated elsewhere.
+    for match in re.finditer(
+        r'^[ \t]*#[ \t]*include[ \t]*(?:<([^>\r\n]+)>|"([^"\r\n]+)")',
+        code.replace("\\\r\n", "").replace("\\\n", ""),
+        re.MULTILINE,
+    ):
+        include_path = (match.group(1) or match.group(2)).strip()
+        if re.search(r"\.(?:c|cc|cpp|cxx)$", include_path, re.IGNORECASE):
+            raise PipelineError(
+                "generated harness directly includes an implementation source "
+                f"file ({include_path[:200]}); include headers and link the source "
+                "through the build"
+            )
 
 
 def validate_generated_harness(code: str, candidate: dict[str, Any]) -> dict[str, Any]:

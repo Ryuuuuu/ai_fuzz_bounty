@@ -76,6 +76,35 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 {"signature": "int connect(int, int, int)"},
             )
 
+    def test_ai_harness_rejects_source_includes_but_existing_harness_remains_valid(self):
+        entry = (
+            'extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, '
+            'size_t size) { return parse(data, size); }\n'
+        )
+        for directive in (
+            '#include <c_api/error_c.cpp>',
+            '# include "c_api/Index_c.cc"',
+            '#include <lib/parser.c>',
+            '#include "lib/parser.cxx"',
+            '#include \\\n"lib/parser.CPP"',
+        ):
+            with self.subTest(directive=directive):
+                with self.assertRaisesRegex(PipelineError, "implementation source"):
+                    extract_harness_code(f"```cpp\n{directive}\n{entry}```")
+        self.assertIn(
+            '#include <c_api/Index_c.h>',
+            extract_harness_code(
+                f"```cpp\n#include <c_api/Index_c.h>\n{entry}```"
+            ),
+        )
+        existing = '#include <c_api/error_c.cpp>\n' + entry
+        self.assertEqual(
+            validate_generated_harness(existing, {"signature": "int parse()"})[
+                "target_symbol"
+            ],
+            "parse",
+        )
+
     def test_repair_prompt_contains_only_compressed_failure_context(self):
         prompt = generation_prompt(
             project="parser",

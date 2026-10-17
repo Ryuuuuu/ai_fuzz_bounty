@@ -1369,12 +1369,19 @@ class CentralAgent:
             for item in applied
             if item.get("failure_fingerprint") == fingerprint
         ]
+        # A different compiler diagnostic or a rebuilt integration must not
+        # reset the per-job recovery budget. Keep the persisted counter as a
+        # floor when an older recovery record is missing or incomplete.
+        recovery_count = max(
+            len(applied),
+            int((state.get("attempts") or {}).get("automatic_recoveries", 0)),
+        )
         attempted = {
             str(item.get("action") or "")
             for item in applied_for_failure
         }
         options: list[dict[str, str]] = []
-        if not bounded_exhaustion and len(applied_for_failure) < maximum:
+        if not bounded_exhaustion and recovery_count < maximum:
             if "retry_stage" not in attempted:
                 options.append(
                     {
@@ -1426,7 +1433,7 @@ class CentralAgent:
             "status": status,
             "failure_fingerprint": fingerprint,
             "failure_count": failures,
-            "automatic_recoveries": len(applied_for_failure),
+            "automatic_recoveries": recovery_count,
             "maximum_automatic_recoveries": maximum,
             "attempted_for_failure": sorted(attempted),
             "bounded_exhaustion": bounded_exhaustion,
@@ -2673,6 +2680,19 @@ def _failure_implicates_harness(job_dir: Path, error: str) -> bool:
         except OSError:
             continue
     text = "\n".join(evidence).casefold()
+    # A failed generated-harness validation or a compiler diagnostic pointing
+    # at its source identifies the harness itself. A linker diagnostic that
+    # merely mentions generic_harness.o does not: the project library may not
+    # have built or exported the selected API at all.
+    if (
+        error.casefold().startswith("generated harness ")
+        or "selected target symbol" in error.casefold()
+        or re.search(
+            r"\bgeneric_harness\.(?:c|cc|cpp|cxx):\d+(?::\d+)?:\s*(?:fatal\s+)?error:",
+            text,
+        )
+    ):
+        return True
     infrastructure_signals = (
         "could not find find",
         "config.cmake",
@@ -2688,17 +2708,18 @@ def _failure_implicates_harness(job_dir: Path, error: str) -> bool:
     )
     if any(signal in text for signal in infrastructure_signals):
         return False
-    harness_signals = (
-        "generic_harness",
-        "llvmfuzzertestoneinput",
-        "selected target symbol",
-        "undefined reference",
-    )
-    if any(signal in text for signal in harness_signals):
-        return True
-    # Preserve the prior recovery behavior when the worker only recorded a
-    # generic command failure and no diagnostic log is available.
-    return True
+    if "undefined reference" in text or "undefined symbol:" in text:
+        # A missing libFuzzer entry point is a harness defect. Missing project
+        # API symbols are build/link integration defects and must not blacklist
+        # a valid API candidate on the next integration attempt.
+        return bool(re.search(
+            r"(?:undefined reference(?: to)?|undefined symbol:)[^\n]{0,200}"
+            r"\bllvmfuzzertestoneinput\b",
+            text,
+        ))
+    # A command mentioning generic_harness.cc or its entry point is not enough
+    # to blame the candidate when the diagnostic itself is unavailable.
+    return False
 
 
 def _recovery_action_label(action: str) -> str:

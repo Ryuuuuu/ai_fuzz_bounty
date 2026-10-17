@@ -13,6 +13,7 @@ from fuzz_target_scout.pipeline import PipelineError
 from fuzz_target_scout.generic_integration import (
     _dockerfile,
     _build_script,
+    _candidate_cmake_feature_options,
     _candidate_support_dependencies,
     _detect_source_dependencies,
     _detect_system_dependencies,
@@ -814,6 +815,78 @@ class GenericIntegrationTests(unittest.TestCase):
         for dependency in dependencies:
             self.assertIn(dependency, dockerfile)
 
+    def test_cmake_enables_only_selected_first_party_c_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            api = source / "c_api"
+            api.mkdir()
+            (api / "Index_c.h").write_text("void vector_index(void);\n")
+            (source / "other.h").write_text("void other(void);\n")
+            root = source / "CMakeLists.txt"
+            root.write_text(
+                'option(VECTOR_ENABLE_C_API "Public C API" OFF)\n'
+                'option(VECTOR_ENABLE_GPU "GPU" ON)\n'
+                'if(VECTOR_ENABLE_C_API)\n'
+                '  add_subdirectory(c_api)\n'
+                'endif()\n'
+            )
+            selected = {"file": "c_api/Index_c.h"}
+            self.assertEqual(
+                _candidate_cmake_feature_options(source, selected),
+                ["VECTOR_ENABLE_C_API"],
+            )
+            self.assertEqual(
+                _candidate_cmake_feature_options(source, {"file": "other.h"}),
+                [],
+            )
+            root.write_text(
+                '# option(VECTOR_ENABLE_C_API "Public C API" OFF)\n'
+                'if(VECTOR_ENABLE_C_API)\n'
+                '  add_subdirectory(c_api)\n'
+                'endif()\n'
+            )
+            self.assertEqual(_candidate_cmake_feature_options(source, selected), [])
+            root.write_text(
+                'option(VECTOR_ENABLE_C_API "Public C API" OFF)\n'
+                '# if(VECTOR_ENABLE_C_API)\n'
+                '#   add_subdirectory(c_api)\n'
+            )
+            self.assertEqual(_candidate_cmake_feature_options(source, selected), [])
+
+    def test_generated_project_enables_selected_c_api_during_integration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            api = source / "c_api"
+            api.mkdir(parents=True)
+            (root / "artifacts").mkdir()
+            (source / "CMakeLists.txt").write_text(
+                'option(VECTOR_ENABLE_C_API "Build C API" OFF)\n'
+                'if(VECTOR_ENABLE_C_API)\n'
+                '  add_subdirectory(c_api)\n'
+                'endif()\n'
+            )
+            (api / "Index_c.h").write_text("void vector_index(void);\n")
+            candidate = {"file": "c_api/Index_c.h", "symbol": "vector_index"}
+            harness = (
+                '#include "c_api/Index_c.h"\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const unsigned char*, unsigned long) '
+                '{ vector_index(); return 0; }\n'
+            )
+            with patch(
+                "fuzz_target_scout.generic_integration._obtain_harness",
+                return_value=(harness, "codex_oss_fuzz_gen_adapter", {}, candidate),
+            ):
+                record = create_generic_project(
+                    job_dir=root, source=source, project_dir=root / "integration",
+                    project_name="vector", pipeline={}, native=True,
+                )
+            build = (root / "integration" / "build.sh").read_text()
+
+        self.assertEqual(record["cmake_feature_options"], ["VECTOR_ENABLE_C_API"])
+        self.assertIn('cmake_shared_args+=("-DVECTOR_ENABLE_C_API=ON")', build)
+
     def test_nested_cmake_cli11_dependency_is_bounded_and_symlink_safe(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             source = Path(directory)
@@ -1237,6 +1310,56 @@ class GenericIntegrationTests(unittest.TestCase):
             self.assertIn(package, updated_dockerfile)
             self.assertIn(package, saved["system_dependencies"])
         self.assertIn("libgflags-dev", saved["system_dependencies"])
+
+    def test_existing_cmake_job_builds_selected_c_api_after_link_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            artifacts = root / "artifacts"
+            for path in (source, project, artifacts, source / "c_api"):
+                path.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                'option(VECTOR_ENABLE_C_API "C API" OFF)\n'
+                'if(VECTOR_ENABLE_C_API)\n'
+                '  add_subdirectory(c_api)\n'
+                'endif()\n',
+                encoding="utf-8",
+            )
+            (source / "c_api" / "Index_c.h").write_text("void vector_index(void);\n")
+            stale = _build_script("cmake")
+            (project / "build.sh").write_text(stale)
+            (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+            record = {
+                "project": "fts-test", "build_system": "cmake",
+                "execution_mode": "native_container", "base_image": "ubuntu:24.04",
+                "candidate": {"file": "c_api/Index_c.h"},
+                "harness_origin": "codex_oss_fuzz_gen_adapter",
+                "harness_language": "c++", "support_sources": [],
+                "support_include_dirs": [], "system_dependencies": [],
+                "source_dependencies": [], "repair_attempts": [],
+                "build_script_sha256": __import__("hashlib").sha256(
+                    stale.encode()
+                ).hexdigest(),
+            }
+            (artifacts / "generic-integration.json").write_text(json.dumps(record))
+            with patch(
+                "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter"
+            ) as regenerate:
+                repair = repair_generic_harness(
+                    job_dir=root, source=source, project_dir=project,
+                    pipeline={},
+                    build_error="ld: undefined reference to vector_index",
+                    attempt=1,
+                )
+                regenerate.assert_not_called()
+            updated = (project / "build.sh").read_text()
+            saved = json.loads((artifacts / "generic-integration.json").read_text())
+
+        self.assertEqual(repair["repair_kind"], "deterministic_cmake_cpu_build")
+        self.assertTrue(repair["requires_clean_build"])
+        self.assertIn('cmake_shared_args+=("-DVECTOR_ENABLE_C_API=ON")', updated)
+        self.assertEqual(saved["cmake_feature_options"], ["VECTOR_ENABLE_C_API"])
 
     def test_stale_cmake_repair_preserves_unrecorded_or_modified_build_script(self):
         with tempfile.TemporaryDirectory() as directory:

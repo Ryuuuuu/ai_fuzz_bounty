@@ -15,6 +15,7 @@ from fuzz_target_scout.central_agent import (
     CentralCodex,
     TelegramNotifier,
     _failure_fingerprint,
+    _failure_implicates_harness,
     _followup_available,
     _health_incident_key,
     _health_job_view,
@@ -1310,6 +1311,10 @@ class CentralAgentTests(unittest.TestCase):
             job = root / "runs" / "org-parser-aaaaaaaaaaaa"
             artifacts = job / "artifacts"
             artifacts.mkdir(parents=True)
+            (job / "logs").mkdir()
+            (job / "logs" / "native-build.log").write_text(
+                "/src/generic_harness.cc:17:5: error: no matching function for call\n"
+            )
             (job / "job.json").write_text(
                 json.dumps({"route": {"name": "native_generated"}})
             )
@@ -1356,6 +1361,66 @@ class CentralAgentTests(unittest.TestCase):
         )
         self.assertTrue(progress_preserved)
         self.assertTrue(integration_archived)
+
+    def test_project_api_link_failure_preserves_harness_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            logs = job / "logs"
+            artifacts.mkdir(parents=True)
+            logs.mkdir()
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            (job / "state.json").write_text(
+                json.dumps({
+                    "job_id": job.name,
+                    "stage": "build",
+                    "status": "recovery_pending",
+                    "last_error": "native build command failed",
+                    "attempts": {"worker_failures": 1},
+                })
+            )
+            (artifacts / "generic-integration.json").write_text(
+                json.dumps({"candidate": {"file": "tests/fuzz/faiss_index_fuzzer.cc"}})
+            )
+            (logs / "native-build.log").write_text(
+                "[ 98%] Linking CXX executable generic_harness\n"
+                "/usr/bin/ld: generic_harness.o: in function "
+                "`LLVMFuzzerTestOneInput':\n"
+                "generic_harness.cc:(.text+0x38): undefined reference to "
+                "`faiss::Index::search(long, float const*, long, float*, long*)'\n"
+                "clang++: error: linker command failed with exit code 1\n"
+            )
+
+            agent = CentralAgent(config)
+            agent._apply_failure_recovery(
+                job.name,
+                "restart_from_integration",
+                "Enable and link the project's API library.",
+                "ai",
+            )
+
+            self.assertFalse((artifacts / "harness-exclusions.json").exists())
+            self.assertFalse((artifacts / "generic-integration.json").exists())
+            self.assertEqual(
+                json.loads((job / "state.json").read_text())["stage"],
+                "integration",
+            )
+
+    def test_harness_fault_requires_specific_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            logs = job / "logs"
+            logs.mkdir()
+            self.assertFalse(_failure_implicates_harness(job, "command failed"))
+            (logs / "native-build.log").write_text(
+                "/usr/bin/ld: undefined reference to `LLVMFuzzerTestOneInput'\n"
+            )
+            self.assertTrue(_failure_implicates_harness(job, "command failed"))
 
     def test_initial_harness_validation_failure_excludes_selected_candidate_id(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1483,6 +1548,52 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(result["action"], "skip_target")
         self.assertEqual(final_state["stage"], "complete")
         self.assertEqual(final_state["status"], "skipped_after_recovery")
+
+    def test_recovery_budget_cannot_reset_with_a_new_failure_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            agent = CentralAgent(config)
+            prior_history = [
+                {
+                    "status": "applied",
+                    "action": "retry_stage",
+                    "failure_fingerprint": _failure_fingerprint("build", "old error"),
+                },
+                {
+                    "status": "applied",
+                    "action": "restart_from_integration",
+                    "failure_fingerprint": _failure_fingerprint("build", "other error"),
+                },
+            ]
+            for history, persisted_count in (
+                (prior_history, 0),
+                (prior_history[:1], 2),
+            ):
+                state = {
+                    "job_id": job.name,
+                    "stage": "build",
+                    "status": "recovery_pending",
+                    "last_error": "new linker diagnostic",
+                    "attempts": {
+                        "worker_failures": 1,
+                        "automatic_recoveries": persisted_count,
+                    },
+                }
+                (job / "state.json").write_text(json.dumps(state))
+                (artifacts / "central-recovery.json").write_text(
+                    json.dumps({"history": history})
+                )
+                evidence = agent._failure_recovery_evidence(job.name, state)
+                self.assertEqual(evidence["automatic_recoveries"], 2)
+                self.assertEqual(
+                    [item["action"] for item in evidence["options"]],
+                    ["skip_target"],
+                )
 
     def test_bounded_quartet_exhaustion_only_allows_skip(self):
         with tempfile.TemporaryDirectory() as directory:
