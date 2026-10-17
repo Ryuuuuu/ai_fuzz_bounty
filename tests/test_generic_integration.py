@@ -17,6 +17,7 @@ from fuzz_target_scout.generic_integration import (
     _detect_source_dependencies,
     _detect_system_dependencies,
     _infer_system_dependencies_from_build_error,
+    _repair_stale_cmake_integration,
     _find_existing_harness,
     _generation_context,
     _write_seed_corpus,
@@ -792,6 +793,27 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("15a6644ba1c45f1acc16ac1e883efc3e56c6bed2", dockerfile)
         self.assertNotIn("attacker_controlled", dockerfile)
 
+    def test_cmake_cpu_math_dependencies_are_bounded_to_reviewed_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "CMakeLists.txt").write_text(
+                "find_package(OpenMP REQUIRED)\n"
+                "find_package(BLAS REQUIRED)\n"
+                "find_package(LAPACK REQUIRED)\n"
+                "find_package(benchmark CONFIG REQUIRED)\n"
+                "find_package(unreviewed_gpu_toolkit REQUIRED)\n"
+            )
+            dependencies = _detect_system_dependencies(source, "cmake")
+            dockerfile = _dockerfile("cmake", "ubuntu:24.04", dependencies)
+
+        self.assertEqual(
+            dependencies,
+            ["libbenchmark-dev", "liblapack-dev", "libomp-dev", "libopenblas-dev"],
+        )
+        self.assertNotIn("unreviewed_gpu_toolkit", dockerfile)
+        for dependency in dependencies:
+            self.assertIn(dependency, dockerfile)
+
     def test_nested_cmake_cli11_dependency_is_bounded_and_symlink_safe(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             source = Path(directory)
@@ -1093,9 +1115,9 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertIn("ENABLE_KLEIDIAI", script)
         self.assertIn("ALL_MICROKERNELS", script)
 
-    def test_cmake_fuzz_build_disables_discovered_test_options(self):
+    def test_cmake_fuzz_build_disables_only_optional_non_cpu_features(self):
         script = _build_script("cmake")
-        start = script.index("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)")
+        start = script.index("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)")
         end = script.index("cmake_build_type=RelWithDebInfo", start)
         option_discovery = script[start:end]
         with tempfile.TemporaryDirectory() as directory:
@@ -1104,6 +1126,11 @@ class GenericIntegrationTests(unittest.TestCase):
                 "option(BUILD_TESTING \"Run tests\" ON)\n"
                 "option(BENCHMARK_ENABLE_TESTING \"Run benchmark tests\" ON)\n"
                 "option(BENCHMARK_ENABLE_INSTALL \"Install\" ON)\n"
+                "option(VECTOR_ENABLE_GPU \"GPU\" ON)\n"
+                "option(VECTOR_ENABLE_CUDA \"CUDA\" ON)\n"
+                "option(VECTOR_ENABLE_PYTHON \"Python bindings\" ON)\n"
+                "option(VECTOR_ENABLE_EXTRAS \"Extra tools\" ON)\n"
+                "option(VECTOR_ENABLE_CPU \"Core CPU library\" ON)\n"
             )
             result = subprocess.run(
                 ["bash", "-c", option_discovery + "printf '%s\\n' \"${cmake_shared_args[@]}\"\n"],
@@ -1113,7 +1140,95 @@ class GenericIntegrationTests(unittest.TestCase):
         args = set(result.stdout.splitlines())
         self.assertIn("-DBUILD_TESTING=OFF", args)
         self.assertIn("-DBENCHMARK_ENABLE_TESTING=OFF", args)
+        self.assertIn("-DVECTOR_ENABLE_GPU=OFF", args)
+        self.assertIn("-DVECTOR_ENABLE_CUDA=OFF", args)
+        self.assertIn("-DVECTOR_ENABLE_PYTHON=OFF", args)
+        self.assertIn("-DVECTOR_ENABLE_EXTRAS=OFF", args)
+        self.assertNotIn("-DVECTOR_ENABLE_CPU=OFF", args)
         self.assertNotIn("-DBENCHMARK_ENABLE_INSTALL=OFF", args)
+
+    def test_existing_cmake_job_repairs_stale_cpu_build_without_model_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            artifacts = root / "artifacts"
+            for path in (source, project, artifacts):
+                path.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                'option(VECTOR_ENABLE_GPU "GPU" ON)\n'
+                'option(VECTOR_ENABLE_PYTHON "Python" ON)\n'
+                'find_package(OpenMP REQUIRED)\n'
+                'find_package(BLAS REQUIRED)\n'
+                'find_package(LAPACK REQUIRED)\n',
+                encoding="utf-8",
+            )
+            stale_script = "#!/usr/bin/env bash\ncmake -S . -B /work/build\n"
+            (project / "build.sh").write_text(stale_script, encoding="utf-8")
+            (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+            record = {
+                "project": "fts-test", "build_system": "cmake",
+                "execution_mode": "native_container", "base_image": "ubuntu:24.04",
+                "candidate": {"file": "c_api/index_c.h"},
+                "harness_origin": "codex_oss_fuzz_gen_adapter",
+                "harness_language": "c++", "support_sources": [],
+                "support_include_dirs": [], "system_dependencies": ["libgflags-dev"],
+                "source_dependencies": [], "repair_attempts": [],
+                "build_script_sha256": __import__("hashlib").sha256(
+                    stale_script.encode()
+                ).hexdigest(),
+            }
+            (artifacts / "generic-integration.json").write_text(json.dumps(record))
+            with patch(
+                "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter"
+            ) as regenerate:
+                repair = repair_generic_harness(
+                    job_dir=root, source=source, project_dir=project,
+                    pipeline={}, build_error="CMake Error: Failed to find nvcc",
+                    attempt=1,
+                )
+                regenerate.assert_not_called()
+            saved = json.loads((artifacts / "generic-integration.json").read_text())
+            updated_script = (project / "build.sh").read_text()
+            updated_dockerfile = (project / "Dockerfile").read_text()
+
+        self.assertEqual(repair["repair_kind"], "deterministic_cmake_cpu_build")
+        self.assertTrue(repair["requires_clean_build"])
+        self.assertIn("-DBUILD_TESTING=OFF", updated_script)
+        self.assertIn("(BUILD|ENABLE|WITH)_(GPUS?|CUDA", updated_script)
+        for package in ("liblapack-dev", "libomp-dev", "libopenblas-dev"):
+            self.assertIn(package, updated_dockerfile)
+            self.assertIn(package, saved["system_dependencies"])
+        self.assertIn("libgflags-dev", saved["system_dependencies"])
+
+    def test_stale_cmake_repair_preserves_unrecorded_or_modified_build_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            source.mkdir()
+            project.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                'option(VECTOR_ENABLE_GPU "GPU" ON)\n'
+            )
+            original = "#!/bin/bash\n# local customization\n"
+            build_path = project / "build.sh"
+            build_path.write_text(original)
+            dockerfile_path = project / "Dockerfile"
+            dockerfile_path.write_text("FROM ubuntu:24.04\n")
+            for recorded_hash in ("", "0" * 64):
+                record = {
+                    "build_system": "cmake",
+                    "build_script_sha256": recorded_hash,
+                    "system_dependencies": [],
+                }
+                repaired = _repair_stale_cmake_integration(
+                    source=source, project_dir=project, record=record,
+                    build_error="CMake Error: Failed to find nvcc", attempt=1,
+                )
+                self.assertIsNone(repaired)
+                self.assertEqual(build_path.read_text(), original)
+                self.assertEqual(dockerfile_path.read_text(), "FROM ubuntu:24.04\n")
 
     def test_interface_library_must_be_declared_in_active_root_cmake(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1312,7 +1427,10 @@ class GenericIntegrationTests(unittest.TestCase):
                 self.assertIn("$OUT/generic_fuzzer", script)
                 self.assertNotIn("-type f -regex '.*[.](h|hh|hpp|hxx)'", script)
                 if expected == "cmake":
-                    self.assertIn("cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)", script)
+                    self.assertIn(
+                        "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)",
+                        script,
+                    )
                     self.assertIn("cmake_build_type=RelWithDebInfo", script)
                     self.assertIn("BUILD_(TESTS?", script)
                     self.assertEqual(script.count("grep -rhoEi 'option[(]"), 2)

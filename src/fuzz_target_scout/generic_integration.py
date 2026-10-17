@@ -49,6 +49,8 @@ MAX_SEED_TOTAL_BYTES = 65536
 # files may name arbitrary packages, so inferred values must never reach apt
 # directly.
 CMAKE_SYSTEM_DEPENDENCIES = {
+    "benchmark": ("libbenchmark-dev",),
+    "blas": ("libopenblas-dev",),
     "boost": ("libboost-dev",),
     "bzip2": ("libbz2-dev",),
     "cli11": ("libcli11-dev",),
@@ -56,6 +58,8 @@ CMAKE_SYSTEM_DEPENDENCIES = {
     "gflags": ("libgflags-dev",),
     "gtest": ("libgtest-dev",),
     "libxml2": ("libxml2-dev",),
+    "lapack": ("liblapack-dev",),
+    "openmp": ("libomp-dev",),
     "openssl": ("libssl-dev",),
     "protobuf": ("libprotobuf-dev", "protobuf-compiler"),
     "uuid": ("uuid-dev",),
@@ -279,6 +283,16 @@ def repair_generic_harness(
         record.setdefault("repair_attempts", []).append(item)
         _write_json(record_path, record)
         return item
+    refreshed = _repair_stale_cmake_integration(
+        source=source,
+        project_dir=project_dir,
+        record=record,
+        build_error=build_error,
+        attempt=attempt,
+    )
+    if refreshed is not None:
+        _write_json(record_path, record)
+        return refreshed
     candidate = record.get("candidate") or {}
     harness_origin = str(record.get("harness_origin", ""))
     if harness_origin.startswith("existing:"):
@@ -366,6 +380,81 @@ def repair_generic_harness(
     record["harness_sha256"] = validation["sha256"]
     record.setdefault("repair_attempts", []).append(item)
     _write_json(record_path, record)
+    return item
+
+
+def _repair_stale_cmake_integration(
+    *,
+    source: Path,
+    project_dir: Path,
+    record: dict[str, Any],
+    build_error: str,
+    attempt: int,
+) -> dict[str, Any] | None:
+    """Upgrade a generated CMake integration after a configure failure.
+
+    A recovered job keeps its generated files, so deploying a safer template
+    alone cannot fix it. Re-render only if the current file still has the hash
+    recorded when it was generated; hand-edited build scripts remain untouched.
+    """
+    if record.get("build_system") != "cmake" or not re.search(
+        r"\bcmake error\b|\bfailed to find nvcc\b|\bcuda toolkit\b",
+        build_error,
+        re.IGNORECASE,
+    ):
+        return None
+    build_path = project_dir / "build.sh"
+    if not build_path.is_file() or build_path.is_symlink():
+        return None
+    previous = build_path.read_bytes()
+    previous_sha = hashlib.sha256(previous).hexdigest()
+    recorded_sha = str(record.get("build_script_sha256") or "")
+    if not recorded_sha or previous_sha != recorded_sha:
+        return None
+    candidate = record.get("candidate") or {}
+    harness_origin = str(record.get("harness_origin") or "")
+    new_script = _build_script(
+        "cmake",
+        _candidate_include_dir(candidate),
+        list(record.get("support_sources") or ()),
+        str(record.get("harness_language") or _candidate_harness_language(
+            candidate, harness_origin
+        )),
+        list(record.get("support_include_dirs") or ()),
+        tuple(record.get("source_dependencies") or ()),
+        allow_header_only_cmake=_has_root_cmake_interface_library(source),
+    )
+    current_packages = set(record.get("system_dependencies") or ())
+    detected_packages = set(_detect_system_dependencies(source, "cmake"))
+    added_packages = sorted(detected_packages - current_packages)
+    if new_script.encode() == previous and not added_packages:
+        return None
+    current_packages.update(added_packages)
+    native_image = None
+    if record.get("execution_mode") == "native_container":
+        native_image = str(record.get("base_image") or "ubuntu:24.04")
+    dockerfile = _dockerfile(
+        "cmake",
+        native_image,
+        sorted(current_packages),
+        tuple(record.get("source_dependencies") or ()),
+    )
+    build_path.write_text(new_script, encoding="utf-8")
+    build_path.chmod(0o755)
+    (project_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+    item = {
+        "attempt": attempt,
+        "created_at": utc_now(),
+        "ai_usage": {},
+        "repair_kind": "deterministic_cmake_cpu_build",
+        "added_system_dependencies": added_packages,
+        "requires_clean_build": True,
+        "build_error_sha256": hashlib.sha256(build_error.encode()).hexdigest(),
+    }
+    record["system_dependencies"] = sorted(current_packages)
+    record["build_script_sha256"] = hashlib.sha256(new_script.encode()).hexdigest()
+    record["dockerfile_sha256"] = hashlib.sha256(dockerfile.encode()).hexdigest()
+    record.setdefault("repair_attempts", []).append(item)
     return item
 
 
@@ -1726,7 +1815,7 @@ cmake --install "$WORK/dependency-{name}"
             f'/opt/fuzz-dependencies/{name}")\n'
         )
     builds = {
-        "cmake": """cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)
+        "cmake": """cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)
 while IFS= read -r option; do
   cmake_shared_args+=("-D${option}=OFF")
 done < <(
@@ -1738,7 +1827,7 @@ while IFS= read -r option; do
 done < <(
   grep -rhoEi 'option[(][A-Za-z_][A-Za-z0-9_]*' \
     CMakeLists.txt cmake tools 2>/dev/null | sed -E 's/^[Oo][Pp][Tt][Ii][Oo][Nn][(]//' | \
-    grep -E '(^|_)(BUILD_(TESTS?|TESTING|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM|ALL_MICROKERNELS)|ENABLE_KLEIDIAI|ENABLE_TESTING)$' | \
+    grep -E '(^|_)(BUILD_(TESTS?|TESTING|BENCHMARKS?|EXAMPLES?|TOOLS?|CLI|DOCS?|PYTHON_EXT(_TESTS)?|WASM|ALL_MICROKERNELS)|ENABLE_KLEIDIAI|ENABLE_TESTING|(BUILD|ENABLE|WITH)_(GPUS?|CUDA|HIP|ROCM|METAL|OPENCL|VULKAN|PYTHON|JAVA|RUST|NODE|SWIG|EXTRAS))$' | \
     sort -u
 )
 cmake_build_type=RelWithDebInfo
@@ -1950,8 +2039,9 @@ fi
     build = builds[build_system]
     if build_system == "cmake" and cmake_source_args:
         build = build.replace(
-            "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)\n",
-            "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF)\n" + cmake_source_args,
+            "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)\n",
+            "cmake_shared_args=(-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)\n"
+            + cmake_source_args,
         )
     return prelude + dependency_build + build + external_libraries + link
 
