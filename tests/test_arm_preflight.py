@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -641,6 +643,16 @@ class ArmPreflightTests(unittest.TestCase):
                 scope["select_native_test"](build, source, tests_path)["target"],
                 "unit",
             )
+            self.assertEqual(
+                scope["select_native_test"](
+                    build, source, tests_path, registered_target="unit"
+                )["target"],
+                "unit",
+            )
+            with self.assertRaisesRegex(ValueError, "no CTest executable"):
+                scope["select_native_test"](
+                    build, source, tests_path, registered_target="other"
+                )
             (reply / "target.json").write_text(json.dumps({
                 "type": "EXECUTABLE",
                 "compileGroups": [],
@@ -700,6 +712,134 @@ class ArmPreflightTests(unittest.TestCase):
             scope["candidate_targets"](targets),
             ["test_a", "test_b", "unit_a"],
         )
+
+    def test_failed_standalone_smoke_does_not_mask_later_registered_ctest(self):
+        if platform.system() != "Linux" or platform.machine().lower() not in {
+            "x86_64", "aarch64"
+        }:
+            self.skipTest("requires a native Linux compiler")
+        needed = ("/bin/sh", "cmake", "ctest", "clang", "clang++", "ninja", "python3")
+        if any(shutil.which(command) is None for command in needed):
+            self.skipTest("CMake preflight build tools are unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            source.mkdir()
+            work = root / "work"
+            work.mkdir()
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.24)\n"
+                "project(native_smoke LANGUAGES CXX)\n"
+                "enable_testing()\n"
+                "add_executable(test_a role.cpp)\n"
+                "add_executable(test_registered passing.cpp)\n"
+                "add_test(NAME passing_smoke COMMAND test_registered)\n",
+                encoding="utf-8",
+            )
+            (source / "role.cpp").write_text(
+                '#include <iostream>\nint main() { std::cerr << "requires role"; return 1; }\n',
+                encoding="utf-8",
+            )
+            (source / "passing.cpp").write_text(
+                '#include <iostream>\nint main() { std::cout << "passed"; return 0; }\n',
+                encoding="utf-8",
+            )
+            # CTest discovery can be deferred until a target is built. The
+            # first listing mirrors that behavior; all later calls are real.
+            listed = root / "first_ctest_listing"
+            fake_ctest = fake_bin / "ctest"
+            fake_ctest.write_text(
+                "#!/bin/sh\n"
+                f"if [ ! -f {shlex.quote(str(listed))} ]; then\n"
+                f"  : > {shlex.quote(str(listed))}\n"
+                "  printf '{\"tests\":[]}\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                f"exec {shlex.quote(shutil.which('ctest'))} \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_ctest.chmod(0o755)
+            script = BUILD_AND_SMOKE.replace("cp -a /src/.", f"cp -a {source}/.")
+            script = script.replace("/work", str(work))
+            if platform.machine().lower() == "x86_64":
+                # The production verifier remains AArch64-only. This local
+                # behavior test checks its host ELF using the same verifier.
+                script = script.replace(" != 183:", " != 62:")
+            result = subprocess.run(
+                ["/bin/sh", "-ec", script],
+                capture_output=True, text=True, timeout=120, check=False,
+                env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+            )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output[-12000:])
+        self.assertIn("standalone native test did not provide a passing smoke", output)
+        self.assertIn("100% tests passed, 0 tests failed out of 1", output)
+        self.assertIn("FTS_ARM_PREFLIGHT_OK", output)
+
+    def test_preflight_retries_after_first_candidate_fails_smoke(self):
+        if platform.system() != "Linux" or not shutil.which("/bin/sh"):
+            self.skipTest("requires a POSIX shell")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_text("project(smoke)\n")
+            work = root / "work"
+            work.mkdir()
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            builds = root / "builds"
+            verifications = root / "verifications"
+            fake_cmake = fake_bin / "cmake"
+            fake_cmake.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--build" ]; then\n'
+                f"  printf '%s\\n' \"$4\" >> {shlex.quote(str(builds))}\n"
+                "fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake_ctest = fake_bin / "ctest"
+            fake_ctest.write_text("#!/bin/sh\nprintf '{\"tests\":[]}\\n'\n", encoding="utf-8")
+            fake_python = fake_bin / "python3"
+            fake_python.write_text(
+                "#!/bin/sh\n"
+                'case "$1" in\n'
+                '  */select_cmake_nontest_options.py) exit 0;;\n'
+                '  */select_native_test.py)\n'
+                '    case "$2" in\n'
+                '      --candidates) printf "test_a\\ntest_crypto\\n";;\n'
+                '      --registered-target)\n'
+                '        if [ "$7" = test_crypto ]; then\n'
+                '          printf \'{"target":"test_crypto"}\\n\' > "$6"\n'
+                '        else exit 1; fi;;\n'
+                '      --standalone) printf \'{"target":"test_a"}\\n\' > "$5";;\n'
+                '      *) exit 1;;\n'
+                '    esac;;\n'
+                '  */verify_native_test.py)\n'
+                f"    grep -o 'test_[a-z]*' \"$3\" >> {shlex.quote(str(verifications))}\n"
+                '    grep -q test_crypto "$3";;\n'
+                '  *) exit 1;;\n'
+                'esac\n',
+                encoding="utf-8",
+            )
+            for tool in (fake_cmake, fake_ctest, fake_python):
+                tool.chmod(0o755)
+            script = BUILD_AND_SMOKE.replace("cp -a /src/.", f"cp -a {source}/.")
+            script = script.replace("/work", str(work))
+            result = subprocess.run(
+                ["/bin/sh", "-ec", script],
+                capture_output=True, text=True, timeout=30, check=False,
+                env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+            )
+            built = builds.read_text().splitlines() if builds.exists() else []
+            verified = verifications.read_text().splitlines() if verifications.exists() else []
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(built, ["test_a", "test_crypto"])
+        self.assertEqual(verified, ["test_a", "test_crypto"])
+        self.assertIn("FTS_ARM_PREFLIGHT_OK", result.stdout)
 
     def test_smoke_requires_aarch64_elf_and_runs_selected_test(self):
         with tempfile.TemporaryDirectory() as directory:

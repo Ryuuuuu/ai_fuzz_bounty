@@ -65,7 +65,8 @@ def candidate_targets(targets):
 
 
 def select_native_test(
-    build, source, tests_path, *, candidates=False, standalone_target=None
+    build, source, tests_path, *, candidates=False, standalone_target=None,
+    registered_target=None,
 ):
     commands = json.loads((build / "compile_commands.json").read_text())
     compiled = {
@@ -152,7 +153,9 @@ def select_native_test(
         if not within(build, executable):
             continue
         for artifact, target_name, _framework in targets:
-            if artifact == executable:
+            if artifact == executable and (
+                registered_target is None or target_name == registered_target
+            ):
                 return {
                     "artifact": str(artifact),
                     "target": target_name,
@@ -176,6 +179,12 @@ if __name__ == "__main__":
                 standalone_target=sys.argv[5],
             )
             Path(sys.argv[4]).write_text(json.dumps(selected))
+        elif sys.argv[1:2] == ["--registered-target"]:
+            selected = select_native_test(
+                Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]),
+                registered_target=sys.argv[6],
+            )
+            Path(sys.argv[5]).write_text(json.dumps(selected))
         else:
             selected = select_native_test(
                 Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
@@ -499,55 +508,84 @@ cat > /work/select_native_test.py <<'PY'
 """
     + SELECT_NATIVE_TEST
     + """PY
-if ! python3 /work/select_native_test.py /work/build /work/src /work/tests.json /work/selection.json; then
-  # Some CTest entries, including gtest_discover_tests, gain a command only
-  # after their executable has been built. Probe at most three likely targets.
+cat > /work/verify_native_test.py <<'PY'
+"""
+    + VERIFY_NATIVE_TEST
+    + """PY
+smoke_passed=0
+built_any=0
+selected_any=0
+# A CTest command available immediately after configure can identify a
+# compiled native executable without guessing from its target name.
+if python3 /work/select_native_test.py /work/build /work/src /work/tests.json /work/selection.json; then
+  selected_any=1
+  target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
+  stage=build
+  printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
+  if cmake --build /work/build --target "$target" --parallel 2; then
+    built_any=1
+    stage=smoke
+    printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
+    if python3 /work/verify_native_test.py /work/build /work/selection.json /work/src; then
+      smoke_passed=1
+    fi
+  fi
+fi
+if [ "$smoke_passed" -eq 0 ]; then
+  # Some CTest commands appear only after building their executable. Probe
+  # a bounded set and verify each selection before accepting it. A standalone
+  # binary that needs external roles or arguments must not stop the search.
   python3 /work/select_native_test.py --candidates /work/build /work/src > /work/candidates.txt
-  if [ ! -s /work/candidates.txt ]; then
+  if [ ! -s /work/candidates.txt ] && [ "$selected_any" -eq 0 ]; then
+    stage=select_native_test
     printf 'native test selection failed: no CTest executable backed by a C/C++ CMake target\n' >&2
     exit 1
   fi
-  built_any=0
   while IFS= read -r candidate; do
+    rm -f /work/selection.json
     stage=build
     printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
     if cmake --build /work/build --target "$candidate" --parallel 2; then
       built_any=1
       stage=select_native_test
       printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
-      ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json
-      if python3 /work/select_native_test.py /work/build /work/src /work/tests.json /work/selection.json; then
-        break
-      fi
-      # A compiled C/C++ test executable can be runnable even when CTest has
-      # no entry. Verify the exact built target directly in the smoke stage.
-      if python3 /work/select_native_test.py --standalone /work/build /work/src /work/selection.json "$candidate"; then
-        break
+      if ctest --test-dir /work/build --show-only=json-v1 > /work/tests.json; then
+        # Select only a CTest entry for the target just built. Otherwise an
+        # earlier failed target can mask later valid CTest registrations.
+        if python3 /work/select_native_test.py --registered-target /work/build /work/src /work/tests.json /work/selection.json "$candidate"; then
+          selected_any=1
+          stage=smoke
+          printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
+          if python3 /work/verify_native_test.py /work/build /work/selection.json /work/src; then
+            smoke_passed=1
+            break
+          fi
+        elif python3 /work/select_native_test.py --standalone /work/build /work/src /work/selection.json "$candidate"; then
+          selected_any=1
+          stage=smoke
+          printf 'FTS_ARM_PREFLIGHT_STAGE:%s\n' "$stage"
+          if python3 /work/verify_native_test.py /work/build /work/selection.json /work/src; then
+            smoke_passed=1
+            break
+          fi
+        fi
       fi
     fi
   done < /work/candidates.txt
 fi
-if [ ! -s /work/selection.json ]; then
+if [ "$smoke_passed" -eq 0 ]; then
   if [ "$built_any" -eq 0 ]; then
     stage=build
     printf 'native test candidate builds failed\n' >&2
-  else
+  elif [ "$selected_any" -eq 0 ]; then
     stage=select_native_test
     printf 'native test selection failed: no CTest executable backed by a C/C++ CMake target\n' >&2
+  else
+    stage=smoke
+    printf 'native test candidate smokes failed\n' >&2
   fi
   exit 1
 fi
-target=$(python3 -c 'import json; print(json.load(open("/work/selection.json"))["target"])')
-stage=build
-printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
-cmake --build /work/build --target "$target" --parallel 2
-stage=smoke
-printf 'FTS_ARM_PREFLIGHT_STAGE:%s\\n' "$stage"
-cat > /work/verify_native_test.py <<'PY'
-"""
-    + VERIFY_NATIVE_TEST
-    + """PY
-python3 /work/verify_native_test.py /work/build /work/selection.json /work/src
 printf 'FTS_ARM_PREFLIGHT_OK\\n'
 """
 )
