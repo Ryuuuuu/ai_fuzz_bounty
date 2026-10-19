@@ -77,6 +77,9 @@ CMAKE_SYSTEM_LINK_FLAGS = (
     ("libomp-dev", "-fopenmp"),
     ("libopenblas-dev", "-lopenblas"),
     ("liblapack-dev", "-llapack"),
+    ("libprotobuf-dev", "-lprotobuf"),
+    ("libssl-dev", "-lssl"),
+    ("libssl-dev", "-lcrypto"),
 )
 MESON_SYSTEM_DEPENDENCIES = {
     "boost": (
@@ -495,6 +498,17 @@ def _repair_stale_cmake_integration(
                 r"getrf|getri|syev|gesv|orgqr|sytrf)_\b",
                 build_error,
                 re.IGNORECASE,
+            )
+        )
+        or bool(
+            "libprotobuf-dev" in available_packages
+            and re.search(r"\bgoogle::protobuf::", build_error)
+        )
+        or bool(
+            "libssl-dev" in available_packages
+            and re.search(
+                r"\b(?:EVP_|RAND_|OPENSSL_|CRYPTO_|SSL_)[A-Za-z0-9_]+\b",
+                build_error,
             )
         )
     )

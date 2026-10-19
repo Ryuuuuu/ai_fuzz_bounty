@@ -832,6 +832,31 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertNotIn("untrusted-link-flag", link)
         self.assertNotIn("-llapack", _build_script("cmake"))
 
+    def test_cmake_links_reviewed_crypto_and_protobuf_after_project_archives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "CMakeLists.txt").write_text(
+                "find_package(OpenSSL REQUIRED)\n"
+                "find_package(Protobuf REQUIRED)\n"
+                "find_package(untrusted_custom_package REQUIRED)\n"
+            )
+            packages = _detect_system_dependencies(source, "cmake")
+        self.assertEqual(
+            packages, ["libprotobuf-dev", "libssl-dev", "protobuf-compiler"]
+        )
+        script = _build_script(
+            "cmake", system_dependencies=[*packages, "$(untrusted-link-flag)"],
+        )
+        link_start = script.index('"$CXX" $CXXFLAGS "$WORK/generic_harness.o"')
+        link = script[link_start:script.index('if (( ${#shared_libraries[@]} > 0 ));', link_start)]
+        self.assertLess(link.index("-Wl,--end-group"), link.index("-lprotobuf"))
+        self.assertLess(link.index("-lprotobuf"), link.index("-lssl"))
+        self.assertLess(link.index("-lssl"), link.index("-lcrypto"))
+        self.assertLess(link.index("-lcrypto"), link.index("$LIB_FUZZING_ENGINE"))
+        self.assertNotIn("untrusted", link)
+        self.assertNotIn("-lcrypto", _build_script("cmake"))
+        self.assertNotIn("-lprotobuf", _build_script("cmake"))
+
     def test_cmake_enables_only_selected_first_party_c_api(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
@@ -1558,6 +1583,79 @@ class GenericIntegrationTests(unittest.TestCase):
         self.assertFalse(repair["requires_clean_build"])
         self.assertIn("-fopenmp -lopenblas -llapack", updated)
         self.assertIn('cmake_shared_args+=("-DVECTOR_ENABLE_C_API=ON")', updated)
+
+    def test_existing_cmake_job_repairs_reviewed_crypto_and_protobuf_symbols(self):
+        cases = (
+            ("libssl-dev", "ld: undefined reference to EVP_DigestInit_ex", "-lcrypto"),
+            ("libssl-dev", "ld: undefined reference to RAND_bytes", "-lcrypto"),
+            (
+                "libprotobuf-dev", "ld: undefined reference to google::protobuf::MessageLite::SerializeToString",
+                "-lprotobuf",
+            ),
+        )
+        for package, error, expected_flag in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source"
+                project = root / "project"
+                source.mkdir()
+                project.mkdir()
+                (source / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.10)\n")
+                stale = _build_script("cmake")
+                build_path = project / "build.sh"
+                build_path.write_text(stale)
+                (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+                record = {
+                    "project": "fts-test", "build_system": "cmake",
+                    "execution_mode": "native_container", "base_image": "ubuntu:24.04",
+                    "candidate": {}, "harness_origin": "codex_oss_fuzz_gen_adapter",
+                    "harness_language": "c++", "support_sources": [],
+                    "support_include_dirs": [], "system_dependencies": [package],
+                    "source_dependencies": [], "repair_attempts": [],
+                    "build_script_sha256": __import__("hashlib").sha256(
+                        stale.encode()
+                    ).hexdigest(),
+                }
+                repair = _repair_stale_cmake_integration(
+                    source=source, project_dir=project, record=record,
+                    build_error=error, attempt=1,
+                )
+                updated = build_path.read_text()
+                self.assertIsNotNone(repair)
+                self.assertEqual(repair["repair_kind"], "deterministic_cmake_system_link")
+                self.assertFalse(repair["requires_clean_build"])
+                self.assertIn(expected_flag, updated)
+                self.assertEqual(record["system_dependencies"], [package])
+
+    def test_cmake_link_repair_rejects_unreviewed_or_unrelated_symbols(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            project = root / "project"
+            source.mkdir()
+            project.mkdir()
+            (source / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.10)\n")
+            stale = _build_script("cmake")
+            build_path = project / "build.sh"
+            build_path.write_text(stale)
+            (project / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+            record = {
+                "build_system": "cmake", "candidate": {},
+                "system_dependencies": ["libssl-dev", "libprotobuf-dev"],
+                "build_script_sha256": __import__("hashlib").sha256(
+                    stale.encode()
+                ).hexdigest(),
+            }
+            for error in (
+                "ld: undefined reference to unrelated_user_symbol",
+                "ld: undefined reference to untrusted::protobuf::MessageLite",
+            ):
+                repaired = _repair_stale_cmake_integration(
+                    source=source, project_dir=project, record=record,
+                    build_error=error, attempt=1,
+                )
+                self.assertIsNone(repaired)
+                self.assertEqual(build_path.read_text(), stale)
 
     def test_stale_cmake_repair_preserves_unrecorded_or_modified_build_script(self):
         with tempfile.TemporaryDirectory() as directory:
