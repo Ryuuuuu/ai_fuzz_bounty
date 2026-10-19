@@ -20,6 +20,16 @@ def repo(name: str, security_text: str) -> RepoSnapshot:
 
 
 class PolicyVerifierTests(unittest.TestCase):
+    def test_packaged_catalog_matches_project_catalog(self):
+        root = Path(__file__).resolve().parents[1]
+        project = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+        packaged = json.loads(
+            (root / "src/fuzz_target_scout/resources/catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(packaged, project)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.catalog = Path(self.temp.name) / "catalog.json"
@@ -318,6 +328,92 @@ repository {
         )
 
         self.assertEqual(assessment.status, "needs_review")
+
+    def test_microsoft_pgp_and_generic_bounty_page_do_not_prove_paid_scope(self):
+        verifier = PolicyVerifier(self.catalog)
+        target = repo(
+            "microsoft/quicreach",
+            "Report security issues to MSRC at https://msrc.microsoft.com/create-report. "
+            "Encrypt the report with https://www.microsoft.com/en-us/msrc/pgp-key. "
+            "If you are reporting for a bug bounty, see the Microsoft Bug Bounty "
+            "Program at https://www.microsoft.com/en-us/msrc/bounty.",
+        )
+        target.security_url = (
+            "https://github.com/microsoft/quicreach/blob/main/.github/SECURITY.md"
+        )
+
+        assessment = verifier.verify(target, today=date(2026, 10, 19))
+        self.assertEqual(assessment.status, "needs_review")
+        self.assertNotIn("pgp", assessment.program_url.casefold())
+
+    def test_current_microsoft_catalog_entry_remains_eligible(self):
+        self.catalog.write_text(
+            json.dumps({"entries": [{
+                "full_name": "microsoft/msquic",
+                "status": "verified",
+                "security_url": "https://github.com/microsoft/msquic/security/policy",
+                "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+                "scope_note": "MsQuic is listed in the paid program.",
+                "last_verified": "2026-10-19",
+            }]}),
+            encoding="utf-8",
+        )
+        target = repo(
+            "microsoft/msquic",
+            "Report vulnerabilities through https://msrc.microsoft.com/create-report. "
+            "If you are reporting for a bug bounty, read the Microsoft Bug "
+            "Bounty Program at https://www.microsoft.com/en-us/msrc/bounty.",
+        )
+
+        assessment = PolicyVerifier(self.catalog).verify(
+            target, today=date(2026, 10, 19)
+        )
+        self.assertEqual(assessment.status, "verified")
+        self.assertEqual(assessment.source, "catalog")
+
+    def test_unavailable_yeswehack_program_does_not_prove_paid_scope(self):
+        verifier = PolicyVerifier(self.catalog)
+        target = repo(
+            "owncloud/client",
+            "You can report vulnerabilities through our YesWeHack bug bounty "
+            "program: https://yeswehack.com/programs/owncloud-bug-bounty-program/"
+            "?source=github.",
+        )
+
+        assessment = verifier.verify(target, today=date(2026, 10, 19))
+        self.assertEqual(assessment.status, "needs_review")
+        self.assertIn("unavailable", assessment.note)
+        self.assertIn("owncloud", assessment.program_url)
+
+        other = repo(
+            "example/tool",
+            "This project has a public bug bounty program at "
+            "https://yeswehack.com/programs/example.",
+        )
+        self.assertEqual(verifier.verify(other).status, "verified")
+
+    def test_catalog_hold_overrides_old_repo_bounty_text(self):
+        self.catalog.write_text(
+            json.dumps({"entries": [{
+                "full_name": "owncloud/client",
+                "status": "needs_review",
+                "program_url": "https://yeswehack.com/programs/owncloud-bug-bounty-program",
+                "scope_note": "Linked program is unavailable.",
+                "last_verified": "2026-10-19",
+            }]}),
+            encoding="utf-8",
+        )
+        target = repo(
+            "owncloud/client",
+            "This project has a public bug bounty program at "
+            "https://yeswehack.com/programs/owncloud-bug-bounty-program.",
+        )
+
+        assessment = PolicyVerifier(self.catalog).verify(
+            target, today=date(2026, 10, 19)
+        )
+        self.assertEqual(assessment.status, "needs_review")
+        self.assertEqual(assessment.source, "catalog")
 
     def test_copied_paid_policy_does_not_prove_repository_scope(self):
         verifier = PolicyVerifier(self.catalog)

@@ -1868,6 +1868,9 @@ class CentralAgentTests(unittest.TestCase):
                         scan_id=len(calls), discovered=0, verified=0,
                         errors=2 if len(calls) == 1 else 0,
                         arm_preflight_attempted=0, arm_preflight_passed=0,
+                        arm_preflight_funnel={
+                            "considered": 1, "no_root_cmake_or_meson": 1
+                        },
                         repository_names=(
                             ("org/fresh", "org/catalog") if len(calls) == 1 else ()
                         ),
@@ -1920,7 +1923,10 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual(len(cooldown_requests), 2)
         self.assertEqual(calls[0]["queries"], [])
         self.assertFalse(calls[1]["seed_policy_catalog"])
-        self.assertEqual(calls[1]["queries"], config["github"]["idle_focused_queries"])
+        self.assertEqual(
+            calls[1]["queries"], config["github"]["idle_focused_queries"][:3]
+        )
+        self.assertEqual(agent.state["idle_focused_query_cursor"], 3)
         self.assertEqual(
             calls[1]["exclude_repositories"],
             {"org/old", "org/fresh", "org/catalog"},
@@ -1928,8 +1934,27 @@ class CentralAgentTests(unittest.TestCase):
         self.assertEqual([phase["name"] for phase in idle_discovery["phases"]],
                          ["seed", "focused", "broad"])
         self.assertEqual(idle_discovery["errors"], 2)
+        self.assertEqual(
+            idle_discovery["arm_preflight_funnel"],
+            {"considered": 3, "no_root_cmake_or_meson": 3},
+        )
+        self.assertEqual(
+            idle_discovery["phases"][0]["arm_preflight_funnel"],
+            {"considered": 1, "no_root_cmake_or_meson": 1},
+        )
         self.assertEqual(idle_supply["status"], "waiting_for_eligible_target")
         self.assertEqual(agent.state["candidate_supply"]["status"], "ready")
+
+    def test_idle_focused_queries_rotate_with_bounded_request_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["github"]["idle_focused_queries"] = ["one", "two", "three", "four"]
+            config["agent"]["idle_focused_queries_per_scan"] = 3
+            agent = CentralAgent(config)
+            self.assertEqual(agent._next_idle_focused_queries(), ["one", "two", "three"])
+            self.assertEqual(agent._next_idle_focused_queries(), ["four", "one", "two"])
+            self.assertEqual(agent._next_idle_focused_queries(), ["three", "four", "one"])
+            self.assertEqual(agent.state["idle_focused_query_cursor"], 1)
 
     def test_idle_discovery_starts_verified_seed_without_broad_search(self):
         with tempfile.TemporaryDirectory() as directory:

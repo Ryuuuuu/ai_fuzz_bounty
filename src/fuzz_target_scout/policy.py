@@ -19,12 +19,32 @@ TRUSTED_PROGRAM_DOMAINS = {
     "www.yeswehack.com",
     "intigriti.com",
     "app.intigriti.com",
-    "microsoft.com",
-    "www.microsoft.com",
     "facebook.com",
     "www.facebook.com",
     "bugbounty.meta.com",
 }
+
+# These published program links currently return 404.  A repository policy
+# mentioning one of them is not proof that submissions can still earn a bounty.
+# A newly verified catalog entry can restore eligibility when the live program
+# and the exact repository scope have both been checked again.
+UNAVAILABLE_PROGRAM_URLS = {
+    "https://yeswehack.com/programs/owncloud-bug-bounty-program",
+    "https://yeswehack.com/programs/powerdns",
+}
+
+MICROSOFT_REPOSITORY_OWNERS = {
+    "microsoft", "azure", "dotnet", "aspnet", "xamarin", "powershell"
+}
+
+
+def _unavailable_program_url(url: str) -> bool:
+    parsed = urlparse(url)
+    identity = (
+        f"{parsed.scheme.casefold()}://{(parsed.hostname or '').casefold()}"
+        f"{parsed.path.rstrip('/').casefold()}"
+    )
+    return identity in UNAVAILABLE_PROGRAM_URLS
 
 STRONG_BOUNTY_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -395,13 +415,46 @@ class PolicyVerifier:
             )
 
         urls = [url.rstrip("].,") for url in URL_RE.findall(text)]
+        unavailable_urls = [
+            url for url in urls if _unavailable_program_url(url)
+        ]
         trusted_urls = [
             url
             for url in urls
             if (urlparse(url).hostname or "").casefold() in TRUSTED_PROGRAM_DOMAINS
+            and not _unavailable_program_url(url)
         ]
         strong = any(pattern.search(text) for pattern in STRONG_BOUNTY_PATTERNS)
         negative = any(pattern.search(text) for pattern in NEGATIVE_PATTERNS)
+
+        # Microsoft's organization-wide disclosure template references a PGP
+        # key and generic bounty landing pages.  Neither identifies a covered
+        # repository; the paid open-source program has a separate scope list.
+        owner = repo.full_name.split("/", 1)[0].casefold()
+        microsoft_disclosure_link = any(
+            (urlparse(url).hostname or "").casefold() in {
+                "microsoft.com", "www.microsoft.com", "msrc.microsoft.com"
+            }
+            for url in urls
+        )
+        if owner in MICROSOFT_REPOSITORY_OWNERS and strong and microsoft_disclosure_link:
+            return PolicyAssessment(
+                status="needs_review",
+                confidence=45,
+                source="security.md",
+                note=(
+                    "The Microsoft disclosure policy does not prove this repository "
+                    "is listed in a currently paid bounty program."
+                ),
+            )
+        if unavailable_urls and not trusted_urls:
+            return PolicyAssessment(
+                status="needs_review",
+                confidence=40,
+                source="security.md",
+                program_url=unavailable_urls[0],
+                note="The linked bounty program is currently unavailable; paid scope must be reverified.",
+            )
 
         if strong and trusted_urls:
             if not self._program_matches_repository(repo, trusted_urls[0]):

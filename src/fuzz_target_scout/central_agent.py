@@ -1992,6 +1992,23 @@ class CentralAgent:
         ).total_seconds()
         return max(1, min(monitor_interval, math.ceil(remaining)))
 
+    def _next_idle_focused_queries(self) -> list[str]:
+        queries = [
+            str(query).strip()
+            for query in self.config["github"].get("idle_focused_queries") or []
+            if str(query).strip()
+        ]
+        if not queries:
+            return []
+        count = min(
+            len(queries),
+            max(1, int(self.agent.get("idle_focused_queries_per_scan", 3))),
+        )
+        start = int(self.state.get("idle_focused_query_cursor") or 0) % len(queries)
+        selected = [queries[(start + offset) % len(queries)] for offset in range(count)]
+        self.state["idle_focused_query_cursor"] = (start + count) % len(queries)
+        return selected
+
     def _refresh_candidates_if_due(self) -> None:
         if not bool(self.agent["auto_discover"]):
             self._plan_exported_candidates()
@@ -2093,9 +2110,7 @@ class CentralAgent:
                             str(name).casefold()
                             for name in getattr(seed_summary, "repository_names", ())
                         }
-                        focused_queries = list(
-                            self.config["github"].get("idle_focused_queries") or []
-                        )
+                        focused_queries = self._next_idle_focused_queries()
                         if focused_queries:
                             focused_summary = engine.scan(
                                 **{
@@ -2155,6 +2170,14 @@ class CentralAgent:
             self.state["last_discovery_at"] = utc_now()
             self.state.pop("last_discovery_error", None)
             self.state.pop("last_discovery_error_at", None)
+            arm_preflight_funnel: dict[str, int] = {}
+            for _, item in phases:
+                for reason, count in (
+                    getattr(item, "arm_preflight_funnel", {}) or {}
+                ).items():
+                    arm_preflight_funnel[reason] = (
+                        arm_preflight_funnel.get(reason, 0) + count
+                    )
             self.state["last_discovery"] = {
                 "scan_id": summary.scan_id,
                 "discovered": sum(item.discovered for _, item in phases),
@@ -2166,6 +2189,7 @@ class CentralAgent:
                 "arm_preflight_passed": sum(
                     item.arm_preflight_passed for _, item in phases
                 ),
+                "arm_preflight_funnel": arm_preflight_funnel,
                 "phases": [
                     {
                         "name": name,
@@ -2175,6 +2199,9 @@ class CentralAgent:
                         "errors": item.errors,
                         "arm_preflight_attempted": item.arm_preflight_attempted,
                         "arm_preflight_passed": item.arm_preflight_passed,
+                        "arm_preflight_funnel": getattr(
+                            item, "arm_preflight_funnel", {}
+                        ),
                     }
                     for name, item in phases
                 ],

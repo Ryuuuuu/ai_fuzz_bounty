@@ -39,12 +39,12 @@
     },
     {
       "full_name": "PowerDNS/pdns",
-      "status": "verified",
+      "status": "needs_review",
       "access": "public",
       "security_url": "https://github.com/PowerDNS/pdns/security/policy",
       "program_url": "https://yeswehack.com/programs/powerdns",
-      "scope_note": "Software scope is limited to PowerDNS Authoritative Server, Recursor, and dnsdist.",
-      "last_verified": "2026-09-09"
+      "scope_note": "The repository SECURITY.md lists paid scope for PowerDNS Authoritative Server, Recursor, and dnsdist, but its linked YesWeHack program returned 404 on 2026-10-19. Hold until the live paid submission route and scope are reverified.",
+      "last_verified": "2026-10-19"
     },
     {
       "full_name": "microsoft/msquic",
@@ -117,6 +117,24 @@
       "program_url": "https://security.owncloud.com/",
       "scope_note": "Private invitation route: a confirmed CVSS 7.0+ initial report can receive a bounty and program invitation.",
       "last_verified": "2026-09-09"
+    },
+    {
+      "full_name": "owncloud/client",
+      "status": "needs_review",
+      "access": "unknown",
+      "security_url": "https://github.com/owncloud/client/security/policy",
+      "program_url": "https://yeswehack.com/programs/owncloud-bug-bounty-program",
+      "scope_note": "The official ownCloud disclosure policy names the Desktop Client and a paid YesWeHack program, but its linked program returned 404 on 2026-10-19. Hold until the live paid submission route and exact scope are reverified.",
+      "last_verified": "2026-10-19"
+    },
+    {
+      "full_name": "microsoft/quicreach",
+      "status": "needs_review",
+      "access": "unknown",
+      "security_url": "https://github.com/microsoft/quicreach/security/policy",
+      "program_url": "https://www.microsoft.com/en-us/msrc/opensourcebountyprogram",
+      "scope_note": "quicreach has a generic MSRC disclosure policy but is not listed in the Microsoft Open Source Bounty Program scope as of 2026-10-19. A PGP key or general reporting URL does not establish paid eligibility.",
+      "last_verified": "2026-10-19"
     },
     {
       "full_name": "protocolbuffers/protobuf",

@@ -478,6 +478,34 @@ class ArmPreflightTests(unittest.TestCase):
             ],
         )
 
+    def test_valve_dependencies_and_declared_build_tests_option(self):
+        packages = DOCKERFILE.split("apt-get install -y --no-install-recommends ", 1)[1]
+        packages = packages.split(" && ", 1)[0].split()
+        self.assertIn("libprotobuf-dev", packages)
+        self.assertIn("protobuf-compiler", packages)
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "CMakeLists.txt"
+            source.write_text(
+                'option(BUILD_TESTS "Build crypto, pki and network connection tests" OFF)\n',
+                encoding="utf-8",
+            )
+            declared = subprocess.run(
+                [sys.executable, "-c", SELECT_CMAKE_NONTEST_OPTIONS, directory],
+                capture_output=True, text=True, check=False,
+            )
+            source.write_text(
+                '# option(BUILD_TESTS "commented out" OFF)\n', encoding="utf-8",
+            )
+            undeclared = subprocess.run(
+                [sys.executable, "-c", SELECT_CMAKE_NONTEST_OPTIONS, directory],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(declared.returncode, 0, declared.stderr)
+        self.assertEqual(declared.stdout.splitlines(), ["-DBUILD_TESTS=ON"])
+        self.assertEqual(undeclared.returncode, 0, undeclared.stderr)
+        self.assertEqual(undeclared.stdout, "")
+
     def test_meson_uses_writable_isolated_source_copy(self):
         self.assertIn("cp -a /src/. /work/src/", MESON_BUILD_AND_SMOKE)
         self.assertIn("meson setup /work/build /work/src", MESON_BUILD_AND_SMOKE)

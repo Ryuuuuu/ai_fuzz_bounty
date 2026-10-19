@@ -20,7 +20,7 @@ from .models import RepoSnapshot
 
 
 DOCKERFILE = """FROM ubuntu:24.04
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev zlib1g-dev uuid-dev default-jdk-headless libomp-dev libopenblas-dev liblapack-dev libbenchmark-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang cmake ninja-build build-essential pkg-config python3 ca-certificates libgtest-dev libgmock-dev libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-regex-dev libboost-thread-dev libcli11-dev libfmt-dev libjsoncpp-dev libre2-dev libgflags-dev libgoogle-glog-dev libssl-dev libprotobuf-dev protobuf-compiler zlib1g-dev uuid-dev default-jdk-headless libomp-dev libopenblas-dev liblapack-dev libbenchmark-dev && rm -rf /var/lib/apt/lists/*
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 """
 
@@ -453,6 +453,8 @@ for name in [n for n in names if len(n) <= 64 and NONTEST_OPTION.fullmatch(n)][:
     print(f'-D{name}=OFF')
 if 'FAISS_OPT_LEVEL' in names:
     print('-DFAISS_OPT_LEVEL=generic')
+if 'BUILD_TESTS' in names:
+    print('-DBUILD_TESTS=ON')
 """
 
 BUILD_AND_SMOKE = (

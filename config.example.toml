@@ -30,8 +30,14 @@ additional_queries = [
 # 유휴 시 검증 카탈로그 다음으로 탐색할 정책 검증 우선 소스입니다.
 # 여기서 찾은 저장소도 SECURITY.md, 보상 정책, ARM 빌드를 각각 재검증합니다.
 idle_focused_queries = [
-  "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C++",
-  "org:facebookresearch archived:false fork:false pushed:>={pushed_after} language:C",
+  "\"bug bounty\" cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C++",
+  "\"bug bounty\" cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C",
+  "hackerone cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C++",
+  "hackerone cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C",
+  "org:ValveSoftware cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:facebookresearch cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:facebookincubator cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C++",
+  "org:EpicGames cmake in:readme size:1..50000 archived:false fork:false pushed:>={pushed_after} language:C++",
 ]
 
 [policy]
@@ -197,6 +203,8 @@ discovery_interval_seconds = 21600
 idle_discovery_interval_seconds = 3600
 # 작업이 비면 검색 쿼리마다 연속된 페이지를 더 살펴봅니다.
 idle_search_pages_per_query = 2
+# 검색 쿼리를 매번 모두 요청하지 않고 이 개수만큼 순환합니다.
+idle_focused_queries_per_scan = 3
 idle_arm_preflight_max_attempts = 4
 idle_arm_preflight_budget_seconds = 1800
 # 과거 미시도 후보 최대 6개를 매 탐색마다 최신 GitHub/정책 정보로 재검증합니다.

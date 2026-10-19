@@ -330,7 +330,7 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                 with patch.object(engine, "_refresh_policy_sources"), patch.object(
                     engine, "_discover", return_value=[]
                 ) as discover:
-                    engine.scan(
+                    summary = engine.scan(
                         queries=[], seed_repositories=[
                             "org/recent-failure", "org/old-builder"
                         ],
@@ -339,6 +339,201 @@ class EngineIdleDiscoveryTests(unittest.TestCase):
                 exclusions = discover.call_args.args[3]
                 self.assertIn("org/recent-failure", exclusions)
                 self.assertNotIn("org/old-builder", exclusions)
+                self.assertEqual(
+                    summary.arm_preflight_funnel,
+                    {"pre_discovery_arm_cooldown": 1},
+                )
+            finally:
+                engine.close()
+
+    def test_arm_preflight_funnel_accounts_for_verified_cpp_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            config["architecture"]["arm_preflight_max_repository_kb"] = 100
+            engine = ScoutEngine(config)
+            sha = "a" * 40
+
+            def target(name, *, language="C++", status="verified", score=80,
+                       program_url="https://example.com/paid-bounty",
+                       security_url="https://example.com/security-policy",
+                       build="cmakelists.txt", size_kb=50,
+                       architecture_blockers=None):
+                blockers = architecture_blockers or [
+                    "native_build_probe_required:aarch64"
+                ]
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=f"org/{name}",
+                        html_url=f"https://github.com/org/{name}",
+                        default_branch="main", head_sha=sha,
+                        language=language, size_kb=size_kb,
+                        security_url=security_url,
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=80, reproduce_difficulty=1,
+                        signals=[f"standard_build:{build}"], blockers=[],
+                        suggested_entry_kind="library_api",
+                    ),
+                    policy=PolicyAssessment(
+                        status=status, confidence=95, source="security.md",
+                        program_url=program_url,
+                    ),
+                    final_score=score,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=False, confidence=40,
+                        blockers=blockers,
+                    ),
+                )
+
+            candidates = [
+                target("architecture", architecture_blockers=["unsupported:aarch64"]),
+                target("no-paid-url", program_url=""),
+                target("no-security-url", security_url=""),
+                target("low-score", score=10),
+                target("no-build", build="makefile"),
+                target("large", size_kb=101),
+                target("failed-cache"),
+                target("cached-pass"),
+                target("attempted"),
+                target("conditional", status="conditional"),
+                target("rust", language="Rust"),
+            ]
+            evidence = (
+                f"native_arm_preflight:{PREFLIGHT_VERSION}:cmake_build_ctest:{sha}"
+            )
+            try:
+                engine.store.put_arm_preflight(
+                    "org/failed-cache", sha, "aarch64", PREFLIGHT_VERSION,
+                    passed=False, reason="native_build_or_smoke_failed",
+                )
+                engine.store.put_arm_preflight(
+                    "org/cached-pass", sha, "aarch64", PREFLIGHT_VERSION,
+                    passed=True, reason="native pass", evidence=evidence,
+                )
+                funnel = {}
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "native_build_or_smoke_failed",
+                        "native_arm_failure:stage=build;kind=compile_error;exit=1",
+                    )
+                    attempted, passed = engine._preflight_arm_candidates(
+                        candidates, max_attempts=2, funnel=funnel,
+                    )
+                    self.assertEqual(runner.return_value.check.call_count, 1)
+                self.assertEqual((attempted, passed), (1, 1))
+                self.assertEqual(funnel, {
+                    "considered": 9,
+                    "architecture_blocker": 1,
+                    "missing_paid_program_url": 1,
+                    "missing_security_policy_url": 1,
+                    "low_score": 1,
+                    "no_root_cmake_or_meson": 1,
+                    "repository_size_out_of_range": 1,
+                    "failed_cache_cooldown": 1,
+                    "cached_pass": 1,
+                    "attempted": 1,
+                })
+                self.assertEqual(
+                    funnel["considered"],
+                    sum(value for key, value in funnel.items() if key != "considered"),
+                )
+            finally:
+                engine.close()
+
+    def test_arm_preflight_funnel_records_attempt_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+
+            def target(name):
+                return Candidate(
+                    repo=RepoSnapshot(
+                        full_name=f"org/{name}",
+                        html_url=f"https://github.com/org/{name}",
+                        default_branch="main", head_sha="a" * 40,
+                        language="C++", size_kb=50,
+                        security_url="https://example.com/security-policy",
+                    ),
+                    static=StaticAssessment(
+                        fuzz_score=80, reproduce_difficulty=1,
+                        signals=["standard_build:cmakelists.txt"], blockers=[],
+                        suggested_entry_kind="library_api",
+                    ),
+                    policy=PolicyAssessment(
+                        status="verified", confidence=95, source="security.md",
+                        program_url="https://example.com/paid-bounty",
+                    ),
+                    final_score=80,
+                    architecture=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=False, confidence=40,
+                        blockers=["native_build_probe_required:aarch64"],
+                    ),
+                )
+
+            try:
+                funnel = {}
+                with patch("fuzz_target_scout.engine.ArmPreflight") as runner:
+                    runner.return_value.check.return_value = ArmPreflightResult(
+                        False, "native_build_or_smoke_failed", "build failed",
+                    )
+                    self.assertEqual(
+                        engine._preflight_arm_candidates(
+                            [target("first"), target("second")],
+                            max_attempts=1, funnel=funnel,
+                        ), (1, 0),
+                    )
+                self.assertEqual(funnel, {
+                    "considered": 2, "attempt_limit": 1, "attempted": 1,
+                })
+            finally:
+                engine.close()
+
+    def test_scan_summary_exposes_arm_preflight_funnel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            config["architecture"]["host_arch"] = "aarch64"
+            engine = ScoutEngine(config)
+            repo = RepoSnapshot(
+                full_name="org/make-only", html_url="https://github.com/org/make-only",
+                default_branch="main", head_sha="a" * 40,
+                language="C++", size_kb=50,
+                security_url="https://example.com/security-policy",
+            )
+            engine.github = SimpleNamespace(
+                load_security_policy=lambda value: value,
+                hydrate_code_evidence=lambda value: value,
+            )
+            try:
+                with patch.object(engine, "_refresh_policy_sources"), patch.object(
+                    engine, "_discover", return_value=[repo]
+                ), patch.object(
+                    engine.policy, "verify", return_value=PolicyAssessment(
+                        status="verified", confidence=95, source="security.md",
+                        program_url="https://example.com/paid-bounty",
+                    )
+                ), patch(
+                    "fuzz_target_scout.engine.assess_architecture",
+                    return_value=ArchitectureAssessment(
+                        host_arch="aarch64", compatible=True, confidence=90,
+                    ),
+                ), patch(
+                    "fuzz_target_scout.engine.assess_static",
+                    return_value=StaticAssessment(
+                        fuzz_score=80, reproduce_difficulty=1,
+                        signals=["standard_build:makefile"], blockers=[],
+                        suggested_entry_kind="library_api",
+                    ),
+                ), patch("fuzz_target_scout.engine.final_score", return_value=80):
+                    summary = engine.scan(
+                        use_ai=False, run_arm_preflight=True,
+                    )
+                self.assertEqual(summary.verified, 1)
+                self.assertEqual(summary.arm_preflight_attempted, 0)
+                self.assertEqual(summary.arm_preflight_funnel, {
+                    "considered": 1, "no_root_cmake_or_meson": 1,
+                })
             finally:
                 engine.close()
 

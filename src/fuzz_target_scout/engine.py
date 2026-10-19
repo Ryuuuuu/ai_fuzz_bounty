@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -47,6 +47,10 @@ class ScanSummary:
     arm_preflight_attempted: int = 0
     arm_preflight_passed: int = 0
     repository_names: tuple[str, ...] = ()
+    # One terminal outcome per policy-verified C/C++ candidate considered by
+    # ARM preflight. Pre-discovery cooldown is counted separately because those
+    # repositories never reach policy hydration in this scan.
+    arm_preflight_funnel: dict[str, int] = field(default_factory=dict)
 
 
 class ScoutEngine:
@@ -87,6 +91,7 @@ class ScoutEngine:
         scan_id = self.store.start_scan(source)
         candidates: list[Candidate] = []
         errors = 0
+        arm_preflight_funnel: dict[str, int] = {}
         try:
             self._refresh_policy_sources()
             excluded = {
@@ -103,6 +108,10 @@ class ScoutEngine:
                     int(architecture.get("arm_preflight_failure_retry_hours", 24)),
                     TRANSIENT_FAILURE_REASONS,
                 )
+                if failures:
+                    arm_preflight_funnel["pre_discovery_arm_cooldown"] = len(
+                        failures - excluded
+                    )
                 excluded.update(failures)
                 if failures:
                     self.progress(
@@ -169,6 +178,7 @@ class ScoutEngine:
                     budget_seconds=arm_preflight_budget_seconds,
                     stop_after_success=arm_preflight_stop_after_success,
                     allow_ai_review=use_ai,
+                    funnel=arm_preflight_funnel,
                 )
                 if run_arm_preflight else (0, 0)
             )
@@ -209,6 +219,7 @@ class ScoutEngine:
                 arm_preflight_attempted=arm_attempted,
                 arm_preflight_passed=arm_passed,
                 repository_names=tuple(repo.full_name for repo in repos),
+                arm_preflight_funnel=arm_preflight_funnel,
             )
         except Exception as exc:
             self.store.finish_scan(
@@ -422,12 +433,24 @@ class ScoutEngine:
         budget_seconds: int | None = None,
         stop_after_success: bool = False,
         allow_ai_review: bool = False,
+        funnel: dict[str, int] | None = None,
     ) -> tuple[int, int]:
+        def record(outcome: str, count: int = 1) -> None:
+            if funnel is not None and count:
+                funnel[outcome] = funnel.get(outcome, 0) + count
+
+        considered = sum(
+            candidate.policy.status == "verified"
+            and candidate.repo.language.casefold() in {"c", "c++"}
+            for candidate in candidates
+        )
+        record("considered", considered)
         architecture = self.config["architecture"]
         if (
             not bool(architecture.get("arm_preflight_enabled", True))
             or resolve_host_architecture(architecture) != "aarch64"
         ):
+            record("preflight_unavailable", considered)
             return 0, 0
         minimum_score = int(self.config["scoring"]["minimum_handoff_score"])
         score_margin = max(
@@ -444,19 +467,20 @@ class ScoutEngine:
         passed = 0
         handoff_ready_passed = False
         for candidate in candidates:
-            assessment = candidate.architecture
             if (
                 candidate.policy.status != "verified"
                 or candidate.repo.language.casefold() not in {"c", "c++"}
-                or assessment is None
-                or not (
-                    assessment.compatible
-                    or assessment.blockers in (
-                        ["no_explicit_native_support_evidence:aarch64"],
-                        ["native_build_probe_required:aarch64"],
-                    )
+            ):
+                continue
+            assessment = candidate.architecture
+            if assessment is None or not (
+                assessment.compatible
+                or assessment.blockers in (
+                    ["no_explicit_native_support_evidence:aarch64"],
+                    ["native_build_probe_required:aarch64"],
                 )
             ):
+                record("architecture_blocker")
                 continue
             # Architecture labels alone do not prove the native C/C++ builder
             # can compile a pinned checkout. Require this current-commit probe.
@@ -479,15 +503,17 @@ class ScoutEngine:
                 >= int(ai_config.get("minimum_static_score", 50))
                 and candidate.final_score >= minimum_score - score_margin
             )
-            if (
-                not candidate.policy.program_url
-                or not candidate.repo.security_url
-                or (
-                    candidate.final_score < minimum_score
-                    and not near_threshold_for_ai
-                )
-                or version is None
-            ):
+            if not candidate.policy.program_url:
+                record("missing_paid_program_url")
+                continue
+            if not candidate.repo.security_url:
+                record("missing_security_policy_url")
+                continue
+            if candidate.final_score < minimum_score and not near_threshold_for_ai:
+                record("low_score")
+                continue
+            if version is None:
+                record("no_root_cmake_or_meson")
                 continue
             build_system = "cmake" if version == PREFLIGHT_VERSION else "meson"
             smoke = "ctest" if build_system == "cmake" else "meson_test"
@@ -503,6 +529,7 @@ class ScoutEngine:
                 self._accept_arm_preflight(candidate, expected_evidence)
                 passed += 1
                 handoff_ready_passed |= candidate.final_score >= minimum_score
+                record("cached_pass")
                 continue
             repository_kb = (
                 candidate.repo.source_tree_kb
@@ -510,6 +537,7 @@ class ScoutEngine:
                 else candidate.repo.size_kb
             )
             if not 0 < repository_kb <= maximum_kb:
+                record("repository_size_out_of_range")
                 continue
             if cached and not cached["passed"]:
                 try:
@@ -523,6 +551,7 @@ class ScoutEngine:
                         else retry_hours * 3600
                     )
                     if age.total_seconds() < retry_seconds:
+                        record("failed_cache_cooldown")
                         continue
                 except ValueError:
                     pass
@@ -546,6 +575,7 @@ class ScoutEngine:
                                 "ARM preflight deferred after recent repository "
                                 f"build failure: {candidate.repo.full_name}"
                             )
+                            record("repository_build_cooldown")
                             continue
                     except ValueError:
                         pass
@@ -564,6 +594,7 @@ class ScoutEngine:
         # The AI review happens after native preflight. A static score above
         # the threshold is not a handoff guarantee when AI can lower it.
         if stop_after_success and not ai_may_change_score and handoff_ready_passed:
+            record("stopped_after_cached_success", len(pending))
             return 0, passed
         pending.sort(
             key=lambda item: (
@@ -582,6 +613,7 @@ class ScoutEngine:
         configured_maximum = max(0, int(architecture.get("arm_preflight_max_per_scan", 2)))
         maximum = min(8, configured_maximum if max_attempts is None else max(0, max_attempts))
         if maximum == 0:
+            record("attempt_limit", len(pending))
             return 0, passed
         # Give independent build families a chance before using a second
         # expensive slot on the same dependencies. Fill the remaining
@@ -606,15 +638,21 @@ class ScoutEngine:
                 selected.append(entry)
                 if len(selected) >= maximum:
                     break
+        selected_ids = {id(entry[2]) for entry in selected}
+        record(
+            "attempt_limit",
+            sum(id(entry[2]) not in selected_ids for entry in pending),
+        )
         deadline = (
             time.monotonic() + max(60, budget_seconds)
             if budget_seconds is not None else None
         )
         attempted = 0
-        for _prior_success, _prior_failure, candidate, version in selected:
+        for index, (_prior_success, _prior_failure, candidate, version) in enumerate(selected):
             remaining = None if deadline is None else int(deadline - time.monotonic())
             if remaining is not None and remaining < 60:
                 self.progress("ARM preflight deferred: discovery time budget exhausted")
+                record("time_budget", len(selected) - index)
                 break
             runner_config = architecture if remaining is None else {
                 **architecture,
@@ -627,6 +665,7 @@ class ScoutEngine:
             self.progress(f"ARM preflight: {candidate.repo.full_name}")
             result = runner.check(candidate.repo)
             attempted += 1
+            record("attempted")
             self.store.put_arm_preflight(
                 candidate.repo.full_name, candidate.repo.head_sha,
                 "aarch64", version,
@@ -645,6 +684,7 @@ class ScoutEngine:
                     stop_after_success and not ai_may_change_score
                     and candidate.final_score >= minimum_score
                 ):
+                    record("stopped_after_success", len(selected) - index - 1)
                     break
             else:
                 detail = (
