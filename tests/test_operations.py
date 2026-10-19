@@ -1,13 +1,16 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from fuzz_target_scout.operations import Housekeeper, directory_size, pipeline_overview
+from fuzz_target_scout.pipeline import PipelineInterrupted
 
 
 class OperationsTests(unittest.TestCase):
@@ -356,6 +359,57 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(value["jobs"][0]["job_id"], job.name)
             self.assertEqual(value["jobs"][0]["fuzz_remaining_seconds"], 100.0)
             self.assertEqual(value["total_disk_bytes"], directory_size(job))
+
+    def test_directory_scan_stops_between_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a").write_bytes(b"a")
+            event = threading.Event()
+
+            def walk(*_args, **_kwargs):
+                yield str(root), [], ["a"]
+                event.set()
+                yield str(root), [], ["a"]
+
+            with patch("fuzz_target_scout.operations.os.walk", side_effect=walk):
+                with self.assertRaises(PipelineInterrupted):
+                    directory_size(root, cancel_event=event)
+
+    def test_housekeeper_does_not_continue_after_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = self._job(root)
+            event = threading.Event()
+            keeper = Housekeeper(self._config(root), cancel_event=event)
+
+            def stop_during_cleanup(_job_dir):
+                event.set()
+                return {"job_id": job.name}
+
+            with patch.object(keeper, "_clean_job", side_effect=stop_during_cleanup), patch.object(
+                keeper, "_clean_orphan_containers"
+            ) as docker_cleanup:
+                with self.assertRaises(PipelineInterrupted):
+                    keeper.run()
+                docker_cleanup.assert_not_called()
+
+    def test_running_merge_is_cancelled_without_waiting_for_full_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event = threading.Event()
+            keeper = Housekeeper(self._config(root), cancel_event=event)
+            timer = threading.Timer(0.2, event.set)
+            timer.start()
+            started = time.monotonic()
+            try:
+                with self.assertRaises(PipelineInterrupted):
+                    keeper._run_merge(
+                        [sys.executable, "-c", "import time; time.sleep(30)"],
+                        time.monotonic() + 30,
+                    )
+            finally:
+                timer.cancel()
+            self.assertLess(time.monotonic() - started, 5)
 
     @staticmethod
     def _job(root: Path) -> Path:

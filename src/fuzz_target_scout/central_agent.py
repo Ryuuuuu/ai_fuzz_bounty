@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -140,7 +141,9 @@ SECRET_ENVIRONMENT_NAMES = {
 class CentralCodex:
     """Small structured-output controller using the logged-in Codex CLI."""
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(
+        self, config: dict[str, Any], cancel_event: threading.Event | None = None
+    ):
         self.pipeline = config["pipeline"]
         self.agent = config["agent"]
         self.executable = str(self.pipeline.get("ai_executable") or "codex")
@@ -148,6 +151,7 @@ class CentralCodex:
         self.reasoning = str(self.pipeline["ai_reasoning_effort"])
         self.timeout = int(self.agent["ai_timeout_seconds"])
         self.session_path = Path(self.agent["session_state_path"])
+        self.cancel_event = cancel_event
 
     @property
     def available(self) -> bool:
@@ -332,6 +336,8 @@ class CentralCodex:
                 "-",
             ]
         try:
+            if self.cancel_event is not None:
+                return self._run_cancelable(command, prompt, directory)
             return subprocess.run(
                 command,
                 input=prompt,
@@ -351,6 +357,62 @@ class CentralCodex:
             raise PipelineError(
                 f"could not start central agent {kind} review: {exc}"
             ) from exc
+
+    def _run_cancelable(
+        self, command: list[str], prompt: str, directory: str
+    ) -> subprocess.CompletedProcess[str]:
+        cancel_event = self.cancel_event
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineInterrupted("central agent review stopped by operator")
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=directory,
+            env=_codex_environment(self.agent),
+            start_new_session=os.name == "posix",
+        )
+        deadline = time.monotonic() + self.timeout
+        input_text: str | None = prompt
+        try:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise PipelineInterrupted("central agent review stopped by operator")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, self.timeout)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=input_text, timeout=min(0.5, remaining)
+                    )
+                    return subprocess.CompletedProcess(
+                        command, process.returncode, stdout, stderr
+                    )
+                except subprocess.TimeoutExpired:
+                    input_text = None
+        finally:
+            if process.poll() is None:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.terminate()
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    if os.name == "posix":
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
+                        process.kill()
+                    process.communicate(timeout=3)
 
     def _health_session(self) -> dict[str, Any]:
         value = _optional_json(self.session_path)
@@ -439,10 +501,10 @@ class CentralAgent:
         self.notification_log = Path(self.agent["notification_log_path"])
         self.decisions_root = Path(self.agent["decisions_path"])
         self.progress = progress or (lambda _: None)
-        self.reviewer = CentralCodex(self.config)
+        self.stop_event = threading.Event()
+        self.reviewer = CentralCodex(self.config, cancel_event=self.stop_event)
         self.notifier = TelegramNotifier(self.config)
         self.ai_lock = threading.Lock()
-        self.stop_event = threading.Event()
         self._active_worker: PipelineWorker | None = None
         self.state = self._load_state()
 
@@ -506,6 +568,8 @@ class CentralAgent:
                         )
                         continue
                     allocation, capacity = self._choose_capacity(len(runnable))
+                    if self.stop_event.is_set():
+                        break
                     worker_config = self._worker_config(allocation)
                     worker = PipelineWorker(worker_config, progress=self.progress)
                     worker._non_fuzz_lock = self.ai_lock
@@ -596,7 +660,16 @@ class CentralAgent:
         )
 
     def monitor(self, reason: str) -> dict[str, Any]:
-        overview = self._sanitize(pipeline_overview(self.runs_root))
+        if self.stop_event.is_set():
+            return {"reason": reason, "stopped": True, "improvements": []}
+        try:
+            overview = self._sanitize(
+                pipeline_overview(self.runs_root, cancel_event=self.stop_event)
+            )
+        except PipelineInterrupted:
+            return {"reason": reason, "stopped": True, "improvements": []}
+        if self.stop_event.is_set():
+            return {"reason": reason, "stopped": True, "improvements": []}
         self._sync_runnable_availability(overview)
         resource = plan_resources(self.pipeline)
         events = self._finding_events()
@@ -610,6 +683,8 @@ class CentralAgent:
             with self.ai_lock:
                 decision, usage = self.reviewer.health(evidence)
             self.state["consecutive_ai_failures"] = 0
+        except PipelineInterrupted:
+            return {"reason": reason, "stopped": True, "improvements": []}
         except PipelineError as exc:
             failures = int(self.state.get("consecutive_ai_failures") or 0) + 1
             self.state["consecutive_ai_failures"] = failures
@@ -620,6 +695,8 @@ class CentralAgent:
                 "summary": f"중앙 AI 상태 검토 실패: {str(exc)[:500]}",
                 "problems": [],
             }
+        if self.stop_event.is_set():
+            return {"reason": reason, "stopped": True, "improvements": []}
         record = {
             "schema_version": 1,
             "created_at": utc_now(),
@@ -783,11 +860,14 @@ class CentralAgent:
         jobs: int,
         capacity: dict[str, Any],
     ) -> list[WorkerResult]:
+        if self.stop_event.is_set():
+            return []
         interval = max(1, int(self.agent["monitor_interval_seconds"]))
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="central-worker")
         future = executor.submit(worker.run, jobs)
         self._write_decision("capacity", capacity)
-        self.monitor("batch_started")
+        if not self.stop_event.is_set():
+            self.monitor("batch_started")
         next_monitor = time.monotonic() + interval
         stopping = False
         try:
@@ -1973,6 +2053,8 @@ class CentralAgent:
     def _notify(
         self, key: str, message: str, *, deduplicate: bool = True
     ) -> tuple[bool, str]:
+        if self.stop_event.is_set():
+            return False, "stopped"
         message = self._redact(message)
         digest = hashlib.sha256(f"{key}\n{message}".encode()).hexdigest()
         notification_digests = self.state.setdefault("notification_digests", {})

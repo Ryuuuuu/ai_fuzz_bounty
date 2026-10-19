@@ -3,7 +3,10 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +24,7 @@ from fuzz_target_scout.central_agent import (
     _health_job_view,
 )
 from fuzz_target_scout.config import load_config
-from fuzz_target_scout.pipeline import PipelineError
+from fuzz_target_scout.pipeline import PipelineError, PipelineInterrupted
 from fuzz_target_scout.pipeline_worker import PipelineWorker, WorkerResult
 from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 
@@ -1874,6 +1877,64 @@ class CentralAgentTests(unittest.TestCase):
         self.assertTrue(agent.stop_event.is_set())
         self.assertTrue(worker.stopped)
         cleanup.assert_not_called()
+
+    def test_stopped_agent_does_not_start_batch_health_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+            agent.stop()
+            with patch(
+                "fuzz_target_scout.central_agent.pipeline_overview"
+            ) as overview, patch.object(agent.reviewer, "health") as health:
+                result = agent.monitor("batch_started")
+        self.assertTrue(result["stopped"])
+        overview.assert_not_called()
+        health.assert_not_called()
+
+    def test_stop_interrupts_health_review_without_sending_alerts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+            entered = threading.Event()
+            result = []
+
+            def review(_evidence):
+                entered.set()
+                agent.stop_event.wait(5)
+                raise PipelineInterrupted("stopped")
+
+            def monitor():
+                result.append(agent.monitor("batch_started"))
+
+            with patch.object(agent.reviewer, "health", side_effect=review), patch.object(
+                agent, "_notify"
+            ) as notify:
+                thread = threading.Thread(target=monitor)
+                thread.start()
+                self.assertTrue(entered.wait(2))
+                agent.stop()
+                thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+                notify.assert_not_called()
+            self.assertTrue(result[0]["stopped"])
+
+    def test_codex_subprocess_is_cancelled_during_health_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            event = threading.Event()
+            reviewer = CentralCodex(config, cancel_event=event)
+            timer = threading.Timer(0.2, event.set)
+            timer.start()
+            started = time.monotonic()
+            try:
+                with self.assertRaises(PipelineInterrupted):
+                    reviewer._run_cancelable(
+                        [sys.executable, "-c", "import time; time.sleep(30)"],
+                        "", directory,
+                    )
+            finally:
+                timer.cancel()
+            self.assertLess(time.monotonic() - started, 5)
 
     def test_active_container_cleanup_is_batched_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:

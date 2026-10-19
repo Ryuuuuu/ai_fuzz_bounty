@@ -16,6 +16,27 @@ from fuzz_target_scout.resources import ResourceAllocation, ResourceSnapshot
 
 
 class PipelineWorkerTests(unittest.TestCase):
+    def test_stopped_worker_skips_initial_housekeeping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = Path(directory)
+            worker.stop_event = threading.Event()
+            worker.stop_event.set()
+            with patch.object(worker, "housekeeper", create=True) as housekeeper:
+                result = worker.run(1)
+                housekeeper.run.assert_not_called()
+            self.assertEqual(result, [])
+
+    def test_stop_during_housekeeping_returns_without_job_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = Path(directory)
+            worker.stop_event = threading.Event()
+            with patch.object(worker, "housekeeper", create=True) as housekeeper:
+                housekeeper.run.side_effect = PipelineInterrupted("stopped")
+                result = worker.run(1)
+            self.assertEqual(result, [])
+
     def test_worker_runs_independent_fuzz_jobs_in_parallel(self):
         with tempfile.TemporaryDirectory() as directory:
             runs = Path(directory)

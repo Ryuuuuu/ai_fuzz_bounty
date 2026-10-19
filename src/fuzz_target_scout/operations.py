@@ -6,12 +6,13 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from .pipeline import PipelineError, job_status, list_jobs, utc_now
+from .pipeline import PipelineError, PipelineInterrupted, job_status, list_jobs, utc_now
 
 
 EVIDENCE_DIRECTORIES = {"artifacts", "crashes", "validation", "poc"}
@@ -30,15 +31,25 @@ MERGE_MAX_INPUT_BYTES = 8 * 1024 * 1024 * 1024
 MERGE_TIMEOUT_SECONDS = 600
 
 
-def pipeline_overview(runs_root: str | Path) -> dict[str, Any]:
+def _check_cancel(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise PipelineInterrupted("housekeeping stopped by operator")
+
+
+def pipeline_overview(
+    runs_root: str | Path, *, cancel_event: threading.Event | None = None
+) -> dict[str, Any]:
     root = Path(runs_root)
     records: list[dict[str, Any]] = []
     for summary in list_jobs(root):
+        _check_cancel(cancel_event)
         try:
             record = job_status(root, str(summary["job_id"]))
         except PipelineError:
             continue
-        record["disk_bytes"] = directory_size(root / str(summary["job_id"]))
+        record["disk_bytes"] = directory_size(
+            root / str(summary["job_id"]), cancel_event=cancel_event
+        )
         records.append(record)
     records.sort(key=lambda item: (str(item.get("updated_at") or ""), item["job_id"]))
     status_counts: dict[str, int] = {}
@@ -56,14 +67,19 @@ def pipeline_overview(runs_root: str | Path) -> dict[str, Any]:
     }
 
 
-def directory_size(root: Path) -> int:
+def directory_size(
+    root: Path, *, cancel_event: threading.Event | None = None
+) -> int:
+    _check_cancel(cancel_event)
     if root.is_symlink() or not root.is_dir():
         return 0
     total = 0
     for directory, names, files in os.walk(root, followlinks=False):
+        _check_cancel(cancel_event)
         current = Path(directory)
         names[:] = [name for name in names if not (current / name).is_symlink()]
         for name in files:
+            _check_cancel(cancel_event)
             path = current / name
             try:
                 if not path.is_symlink() and path.is_file():
@@ -74,14 +90,22 @@ def directory_size(root: Path) -> int:
 
 
 class Housekeeper:
-    def __init__(self, config: dict[str, Any]):
+    def __init__(
+        self, config: dict[str, Any], cancel_event: threading.Event | None = None
+    ):
         self.pipeline = config["pipeline"]
         self.runs_root = Path(self.pipeline["runs_path"])
+        self.cancel_event = cancel_event
 
     def run(self, job_id: str | None = None) -> dict[str, Any]:
+        self._check_cancel()
         self.runs_root.mkdir(parents=True, exist_ok=True)
         jobs = [self._job_dir(job_id)] if job_id else self._job_dirs()
-        records = [self._clean_job(path) for path in jobs]
+        records = []
+        for path in jobs:
+            self._check_cancel()
+            records.append(self._clean_job(path))
+        self._check_cancel()
         removed_containers = self._clean_orphan_containers()
         return {
             "schema_version": 1,
@@ -106,8 +130,12 @@ class Housekeeper:
             raise PipelineError(f"job directory was not found: {path}")
         return path.resolve()
 
+    def _check_cancel(self) -> None:
+        _check_cancel(self.cancel_event)
+
     def _clean_job(self, job_dir: Path) -> dict[str, Any]:
-        before = directory_size(job_dir)
+        self._check_cancel()
+        before = directory_size(job_dir, cancel_event=self.cancel_event)
         removed_files = 0
         removed_bytes = 0
         removed_workspaces: list[str] = []
@@ -115,6 +143,7 @@ class Housekeeper:
         compactions: list[dict[str, Any]] = []
         corpus_over_limit = False
         for corpus in sorted((job_dir / "corpus").glob("*")):
+            self._check_cancel()
             if corpus.is_symlink() or not corpus.is_dir():
                 continue
             result = self._compact_corpus(job_dir, corpus, state)
@@ -125,7 +154,8 @@ class Housekeeper:
             removed_files += int(result["removed_files"])
             removed_bytes += int(result["removed_bytes"])
         count, size = self._prune_files(
-            job_dir / "logs", int(self.pipeline["log_max_files"]), None
+            job_dir / "logs", int(self.pipeline["log_max_files"]), None,
+            cancel_event=self.cancel_event,
         )
         removed_files += count
         removed_bytes += size
@@ -133,14 +163,16 @@ class Housekeeper:
             age = time.time() - self._mtime(job_dir / "state.json")
             if age >= int(self.pipeline["runtime_retention_hours"]) * 3600:
                 for name in TRANSIENT_WORK_DIRECTORIES:
+                    self._check_cancel()
                     workspace = job_dir / name
                     if not workspace.is_dir() or workspace.is_symlink():
                         continue
-                    size = directory_size(workspace)
+                    size = directory_size(workspace, cancel_event=self.cancel_event)
+                    self._check_cancel()
                     shutil.rmtree(workspace)
                     removed_bytes += size
                     removed_workspaces.append(name)
-        after = directory_size(job_dir)
+        after = directory_size(job_dir, cancel_event=self.cancel_event)
         limit = int(self.pipeline["job_disk_limit_mb"]) * 1024 * 1024
         over_limit = after > limit or corpus_over_limit
         state = self._read_state(job_dir)
@@ -184,10 +216,12 @@ class Housekeeper:
             for directory, names, files in os.walk(
                 corpus, followlinks=False, onerror=raise_walk_error
             ):
+                self._check_cancel()
                 current = Path(directory)
                 if current != corpus or any((current / name).is_symlink() for name in names):
                     unsafe = True
                 for name in files:
+                    self._check_cancel()
                     path = current / name
                     if path.is_symlink() or not path.is_file():
                         unsafe = True
@@ -270,10 +304,7 @@ class Housekeeper:
                 "-rss_limit_mb=1024", "/merge-output", "/merge-input",
             ]
             try:
-                completed = subprocess.run(
-                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=max(0.001, deadline - time.monotonic()), check=False,
-                )
+                completed = self._run_merge(command, deadline)
             except (OSError, subprocess.TimeoutExpired):
                 result["status"] = "merge_execution_failed"
                 return result
@@ -295,6 +326,7 @@ class Housekeeper:
             try:
                 selected: list[Path] = []
                 for path in merged.iterdir():
+                    self._check_cancel()
                     if time.monotonic() >= deadline:
                         raise TimeoutError("corpus merge verification timed out")
                     selected.append(path)
@@ -307,14 +339,21 @@ class Housekeeper:
                     return result
                 selected_bytes = 0
                 for path in selected:
+                    self._check_cancel()
                     if time.monotonic() >= deadline:
                         raise TimeoutError("corpus merge verification timed out")
                     selected_bytes += path.stat().st_size
                 if selected_bytes > total_bytes:
                     result["status"] = "merge_output_invalid"
                     return result
-                selected_hashes = {self._file_sha256(path, deadline) for path in selected}
-                original = [(path, stat, self._file_sha256(path, deadline)) for path, stat in snapshot]
+                selected_hashes = {
+                    self._file_sha256(path, deadline, self.cancel_event)
+                    for path in selected
+                }
+                original = [
+                    (path, stat, self._file_sha256(path, deadline, self.cancel_event))
+                    for path, stat in snapshot
+                ]
             except TimeoutError:
                 result["status"] = "merge_verification_timeout"
                 return result
@@ -328,6 +367,7 @@ class Housekeeper:
             redundant: list[tuple[Path, os.stat_result]] = []
             kept_bytes = 0
             for path, stat, digest in original:
+                self._check_cancel()
                 if time.monotonic() >= deadline:
                     result["status"] = "merge_verification_timeout"
                     return result
@@ -346,6 +386,7 @@ class Housekeeper:
                 result["status"] = "active_fuzz_deferred"
                 return result
             for path, previous in redundant:
+                self._check_cancel()
                 if time.monotonic() > deadline:
                     result["status"] = "merge_verification_timeout"
                     break
@@ -365,6 +406,7 @@ class Housekeeper:
             try:
                 remaining: list[Path] = []
                 for path in corpus.iterdir():
+                    self._check_cancel()
                     if time.monotonic() >= deadline:
                         raise TimeoutError("corpus merge verification timed out")
                     remaining.append(path)
@@ -373,6 +415,7 @@ class Housekeeper:
                 remaining_bytes = 0
                 unsafe = False
                 for path in remaining:
+                    self._check_cancel()
                     if time.monotonic() >= deadline:
                         raise TimeoutError("corpus merge verification timed out")
                     if path.is_symlink() or not path.is_file():
@@ -402,13 +445,51 @@ class Housekeeper:
             "removed_files": 0, "removed_bytes": 0,
         }
 
+    def _run_merge(
+        self, command: list[str], deadline: float
+    ) -> subprocess.CompletedProcess[bytes]:
+        if self.cancel_event is None:
+            return subprocess.run(
+                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=max(0.001, deadline - time.monotonic()), check=False,
+            )
+        self._check_cancel()
+        process = subprocess.Popen(
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+        try:
+            while True:
+                self._check_cancel()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, MERGE_TIMEOUT_SECONDS)
+                try:
+                    return subprocess.CompletedProcess(
+                        command, process.wait(timeout=min(0.5, remaining))
+                    )
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+
     @staticmethod
-    def _file_sha256(path: Path, deadline: float) -> str:
+    def _file_sha256(
+        path: Path, deadline: float,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         if time.monotonic() >= deadline:
             raise TimeoutError("corpus merge verification exceeded its time limit")
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
+                _check_cancel(cancel_event)
                 if time.monotonic() > deadline:
                     raise TimeoutError("corpus merge verification exceeded its time limit")
                 digest.update(block)
@@ -416,12 +497,14 @@ class Housekeeper:
 
     @staticmethod
     def _prune_files(
-        root: Path, max_files: int, max_bytes: int | None
+        root: Path, max_files: int, max_bytes: int | None,
+        *, cancel_event: threading.Event | None = None,
     ) -> tuple[int, int]:
         if root.is_symlink() or not root.is_dir():
             return 0, 0
         files = []
         for path in root.rglob("*"):
+            _check_cancel(cancel_event)
             try:
                 if not path.is_symlink() and path.is_file():
                     stat = path.stat()
@@ -433,6 +516,7 @@ class Housekeeper:
         removed_files = 0
         removed_bytes = 0
         for index, (_, path, size) in enumerate(files):
+            _check_cancel(cancel_event)
             keep = index < max(0, max_files)
             if max_bytes is not None and kept_bytes + size > max(0, max_bytes):
                 keep = False
@@ -445,6 +529,7 @@ class Housekeeper:
         return removed_files, removed_bytes
 
     def _clean_orphan_containers(self) -> list[str]:
+        self._check_cancel()
         active = self._active_containers()
         try:
             result = subprocess.run(
@@ -464,6 +549,7 @@ class Housekeeper:
             return []
         removed: list[str] = []
         for name in sorted(set(result.stdout.splitlines()) - active):
+            self._check_cancel()
             if not name.startswith("fts-"):
                 continue
             cleanup = subprocess.run(

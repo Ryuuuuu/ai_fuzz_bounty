@@ -60,7 +60,7 @@ class PipelineWorker:
         )
         self.triage_runner = TriageRunner(config, progress=self.progress)
         self.validation_runner = ValidationAgentRunner(config, progress=self.progress)
-        self.housekeeper = Housekeeper(config)
+        self.housekeeper = Housekeeper(config, cancel_event=self.stop_event)
         self._non_fuzz_lock = threading.Lock()
 
     def stop(self) -> None:
@@ -80,8 +80,13 @@ class PipelineWorker:
             except BlockingIOError as exc:
                 raise PipelineError("another fuzz pipeline worker is already running") from exc
             housekeeper = getattr(self, "housekeeper", None)
-            if housekeeper is not None:
-                housekeeper.run()
+            if housekeeper is not None and (
+                stop_event is None or not stop_event.is_set()
+            ):
+                try:
+                    housekeeper.run()
+                except PipelineInterrupted:
+                    return results
             while max_jobs == 0 or len(results) < max_jobs:
                 if stop_event is not None and stop_event.is_set():
                     break
