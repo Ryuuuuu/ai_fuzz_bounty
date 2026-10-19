@@ -1971,6 +1971,9 @@ class CentralAgentTests(unittest.TestCase):
                 def __init__(self, _path):
                     pass
 
+                def recent_failed_arm_preflight_repositories(self, *_args):
+                    return set()
+
                 def revalidation_backlog_names(self, *_args):
                     return ["org/fresh"]
 
