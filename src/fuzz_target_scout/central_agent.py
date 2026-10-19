@@ -14,7 +14,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -35,6 +35,10 @@ from .arm_preflight import (
     TRANSIENT_FAILURE_REASONS,
 )
 from .engine import ScoutEngine
+from .generic_integration import (
+    VENDORED_SOURCE_DIRECTORIES,
+    _submodule_directory_parts,
+)
 from .operations import pipeline_overview
 from .pipeline import (
     PipelineError,
@@ -1380,17 +1384,26 @@ class CentralAgent:
             str(item.get("action") or "")
             for item in applied_for_failure
         }
+        job = _optional_json(job_dir / "job.json")
+        route = str((job.get("route") or {}).get("name") or "")
+        integration = _optional_json(
+            job_dir / "artifacts" / "generic-integration.json"
+        )
+        vendored_existing_harness_failure = (
+            stage == "build"
+            and route == "native_generated"
+            and _vendored_existing_harness(job_dir, integration)
+            and _native_link_failure(job_dir, error)
+        )
         options: list[dict[str, str]] = []
         if not bounded_exhaustion and recovery_count < maximum:
-            if "retry_stage" not in attempted:
+            if not vendored_existing_harness_failure and "retry_stage" not in attempted:
                 options.append(
                     {
                         "action": "retry_stage",
                         "description": "Retry the failed stage once from preserved state.",
                     }
                 )
-            job = _optional_json(job_dir / "job.json")
-            route = str((job.get("route") or {}).get("name") or "")
             selection = _optional_json(
                 job_dir / "artifacts" / "generic-integration-selection.json"
             )
@@ -1437,6 +1450,13 @@ class CentralAgent:
             "maximum_automatic_recoveries": maximum,
             "attempted_for_failure": sorted(attempted),
             "bounded_exhaustion": bounded_exhaustion,
+            "vendored_existing_harness_failure": vendored_existing_harness_failure,
+            "required_action": (
+                "restart_from_integration"
+                if vendored_existing_harness_failure
+                and any(item["action"] == "restart_from_integration" for item in options)
+                else None
+            ),
             "options": options,
         }
 
@@ -1461,10 +1481,19 @@ class CentralAgent:
             choice = requested.get(job_id) or {}
             action = str(choice.get("action") or "")
             selection_source = "ai"
-            if action not in options:
+            required_action = str(evidence.get("required_action") or "")
+            if required_action in options:
+                action = required_action
+                selection_source = "deterministic_guard"
+            elif action not in options:
                 action = options[0]
                 selection_source = "deterministic_fallback"
-            rationale = str(choice.get("rationale") or "")
+            rationale = (
+                "외부 의존성의 기존 하네스가 빌드되지 않아 해당 경로를 배제하고 "
+                "하네스 통합을 다시 생성합니다."
+                if selection_source == "deterministic_guard"
+                else str(choice.get("rationale") or "")
+            )
             if not rationale:
                 rationale = "실패 유형과 이전 복구 이력을 기준으로 안전한 다음 조치를 선택했습니다."
             try:
@@ -1537,7 +1566,10 @@ class CentralAgent:
                     failed_candidate_id = str(selected_candidate.get("id") or "")
             if (
                 (failed_harness or failed_candidate_id)
-                and _failure_implicates_harness(job_dir, error)
+                and (
+                    _failure_implicates_harness(job_dir, error)
+                    or current.get("vendored_existing_harness_failure")
+                )
             ):
                 exclusion_path = (
                     job_dir / "artifacts" / "harness-exclusions.json"
@@ -2694,6 +2726,50 @@ def _failure_fingerprint(stage: str, error: str) -> str:
     normalized = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", error)
     normalized = re.sub(r"\s+", " ", normalized).strip()[:2000]
     return hashlib.sha256(f"{stage}\n{normalized}".encode()).hexdigest()
+
+
+def _vendored_existing_harness(job_dir: Path, integration: dict[str, Any]) -> bool:
+    """Identify an existing fuzz target borrowed from a dependency checkout."""
+    candidate = integration.get("candidate")
+    if not isinstance(candidate, dict):
+        return False
+    relative = candidate.get("file")
+    if not isinstance(relative, str) or not relative:
+        return False
+    if integration.get("harness_origin") != f"existing:{relative}":
+        return False
+    path = PurePosixPath(relative)
+    if path.is_absolute() or ".." in path.parts or "\\" in relative:
+        return False
+    parts = path.parts
+    if any(part.casefold() in VENDORED_SOURCE_DIRECTORIES for part in parts[:-1]):
+        return True
+    for source in (job_dir / "source", job_dir / "build-source"):
+        if any(parts[: len(root)] == root for root in _submodule_directory_parts(source)):
+            return True
+    return False
+
+
+def _native_link_failure(job_dir: Path, error: str) -> bool:
+    """Use the bounded build-log tail to distinguish linker from transient failures."""
+    evidence = error.casefold()
+    path = job_dir / "logs" / "native-build.log"
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 16_000))
+            evidence += handle.read().decode("utf-8", errors="replace").casefold()
+    except OSError:
+        pass
+    return any(
+        marker in evidence
+        for marker in (
+            "undefined reference",
+            "undefined symbol:",
+            "linker command failed",
+            "ld returned 1 exit status",
+        )
+    )
 
 
 def _failure_implicates_harness(job_dir: Path, error: str) -> bool:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 import hashlib
 import itertools
 import json
@@ -7,8 +8,8 @@ import os
 import re
 import shutil
 import zipfile
-from pathlib import Path
-from typing import Any, Callable
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterator
 
 from .harness_generation import (
     extract_harness_code,
@@ -40,6 +41,10 @@ SEED_SAMPLE_DIRECTORIES = {
 UNTRUSTED_SOURCE_DIRECTORIES = {
     ".git", "build", "generated", "node_modules", "third_party",
     "third-party", "vendor",
+}
+VENDORED_SOURCE_DIRECTORIES = {
+    "3rdparty", "3rd_party", "deps", "extern", "external", "subprojects",
+    "third-party", "third_party", "thirdparty", "vendor", "vendored",
 }
 MAX_SEED_FILES = 24
 MAX_SEED_FILE_BYTES = 8192
@@ -929,12 +934,52 @@ def _write_seed_corpus(
     return len(contents), sources
 
 
+def _submodule_directory_parts(source: Path) -> tuple[tuple[str, ...], ...]:
+    manifest = source / ".gitmodules"
+    try:
+        if manifest.is_symlink() or not manifest.is_file():
+            return ()
+        parser = configparser.RawConfigParser(strict=False)
+        parser.read_string(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, configparser.Error):
+        return ()
+    roots: list[tuple[str, ...]] = []
+    for section in parser.sections():
+        if not section.casefold().startswith('submodule "'):
+            continue
+        value = parser.get(section, "path", fallback="").strip().strip('"')
+        path = PurePosixPath(value)
+        if not value or path.is_absolute() or ".." in path.parts:
+            continue
+        roots.append(path.parts)
+    return tuple(roots)
+
+
+def _first_party_source_files(source: Path) -> Iterator[Path]:
+    """Walk candidate files without entering vendored or Git submodule trees."""
+    submodules = _submodule_directory_parts(source)
+    for directory, children, files in os.walk(source, followlinks=False):
+        base = Path(directory)
+        relative = base.relative_to(source)
+        children[:] = sorted(
+            child for child in children
+            if child.casefold() not in VENDORED_SOURCE_DIRECTORIES
+            and not (base / child).is_symlink()
+            and not any(
+                (relative / child).parts[:len(parts)] == parts
+                for parts in submodules
+            )
+        )
+        for filename in sorted(files):
+            yield base / filename
+
+
 def _find_existing_harness(
     source: Path, excluded_paths: set[str] | None = None
 ) -> Path | None:
     excluded_paths = excluded_paths or set()
     candidates: list[tuple[tuple[int, int, str], Path]] = []
-    for path in sorted(source.rglob("*")):
+    for path in _first_party_source_files(source):
         try:
             relative = path.relative_to(source).as_posix()
         except ValueError:
@@ -956,19 +1001,7 @@ def _find_existing_harness(
                 continue
             lowered = text.casefold()
             name = path.stem.casefold()
-            relative_parts = {
-                part.casefold() for part in Path(relative).parts[:-1]
-            }
             penalty = 0
-            if relative_parts & {
-                "third_party",
-                "third-party",
-                "external",
-                "extern",
-                "vendor",
-                "vendored",
-            }:
-                penalty += 250
             if "static_linking_only" in lowered:
                 penalty += 100
             if re.search(r'#\s*include\s*[<"][^>"\n]*(?:private|internal)', lowered):
@@ -1020,7 +1053,7 @@ def _select_public_candidate(
         "sizeof",
         "while",
     }
-    paths = source.rglob("*")
+    paths = _first_party_source_files(source)
     if max_scanned_files is not None:
         paths = itertools.islice(paths, max_scanned_files)
     headers = (

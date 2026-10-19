@@ -1362,6 +1362,98 @@ class CentralAgentTests(unittest.TestCase):
         self.assertTrue(progress_preserved)
         self.assertTrue(integration_archived)
 
+    def test_vendored_existing_harness_forces_restart_and_excludes_path(self):
+        for candidate_path, gitmodules in (
+            ("src/external/webrtc/test/fuzzers/webrtc_fuzzer_main.cc", None),
+            (
+                "src/dependencies/net/test/fuzz_main.cc",
+                '[submodule "net"]\n\tpath = src/dependencies/net\n'
+            ),
+        ):
+            with self.subTest(candidate_path=candidate_path), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config, _ = load_config(root / "config.toml")
+                config["pipeline"]["runs_path"] = str(root / "runs")
+                job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+                artifacts = job / "artifacts"
+                logs = job / "logs"
+                artifacts.mkdir(parents=True)
+                logs.mkdir()
+                if gitmodules:
+                    source = job / "source"
+                    source.mkdir()
+                    (source / ".gitmodules").write_text(gitmodules)
+                (job / "job.json").write_text(
+                    json.dumps({"route": {"name": "native_generated"}})
+                )
+                (job / "state.json").write_text(json.dumps({
+                    "job_id": job.name,
+                    "stage": "build",
+                    "status": "recovery_pending",
+                    "last_error": "native build command failed",
+                    "attempts": {"worker_failures": 1},
+                }))
+                (artifacts / "generic-integration.json").write_text(json.dumps({
+                    "harness_origin": f"existing:{candidate_path}",
+                    "candidate": {"file": candidate_path},
+                }))
+                (logs / "native-build.log").write_text(
+                    "generic_harness.o: undefined reference to "
+                    "`webrtc::FuzzOneInput(unsigned char const*, unsigned long)'\n"
+                )
+                agent = CentralAgent(config)
+                evidence = agent._failure_recovery_evidence(job.name, {})
+                self.assertEqual(evidence["required_action"], "restart_from_integration")
+                self.assertEqual(
+                    [item["action"] for item in evidence["options"]],
+                    ["restart_from_integration", "skip_target"],
+                )
+                agent._notify = lambda *args, **kwargs: (True, "ok")
+                results = agent._apply_failure_recoveries(
+                    {"recovery_actions": [{
+                        "job_id": job.name,
+                        "action": "skip_target",
+                        "rationale": "AI가 반복 링크 오류를 영구 실패로 판단했습니다.",
+                    }]},
+                    {"jobs": [{"job_id": job.name}]},
+                )
+                self.assertEqual(results[0]["action"], "restart_from_integration")
+                self.assertEqual(results[0]["selection_source"], "deterministic_guard")
+                state = json.loads((job / "state.json").read_text())
+                self.assertEqual((state["stage"], state["status"]), ("integration", "prepared"))
+                excluded = json.loads((artifacts / "harness-exclusions.json").read_text())
+                self.assertEqual(excluded["paths"], [candidate_path])
+                self.assertFalse((artifacts / "generic-integration.json").exists())
+
+    def test_vendored_harness_transient_build_failure_keeps_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "config.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            job = root / "runs" / "org-parser-aaaaaaaaaaaa"
+            artifacts = job / "artifacts"
+            artifacts.mkdir(parents=True)
+            (job / "job.json").write_text(
+                json.dumps({"route": {"name": "native_generated"}})
+            )
+            (job / "state.json").write_text(json.dumps({
+                "job_id": job.name,
+                "stage": "build",
+                "status": "recovery_pending",
+                "last_error": "Docker daemon temporarily unavailable",
+                "attempts": {"worker_failures": 1},
+            }))
+            path = "src/external/library/fuzz_target.cc"
+            (artifacts / "generic-integration.json").write_text(json.dumps({
+                "harness_origin": f"existing:{path}",
+                "candidate": {"file": path},
+            }))
+
+            evidence = CentralAgent(config)._failure_recovery_evidence(job.name, {})
+
+            self.assertIsNone(evidence["required_action"])
+            self.assertEqual(evidence["options"][0]["action"], "retry_stage")
+
     def test_project_api_link_failure_preserves_harness_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1385,7 +1477,10 @@ class CentralAgentTests(unittest.TestCase):
                 })
             )
             (artifacts / "generic-integration.json").write_text(
-                json.dumps({"candidate": {"file": "tests/fuzz/faiss_index_fuzzer.cc"}})
+                json.dumps({
+                    "harness_origin": "existing:tests/fuzz/faiss_index_fuzzer.cc",
+                    "candidate": {"file": "tests/fuzz/faiss_index_fuzzer.cc"},
+                })
             )
             (logs / "native-build.log").write_text(
                 "[ 98%] Linking CXX executable generic_harness\n"
@@ -1397,6 +1492,9 @@ class CentralAgentTests(unittest.TestCase):
             )
 
             agent = CentralAgent(config)
+            evidence = agent._failure_recovery_evidence(job.name, {})
+            self.assertIsNone(evidence["required_action"])
+            self.assertEqual(evidence["options"][0]["action"], "retry_stage")
             agent._apply_failure_recovery(
                 job.name,
                 "restart_from_integration",

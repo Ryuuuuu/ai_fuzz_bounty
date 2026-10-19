@@ -1152,6 +1152,128 @@ class GenericIntegrationTests(unittest.TestCase):
 
         self.assertEqual(selected, first_party / "fuzz.c")
 
+    def test_vendored_harness_is_never_used_without_first_party_harness(self):
+        harness_code = (
+            "int LLVMFuzzerTestOneInput(const unsigned char *data, "
+            "unsigned long size) { return 0; }\n"
+        )
+        for directory_name in (
+            "src/external/webrtc", "third_party/library", "vendor/library",
+            "extern/library", "deps/library", "subprojects/library",
+        ):
+            with self.subTest(directory_name=directory_name):
+                with tempfile.TemporaryDirectory() as directory:
+                    source = Path(directory)
+                    external = source / directory_name / "simple_fuzz.c"
+                    external.parent.mkdir(parents=True)
+                    external.write_text(harness_code, encoding="utf-8")
+                    self.assertIsNone(_find_existing_harness(source))
+
+                    first_party = source / "tests" / "fuzz" / "parser.c"
+                    first_party.parent.mkdir(parents=True)
+                    first_party.write_text(harness_code, encoding="utf-8")
+                    self.assertEqual(_find_existing_harness(source), first_party)
+
+    def test_existing_harness_skips_git_submodule_at_nonvendored_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / ".gitmodules").write_text(
+                '[submodule "network"]\n'
+                '  path = src/network\n'
+                '  url = https://example.org/network.git\n',
+                encoding="utf-8",
+            )
+            external = source / "src" / "network" / "fuzz.cc"
+            external.parent.mkdir(parents=True)
+            external.write_text(
+                "int LLVMFuzzerTestOneInput(const unsigned char*, "
+                "unsigned long) { return 0; }\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(_find_existing_harness(source))
+
+            first_party = source / "tests" / "fuzz" / "parser.cc"
+            first_party.parent.mkdir(parents=True)
+            first_party.write_text(external.read_text(encoding="utf-8"), encoding="utf-8")
+            self.assertEqual(_find_existing_harness(source), first_party)
+
+    def test_public_candidate_excludes_vendored_and_submodule_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / ".gitmodules").write_text(
+                '[submodule "codec"]\n'
+                '  path = libraries/codec\n'
+                '  url = https://example.org/codec.git\n',
+                encoding="utf-8",
+            )
+            for relative in (
+                "src/external/webrtc/include/api.h",
+                "libraries/codec/include/api.h",
+            ):
+                header = source / relative
+                header.parent.mkdir(parents=True)
+                header.write_text(
+                    "int parse_bytes(const unsigned char* data, size_t size);\n",
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(PipelineError, "no existing harness"):
+                _select_public_candidate(source)
+
+            first_party = source / "include" / "project" / "parser.h"
+            first_party.parent.mkdir(parents=True)
+            first_party.write_text(
+                "int parse_bytes(const unsigned char* data, size_t size);\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _select_public_candidate(source)["file"],
+                "include/project/parser.h",
+            )
+
+    def test_vendored_only_harness_falls_back_to_first_party_api_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.16)\nproject(first_party)\n",
+                encoding="utf-8",
+            )
+            external = source / "src" / "external" / "webrtc" / "fuzz.cc"
+            external.parent.mkdir(parents=True)
+            external.write_text(
+                "int LLVMFuzzerTestOneInput(const unsigned char*, "
+                "unsigned long) { return 0; }\n",
+                encoding="utf-8",
+            )
+            public_header = source / "include" / "project.h"
+            public_header.parent.mkdir()
+            public_header.write_text(
+                "int parse_bytes(const unsigned char* data, size_t size);\n",
+                encoding="utf-8",
+            )
+            generated = (
+                '#include <cstddef>\n#include <cstdint>\n#include "project.h"\n'
+                'extern "C" int LLVMFuzzerTestOneInput('
+                'const uint8_t* data, size_t size) { '
+                'parse_bytes(data, size); return 0; }\n'
+            )
+            with patch(
+                "fuzz_target_scout.generic_integration.invoke_oss_fuzz_gen_adapter",
+                return_value=(generated, {}),
+            ) as invoke:
+                result = create_generic_project(
+                    job_dir=root,
+                    source=source,
+                    project_dir=root / "project",
+                    project_name="first-party",
+                    pipeline={},
+                )
+
+            invoke.assert_called_once()
+            self.assertEqual(result["harness_origin"], "codex_oss_fuzz_gen_adapter")
+            self.assertEqual(result["candidate"]["file"], "include/project.h")
+
     def test_public_library_sources_are_not_recompiled_as_harness_helpers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
