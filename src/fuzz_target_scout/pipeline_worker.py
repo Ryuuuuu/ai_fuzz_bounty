@@ -73,6 +73,7 @@ class PipelineWorker:
         lock_path = self.runs_root / ".pipeline-worker.lock"
         results: list[WorkerResult] = []
         attempted: set[str] = set()
+        first_batch = True
         stop_event = getattr(self, "stop_event", None)
         with lock_path.open("w", encoding="utf-8") as lock:
             try:
@@ -80,13 +81,6 @@ class PipelineWorker:
             except BlockingIOError as exc:
                 raise PipelineError("another fuzz pipeline worker is already running") from exc
             housekeeper = getattr(self, "housekeeper", None)
-            if housekeeper is not None and (
-                stop_event is None or not stop_event.is_set()
-            ):
-                try:
-                    housekeeper.run()
-                except PipelineInterrupted:
-                    return results
             while max_jobs == 0 or len(results) < max_jobs:
                 if stop_event is not None and stop_event.is_set():
                     break
@@ -99,7 +93,21 @@ class PipelineWorker:
                 remaining = allocation.parallel_jobs
                 job_ids = self._next_jobs(attempted, remaining)
                 if not job_ids:
+                    if first_batch and housekeeper is not None:
+                        try:
+                            housekeeper.run()
+                        except PipelineInterrupted:
+                            return results
                     break
+                if first_batch and housekeeper is not None:
+                    try:
+                        for index, job_id in enumerate(job_ids):
+                            housekeeper.run(
+                                job_id, clean_orphan_containers=index == 0
+                            )
+                    except PipelineInterrupted:
+                        return results
+                first_batch = False
                 attempted.update(job_ids)
                 batch_allocation = plan_resources(
                     self.pipeline,
@@ -146,8 +154,10 @@ class PipelineWorker:
                 if housekeeper is not None and (
                     stop_event is None or not stop_event.is_set()
                 ):
-                    for job_id in job_ids:
-                        housekeeper.run(job_id)
+                    try:
+                        housekeeper.run()
+                    except PipelineInterrupted:
+                        return results
         return results
 
     def _next_job(self, attempted: set[str]) -> str:

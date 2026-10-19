@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -37,7 +38,8 @@ def _check_cancel(cancel_event: threading.Event | None) -> None:
 
 
 def pipeline_overview(
-    runs_root: str | Path, *, cancel_event: threading.Event | None = None
+    runs_root: str | Path, *, cancel_event: threading.Event | None = None,
+    include_disk_usage: bool = True,
 ) -> dict[str, Any]:
     root = Path(runs_root)
     records: list[dict[str, Any]] = []
@@ -47,8 +49,9 @@ def pipeline_overview(
             record = job_status(root, str(summary["job_id"]))
         except PipelineError:
             continue
-        record["disk_bytes"] = directory_size(
-            root / str(summary["job_id"]), cancel_event=cancel_event
+        record["disk_bytes"] = (
+            directory_size(root / str(summary["job_id"]), cancel_event=cancel_event)
+            if include_disk_usage else None
         )
         records.append(record)
     records.sort(key=lambda item: (str(item.get("updated_at") or ""), item["job_id"]))
@@ -62,7 +65,11 @@ def pipeline_overview(
         "runs_root": str(root.resolve()),
         "job_count": len(records),
         "status_counts": dict(sorted(status_counts.items())),
-        "total_disk_bytes": sum(int(item["disk_bytes"]) for item in records),
+        "total_disk_bytes": (
+            sum(int(item["disk_bytes"]) for item in records)
+            if include_disk_usage else None
+        ),
+        "disk_usage_complete": include_disk_usage,
         "jobs": records,
     }
 
@@ -97,22 +104,47 @@ class Housekeeper:
         self.runs_root = Path(self.pipeline["runs_path"])
         self.cancel_event = cancel_event
 
-    def run(self, job_id: str | None = None) -> dict[str, Any]:
+    def run(
+        self, job_id: str | None = None, *, clean_orphan_containers: bool = True,
+        completed_only: bool = False,
+    ) -> dict[str, Any]:
         self._check_cancel()
         self.runs_root.mkdir(parents=True, exist_ok=True)
-        jobs = [self._job_dir(job_id)] if job_id else self._job_dirs()
-        records = []
-        for path in jobs:
+        with (self.runs_root / ".housekeeper.lock").open("a+b") as lock:
             self._check_cancel()
-            records.append(self._clean_job(path))
-        self._check_cancel()
-        removed_containers = self._clean_orphan_containers()
-        return {
-            "schema_version": 1,
-            "created_at": utc_now(),
-            "jobs": records,
-            "removed_orphan_containers": removed_containers,
-        }
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {
+                    "schema_version": 1,
+                    "created_at": utc_now(),
+                    "jobs": [],
+                    "removed_orphan_containers": [],
+                    "skipped_busy": True,
+                }
+            jobs = [self._job_dir(job_id)] if job_id else self._job_dirs()
+            records = []
+            for path in jobs:
+                self._check_cancel()
+                if completed_only:
+                    state = self._read_state(path)
+                    if state.get("stage") != "complete" or (
+                        state.get("active_fuzz_container")
+                        or state.get("active_afl_container")
+                    ):
+                        continue
+                records.append(self._clean_job(path))
+            self._check_cancel()
+            removed_containers = (
+                self._clean_orphan_containers() if clean_orphan_containers else []
+            )
+            return {
+                "schema_version": 1,
+                "created_at": utc_now(),
+                "jobs": records,
+                "removed_orphan_containers": removed_containers,
+                "skipped_busy": False,
+            }
 
     def _job_dirs(self) -> list[Path]:
         return sorted(

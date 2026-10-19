@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1890,6 +1890,154 @@ class CentralAgentTests(unittest.TestCase):
         self.assertTrue(result["stopped"])
         overview.assert_not_called()
         health.assert_not_called()
+
+    def test_batch_start_uses_unmeasured_disk_without_false_resource_alert(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, _ = load_config(root / "missing.toml")
+            config["pipeline"]["runs_path"] = str(root / "runs")
+            config["agent"]["state_path"] = str(root / "agent" / "state.json")
+            config["agent"]["log_path"] = str(root / "agent" / "progress.jsonl")
+            config["agent"]["notification_log_path"] = str(
+                root / "agent" / "notifications.jsonl"
+            )
+            config["agent"]["decisions_path"] = str(root / "agent" / "decisions")
+            agent = CentralAgent(config)
+            observed = []
+            agent.reviewer.health = lambda evidence: (
+                observed.append(evidence) or {
+                    "severity": "healthy", "notify": False,
+                    "summary": "정상", "problems": [],
+                },
+                {},
+            )
+            overview = {
+                "job_count": 1,
+                "status_counts": {"ready": 1},
+                "total_disk_bytes": None,
+                "disk_usage_complete": False,
+                "jobs": [{
+                    "job_id": "org-parser-aaaaaaaaaaaa",
+                    "stage": "fuzzing", "status": "ready",
+                    "disk_bytes": None,
+                    "updated_at": "2099-01-01T00:00:00Z",
+                }],
+            }
+            allocation = ResourceAllocation(
+                1, 2, 1920, 768, 1, 1024,
+                ResourceSnapshot(4, 4096, 3072, ("test",)),
+            )
+            with patch(
+                "fuzz_target_scout.central_agent.pipeline_overview",
+                side_effect=[overview, {
+                    **overview, "total_disk_bytes": 123,
+                    "disk_usage_complete": True,
+                    "jobs": [{**overview["jobs"][0], "disk_bytes": 123}],
+                }],
+            ) as read_overview, patch(
+                "fuzz_target_scout.central_agent.plan_resources",
+                return_value=allocation,
+            ), patch.object(agent, "_notify") as notify:
+                start = agent.monitor("batch_started")
+                scheduled = agent.monitor("scheduled_check")
+
+            self.assertEqual(start["effective_severity"], "healthy")
+            self.assertEqual(start["notification_transition"], "unchanged")
+            self.assertIsNone(observed[0]["total_disk_bytes"])
+            self.assertFalse(observed[0]["disk_usage_complete"])
+            self.assertEqual(observed[1]["total_disk_bytes"], 123)
+            self.assertTrue(observed[1]["disk_usage_complete"])
+            read_overview.assert_any_call(
+                agent.runs_root, cancel_event=agent.stop_event,
+                include_disk_usage=False,
+            )
+            read_overview.assert_any_call(
+                agent.runs_root, cancel_event=agent.stop_event,
+                include_disk_usage=True,
+            )
+            notify.assert_not_called()
+
+    def test_periodic_housekeeping_waits_six_hours_and_persists_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+            with patch("fuzz_target_scout.central_agent.Housekeeper") as keeper:
+                self.assertEqual(agent._scheduled_housekeeping()["status"], "deferred")
+                keeper.assert_not_called()
+                restarted = CentralAgent(config)
+                self.assertEqual(
+                    restarted._scheduled_housekeeping()["status"], "not_due"
+                )
+                restarted.state["housekeeping_schedule_started_at"] = (
+                    datetime.now(timezone.utc) - timedelta(hours=7)
+                ).isoformat()
+                restarted._save_state()
+                keeper.return_value.run.return_value = {
+                    "jobs": [{"job_id": "completed"}], "skipped_busy": False,
+                }
+                self.assertEqual(
+                    restarted._scheduled_housekeeping(),
+                    {"status": "complete", "jobs": 1},
+                )
+                keeper.return_value.run.assert_called_once_with(
+                    clean_orphan_containers=False, completed_only=True
+                )
+                self.assertIn("last_housekeeping_at", CentralAgent(config).state)
+                self.assertEqual(
+                    restarted._scheduled_housekeeping()["status"], "not_due"
+                )
+
+    def test_periodic_housekeeping_backs_off_and_caps_failure_alert(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+            agent.state["housekeeping_schedule_started_at"] = (
+                datetime.now(timezone.utc) - timedelta(hours=7)
+            ).isoformat()
+            with patch("fuzz_target_scout.central_agent.Housekeeper") as keeper, patch.object(
+                agent, "_notify"
+            ) as notify:
+                keeper.return_value.run.side_effect = OSError("disk temporarily unavailable")
+                self.assertEqual(agent._scheduled_housekeeping()["failures"], 1)
+                self.assertEqual(
+                    agent._scheduled_housekeeping()["status"], "retry_deferred"
+                )
+                self.assertEqual(keeper.return_value.run.call_count, 1)
+                agent.state["last_housekeeping_attempt_at"] = (
+                    datetime.now(timezone.utc) - timedelta(hours=2)
+                ).isoformat()
+                self.assertEqual(agent._scheduled_housekeeping()["failures"], 2)
+                agent.state["last_housekeeping_attempt_at"] = (
+                    datetime.now(timezone.utc) - timedelta(hours=3)
+                ).isoformat()
+                self.assertEqual(agent._scheduled_housekeeping()["failures"], 3)
+                notify.assert_called_once()
+                self.assertEqual(
+                    agent._scheduled_housekeeping()["status"], "retry_deferred"
+                )
+                agent.state["last_housekeeping_attempt_at"] = (
+                    datetime.now(timezone.utc) - timedelta(hours=7)
+                ).isoformat()
+                self.assertEqual(agent._scheduled_housekeeping()["failures"], 3)
+                notify.assert_called_once()
+            self.assertNotIn("last_housekeeping_at", agent.state)
+            self.assertEqual(CentralAgent(config).state["housekeeping_failures"], 3)
+
+    def test_periodic_housekeeping_busy_or_cancelled_does_not_mark_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, _ = load_config(Path(directory) / "missing.toml")
+            agent = CentralAgent(config)
+            agent.state["housekeeping_schedule_started_at"] = (
+                datetime.now(timezone.utc) - timedelta(hours=7)
+            ).isoformat()
+            with patch("fuzz_target_scout.central_agent.Housekeeper") as keeper:
+                keeper.return_value.run.return_value = {"skipped_busy": True}
+                self.assertEqual(agent._scheduled_housekeeping()["status"], "busy")
+                self.assertNotIn("last_housekeeping_at", agent.state)
+                keeper.return_value.run.side_effect = PipelineInterrupted("stopped")
+                with self.assertRaises(PipelineInterrupted):
+                    agent._scheduled_housekeeping()
+                self.assertNotIn("last_housekeeping_at", agent.state)
 
     def test_stop_interrupts_health_review_without_sending_alerts(self):
         with tempfile.TemporaryDirectory() as directory:

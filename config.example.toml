@@ -175,6 +175,8 @@ vistafuzz_seconds = 3600
 [agent]
 # 30분마다 구조화된 진행 로그와 AI 상태 판정을 남깁니다.
 monitor_interval_seconds = 1800
+# 실행 중인 작업을 제외한 전체 작업 정리는 6시간마다 수행합니다.
+housekeeping_interval_seconds = 21600
 stale_after_seconds = 5400
 ai_timeout_seconds = 180
 ai_failure_alert_threshold = 2

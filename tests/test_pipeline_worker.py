@@ -3,7 +3,7 @@ import threading
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from fuzz_target_scout.pipeline import (
     OfflineDependencyError,
@@ -31,11 +31,80 @@ class PipelineWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             worker = object.__new__(PipelineWorker)
             worker.runs_root = Path(directory)
+            worker.pipeline = {}
             worker.stop_event = threading.Event()
             with patch.object(worker, "housekeeper", create=True) as housekeeper:
                 housekeeper.run.side_effect = PipelineInterrupted("stopped")
-                result = worker.run(1)
+                snapshot = ResourceSnapshot(8, 8192, 6144, ("test",))
+                allocation = ResourceAllocation(1, 2, 1536, 576, 1, 1024, snapshot)
+                with patch(
+                    "fuzz_target_scout.pipeline_worker.plan_resources",
+                    return_value=allocation,
+                ):
+                    result = worker.run(1)
             self.assertEqual(result, [])
+
+    def test_running_jobs_resume_before_full_housekeeping_sweep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            jobs = [f"fuzz-job-{index}" for index in range(2)]
+            for index, job_id in enumerate(jobs):
+                self._job(
+                    runs, job_id,
+                    created=f"2026-01-0{index + 1}T00:00:00Z",
+                    stage="fuzzing", status="ready",
+                )
+            snapshot = ResourceSnapshot(8, 8192, 6144, ("test",))
+            allocation = ResourceAllocation(2, 2, 1536, 576, 1, 1024, snapshot)
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = runs
+            worker.pipeline = {}
+            worker.progress = lambda _message: None
+            worker.stop_event = threading.Event()
+            order = []
+
+            def advance(job_id, *, setup_only, allocation):
+                order.append(("advance", job_id, setup_only))
+                return WorkerResult(
+                    job_id, "ready" if setup_only else "exhausted",
+                    "fuzzing" if setup_only else "complete",
+                    "ready" if setup_only else "fuzz",
+                )
+
+            worker._advance = advance
+            with patch.object(worker, "housekeeper", create=True) as housekeeper, patch(
+                "fuzz_target_scout.pipeline_worker.plan_resources",
+                return_value=allocation,
+            ):
+                housekeeper.run.side_effect = lambda *args, **kwargs: order.append(
+                    ("housekeep", args, kwargs)
+                )
+                results = worker.run(2)
+                self.assertEqual(housekeeper.run.call_args_list, [
+                    call(jobs[0], clean_orphan_containers=True),
+                    call(jobs[1], clean_orphan_containers=False),
+                    call(),
+                ])
+
+            self.assertEqual(len(results), 2)
+            self.assertEqual([item[0] for item in order[:2]], ["housekeep", "housekeep"])
+            self.assertEqual(order[-1][0], "housekeep")
+
+    def test_idle_worker_runs_full_housekeeping_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = object.__new__(PipelineWorker)
+            worker.runs_root = Path(directory)
+            worker.pipeline = {}
+            worker.progress = lambda _message: None
+            worker.stop_event = threading.Event()
+            snapshot = ResourceSnapshot(8, 8192, 6144, ("test",))
+            allocation = ResourceAllocation(1, 2, 1536, 576, 1, 1024, snapshot)
+            with patch.object(worker, "housekeeper", create=True) as housekeeper, patch(
+                "fuzz_target_scout.pipeline_worker.plan_resources",
+                return_value=allocation,
+            ):
+                self.assertEqual(worker.run(1), [])
+                housekeeper.run.assert_called_once_with()
 
     def test_worker_runs_independent_fuzz_jobs_in_parallel(self):
         with tempfile.TemporaryDirectory() as directory:

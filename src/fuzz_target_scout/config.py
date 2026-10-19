@@ -165,6 +165,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "agent": {
         "monitor_interval_seconds": 1800,
+        "housekeeping_interval_seconds": 21600,
         "stale_after_seconds": 5400,
         "ai_timeout_seconds": 180,
         "ai_failure_alert_threshold": 2,

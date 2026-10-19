@@ -40,7 +40,7 @@ from .generic_integration import (
     VENDORED_SOURCE_DIRECTORIES,
     _submodule_directory_parts,
 )
-from .operations import pipeline_overview
+from .operations import Housekeeper, pipeline_overview
 from .pipeline import (
     PipelineError,
     PipelineInterrupted,
@@ -527,6 +527,7 @@ class CentralAgent:
             except BlockingIOError as exc:
                 raise PipelineError("another central fuzz agent is already running") from exc
             self.state.setdefault("started_at", utc_now())
+            self.state.setdefault("housekeeping_schedule_started_at", utc_now())
             self.state["status"] = "running"
             self.state.pop("paused_reason", None)
             self._save_state()
@@ -663,8 +664,13 @@ class CentralAgent:
         if self.stop_event.is_set():
             return {"reason": reason, "stopped": True, "improvements": []}
         try:
+            if reason in {"scheduled_check", "idle"}:
+                self._scheduled_housekeeping()
             overview = self._sanitize(
-                pipeline_overview(self.runs_root, cancel_event=self.stop_event)
+                pipeline_overview(
+                    self.runs_root, cancel_event=self.stop_event,
+                    include_disk_usage=reason != "batch_started",
+                )
             )
         except PipelineInterrupted:
             return {"reason": reason, "stopped": True, "improvements": []}
@@ -853,6 +859,72 @@ class CentralAgent:
         self.state["last_health_snapshot"] = _compact_previous(overview)
         self._save_state()
         return record
+
+    def _scheduled_housekeeping(self) -> dict[str, Any]:
+        """Clean historical jobs periodically without delaying fuzz startup."""
+        if self.stop_event.is_set():
+            raise PipelineInterrupted("central housekeeping stopped by operator")
+        now = datetime.now(timezone.utc)
+        schedule = _parse_time(
+            str(self.state.get("housekeeping_schedule_started_at") or "")
+        )
+        if schedule is None:
+            self.state["housekeeping_schedule_started_at"] = now.isoformat()
+            self._save_state()
+            return {"status": "deferred"}
+        interval = max(
+            3600, int(self.agent.get("housekeeping_interval_seconds") or 21600)
+        )
+        failures = min(3, max(0, int(self.state.get("housekeeping_failures") or 0)))
+        previous_attempt = _parse_time(
+            str(self.state.get("last_housekeeping_attempt_at") or "")
+        )
+        if failures and previous_attempt is not None:
+            retry_seconds = (3600, 7200, 21600)[failures - 1]
+            if (now - previous_attempt).total_seconds() < retry_seconds:
+                return {"status": "retry_deferred", "failures": failures}
+        else:
+            previous_success = _parse_time(
+                str(self.state.get("last_housekeeping_at") or "")
+            )
+            anchor = previous_success or schedule
+            if (now - anchor).total_seconds() < interval:
+                return {"status": "not_due"}
+        self.state["last_housekeeping_attempt_at"] = now.isoformat()
+        self._save_state()
+        try:
+            result = Housekeeper(
+                self.config, cancel_event=self.stop_event
+            ).run(clean_orphan_containers=False, completed_only=True)
+        except PipelineInterrupted:
+            raise
+        except Exception as exc:
+            prior_failures = failures
+            failures = min(3, failures + 1)
+            self.state["housekeeping_failures"] = failures
+            self.state["last_housekeeping_error"] = self._redact(str(exc))[:1000]
+            self._save_state()
+            if prior_failures < 3 and failures == 3:
+                self._notify(
+                    "periodic_housekeeping_failed",
+                    "⚠️ 주기적인 작업 정리가 3회 연속 실패했습니다. "
+                    "퍼징은 계속 진행되며 정리는 6시간 후 다시 시도합니다. "
+                    + self.state["last_housekeeping_error"],
+                )
+            return {"status": "failed", "failures": failures}
+        if result.get("skipped_busy"):
+            return {"status": "busy"}
+        if self.stop_event.is_set():
+            raise PipelineInterrupted("central housekeeping stopped by operator")
+        self.state["last_housekeeping_at"] = utc_now()
+        self.state["housekeeping_failures"] = 0
+        self.state.pop("last_housekeeping_error", None)
+        self._save_state()
+        self.progress(
+            "periodic housekeeping: "
+            f"jobs={len(result['jobs'])} removed_containers=0"
+        )
+        return {"status": "complete", "jobs": len(result["jobs"])}
 
     def _run_monitored_batch(
         self,
@@ -1319,6 +1391,7 @@ class CentralAgent:
                 "Completed historical outcomes are informational, not current incidents."
             ),
             "total_disk_bytes": overview["total_disk_bytes"],
+            "disk_usage_complete": overview.get("disk_usage_complete", True),
             "jobs": jobs,
             "deltas": deltas,
             "deterministic_problems": problems,
@@ -3007,6 +3080,7 @@ def _health_log_overview(overview: dict[str, Any]) -> dict[str, Any]:
         "status_counts": _active_status_counts(overview),
         "historical_outcomes": _historical_status_counts(overview),
         "total_disk_bytes": overview.get("total_disk_bytes", 0),
+        "disk_usage_complete": overview.get("disk_usage_complete", True),
         "jobs": [
             item
             for item in overview.get("jobs") or []

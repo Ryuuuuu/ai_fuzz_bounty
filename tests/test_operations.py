@@ -359,6 +359,91 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(value["jobs"][0]["job_id"], job.name)
             self.assertEqual(value["jobs"][0]["fuzz_remaining_seconds"], 100.0)
             self.assertEqual(value["total_disk_bytes"], directory_size(job))
+            self.assertTrue(value["disk_usage_complete"])
+
+    def test_fast_overview_does_not_walk_job_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = self._job(root)
+            with patch(
+                "fuzz_target_scout.operations.directory_size",
+                side_effect=AssertionError("unexpected disk walk"),
+            ):
+                value = pipeline_overview(root, include_disk_usage=False)
+            self.assertEqual(value["jobs"][0]["job_id"], job.name)
+            self.assertIsNone(value["jobs"][0]["disk_bytes"])
+            self.assertIsNone(value["total_disk_bytes"])
+            self.assertFalse(value["disk_usage_complete"])
+
+    def test_targeted_cleanup_can_defer_orphan_scan_to_full_sweep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = self._job(root)
+            keeper = Housekeeper(self._config(root))
+            with patch.object(keeper, "_clean_orphan_containers") as docker_cleanup:
+                result = keeper.run(job.name, clean_orphan_containers=False)
+                self.assertEqual(result["jobs"][0]["job_id"], job.name)
+                docker_cleanup.assert_not_called()
+                keeper.run()
+                docker_cleanup.assert_called_once()
+
+    def test_periodic_cleanup_only_visits_completed_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            active = self._job(root)
+            completed = root / "org-completed-bbbbbbbbbbbb"
+            completed.mkdir()
+            (completed / "state.json").write_text(json.dumps({
+                "job_id": completed.name, "stage": "complete", "status": "exhausted",
+            }))
+            (active / "logs" / "keep.log").write_text("active")
+            (completed / "logs").mkdir()
+            (completed / "logs" / "old.log").write_text("completed")
+            keeper = Housekeeper(self._config(root, log_max_files=0))
+            with patch.object(keeper, "_clean_orphan_containers") as docker_cleanup:
+                result = keeper.run(
+                    clean_orphan_containers=False, completed_only=True
+                )
+            self.assertFalse(result["skipped_busy"])
+            self.assertEqual([item["job_id"] for item in result["jobs"]], [
+                completed.name,
+            ])
+            self.assertTrue((active / "logs" / "keep.log").is_file())
+            self.assertFalse((completed / "logs" / "old.log").exists())
+            docker_cleanup.assert_not_called()
+
+    def test_housekeeping_lock_skips_overlapping_sweep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job = self._job(root)
+            entered = threading.Event()
+            release = threading.Event()
+            first = Housekeeper(self._config(root))
+            second = Housekeeper(self._config(root))
+            result = []
+
+            def slow_clean(path):
+                entered.set()
+                release.wait(5)
+                return {"job_id": path.name}
+
+            with patch.object(first, "_clean_job", side_effect=slow_clean), patch.object(
+                first, "_clean_orphan_containers", return_value=[]
+            ), patch.object(second, "_clean_job") as duplicate:
+                thread = threading.Thread(
+                    target=lambda: result.append(first.run(job.name))
+                )
+                thread.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    busy = second.run(job.name)
+                    self.assertTrue(busy["skipped_busy"])
+                    duplicate.assert_not_called()
+                finally:
+                    release.set()
+                    thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+                self.assertFalse(result[0]["skipped_busy"])
 
     def test_directory_scan_stops_between_files(self):
         with tempfile.TemporaryDirectory() as directory:
